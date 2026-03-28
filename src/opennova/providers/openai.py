@@ -239,9 +239,12 @@ class OpenAIProvider(BaseLLMProvider):
                     "tool_calls": FinishReason.TOOL_CALL,
                     "length": FinishReason.LENGTH,
                 }
+                finish_reason_raw = choice.finish_reason
+                if finish_reason_raw and hasattr(finish_reason_raw, "value"):
+                    finish_reason_raw = finish_reason_raw.value
                 yield StreamChunk(
                     finish_reason=finish_reason_map.get(
-                        choice.finish_reason.value if choice.finish_reason else "stop",
+                        finish_reason_raw or "stop",
                         FinishReason.STOP,
                     ),
                     delta=False,
