@@ -10,7 +10,7 @@ Implements the core Reason-Act-Observe cycle:
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from opennova.providers.base import (
     BaseLLMProvider,
@@ -73,10 +73,10 @@ class ReActLoop:
         self.max_iterations = max_iterations
         self.stream = stream
         self.messages: list[Message] = []
-        self.on_thought: callable | None = None
-        self.on_action: callable | None = None
-        self.on_result: callable | None = None
-        self.on_stream: callable | None = None
+        self.on_thought: Callable | None = None
+        self.on_action: Callable | None = None
+        self.on_result: Callable | None = None
+        self.on_stream: Callable | None = None
 
     def set_context(self, messages: list[Message]) -> None:
         """Set initial conversation context."""
@@ -89,10 +89,10 @@ class ReActLoop:
     async def run(
         self,
         task: str,
-        on_thought: callable | None = None,
-        on_action: callable | None = None,
-        on_result: callable | None = None,
-        on_stream: callable | None = None,
+        on_thought: Callable | None = None,
+        on_action: Callable | None = None,
+        on_result: Callable | None = None,
+        on_stream: Callable | None = None,
     ) -> str:
         """
         Run the ReAct loop for a task.
@@ -348,7 +348,7 @@ async def run_simple_task(
     task: str,
     max_iterations: int = 20,
     stream: bool = True,
-    on_stream: callable | None = None,
+    on_stream: Callable | None = None,
 ) -> str:
     """
     Convenience function to run a simple task.
