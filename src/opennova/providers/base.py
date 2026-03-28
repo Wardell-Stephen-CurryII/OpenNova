@@ -5,6 +5,8 @@ This module defines the abstract base class for all LLM providers
 and the standard data structures used throughout the system.
 """
 
+import json
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -98,7 +100,10 @@ class Message:
                 {
                     "id": tc.id,
                     "type": tc.call_type,
-                    "function": {"name": tc.name, "arguments": tc.arguments},
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments),
+                    },
                 }
                 for tc in self.tool_calls
             ]

@@ -132,12 +132,16 @@ class OpenAIProvider(BaseLLMProvider):
             "content_filter": FinishReason.CONTENT_FILTER,
         }
 
+        finish_reason_raw = choice.finish_reason
+        if finish_reason_raw and hasattr(finish_reason_raw, "value"):
+            finish_reason_raw = finish_reason_raw.value
+
         return LLMResponse(
             content=choice.message.content or "",
             tool_calls=tool_calls,
             usage=usage,
             finish_reason=finish_reason_map.get(
-                choice.finish_reason.value if choice.finish_reason else "stop",
+                finish_reason_raw or "stop",
                 FinishReason.STOP,
             ),
             model=response.model,
