@@ -12,7 +12,7 @@ OpenNova is a minimalist AI coding assistant that runs in your terminal. It's de
 
 ## Features
 
-### Phase 1 (Current)
+### Phase 1 ✅
 - ✅ ReAct (Reason-Act-Observe) reasoning loop
 - ✅ Multi-provider support (OpenAI, Anthropic, DeepSeek)
 - ✅ Streaming output for real-time responses
@@ -20,17 +20,17 @@ OpenNova is a minimalist AI coding assistant that runs in your terminal. It's de
 - ✅ Interactive REPL with command history
 - ✅ Configuration management (YAML + environment variables)
 
-### Phase 2 (Planned)
-- 🔄 Diff/Patch code modification system
-- 🔄 Plan mode with task decomposition
-- 🔄 Memory and context management
-- 🔄 Security guardrails
-- 🔄 Rich terminal rendering
+### Phase 2 ✅
+- ✅ Diff/Patch code modification system
+- ✅ Plan mode with task decomposition
+- ✅ Memory and context management (token counting, working/project memory)
+- ✅ Security guardrails (dangerous command detection, path sandboxing)
+- ✅ Rich terminal rendering (syntax highlighting, diff preview, progress bars)
 
 ### Phase 3 (Planned)
 - 🔄 MCP (Model Context Protocol) integration
 - 🔄 Skill plugin system
-- 🔄 Cross-session memory
+- 🔄 Cross-session memory persistence
 - 🔄 Project-aware context
 
 ## Installation
@@ -112,12 +112,17 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 
 Inside the interactive REPL:
 
-- `/plan <task>` - Generate a plan before executing
-- `/act <task>` - Execute directly (default)
-- `/tools` - List available tools
-- `/model` - Show current model info
-- `/help` - Show help
-- `/exit` - Exit the REPL
+| Command | Description |
+|---------|-------------|
+| `/plan <task>` | Generate a plan before executing |
+| `/act <task>` | Execute directly (default mode) |
+| `/tools` | List available tools |
+| `/model` | Show current model info |
+| `/config` | Show current configuration |
+| `/history` | Show conversation history |
+| `/clear` | Clear conversation |
+| `/help` | Show help message |
+| `/exit` | Exit the REPL |
 
 ## Built-in Tools
 
@@ -134,23 +139,49 @@ Inside the interactive REPL:
 
 ```
 opennova/
-├── providers/     # LLM provider implementations
-│   ├── base.py    # Abstract provider interface
-│   ├── openai.py
-│   ├── anthropic.py
-│   └── deepseek.py
-├── tools/         # Tool system
-│   ├── base.py    # BaseTool and ToolRegistry
-│   ├── file_tools.py
-│   └── shell_tools.py
-├── runtime/       # Agent runtime
-│   ├── state.py   # Agent state management
-│   ├── loop.py    # ReAct loop
-│   └── agent.py   # Main orchestrator
-├── cli/           # CLI interface
-│   └── repl.py    # Interactive REPL
-└── main.py        # Entry point
+├── providers/         # LLM provider implementations
+│   ├── base.py        # Abstract provider interface
+│   ├── openai.py      # OpenAI GPT-4, o1 support
+│   ├── anthropic.py   # Claude 4, 3.5 support
+│   ├── deepseek.py    # DeepSeek support
+│   └── factory.py     # Provider factory
+├── tools/             # Tool system
+│   ├── base.py        # BaseTool and ToolRegistry
+│   ├── file_tools.py  # File operations
+│   └── shell_tools.py # Shell commands
+├── runtime/           # Agent runtime
+│   ├── state.py       # Agent state management
+│   ├── loop.py        # ReAct loop
+│   └── agent.py       # Main orchestrator
+├── cli/               # CLI interface
+│   ├── repl.py        # Interactive REPL
+│   └── renderer.py    # Rich terminal rendering
+├── diff/              # Diff/Patch system
+│   ├── engine.py      # Diff generation and application
+│   ├── parser.py      # LLM output parsing
+│   └── changeset.py   # File change tracking
+├── memory/            # Memory management
+│   ├── context.py     # Context window management
+│   ├── working.py     # Short-term working memory
+│   └── project.py     # Long-term project memory
+├── planning/          # Planning system
+│   ├── planner.py     # Task decomposition
+│   └── models.py      # Plan data structures
+├── security/          # Security
+│   ├── guardrails.py  # Safety checks
+│   └── sandbox.py     # Path sandboxing
+└── main.py            # Entry point
 ```
+
+## Security Features
+
+OpenNova includes several safety mechanisms:
+
+- **Dangerous Command Detection**: Blocks potentially destructive shell commands
+- **Path Sandboxing**: Restricts file operations to allowed directories
+- **Protected Paths**: Prevents access to system directories (`/etc`, `/usr`, etc.)
+- **Confirmation Prompts**: Requires user confirmation for risky operations
+- **Sensitive File Detection**: Warns when accessing `.env`, `.pem`, and other sensitive files
 
 ## Development
 
@@ -158,11 +189,17 @@ opennova/
 # Run tests
 uv run pytest
 
+# Run tests with coverage
+uv run pytest --cov=opennova
+
 # Type check
 uv run mypy src/opennova
 
 # Format code
 uv run ruff format src/
+
+# Lint
+uv run ruff check src/
 ```
 
 ## License
