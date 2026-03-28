@@ -199,6 +199,10 @@ class REPL:
             self.running = False
             event.app.exit()
 
+        @kb.add("c-c")
+        def _(event):
+            event.app.current_buffer.reset()
+
         return kb
 
     def _get_prompt_style(self) -> Style:
@@ -214,10 +218,9 @@ class REPL:
         self.session = PromptSession(
             history=FileHistory(str(self.history_path)),
             auto_suggest=AutoSuggestFromHistory(),
-            multiline=True,
+            multiline=False,
             mouse_support=True,
             key_bindings=self._setup_key_bindings(),
-            prompt_continuation="... ",
         )
 
         self.renderer.print_welcome()
