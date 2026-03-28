@@ -1,0 +1,80 @@
+[project]
+name = "opennova"
+version = "0.1.0"
+description = "A lightweight CLI AI Coding Agent built from scratch in Python"
+authors = [{ name = "Xingwang Lin", email = "wardell.stephen.curryii@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["ai", "agent", "cli", "coding-assistant", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openai>=1.54.0",
+    "anthropic>=0.39.0",
+    "rich>=13.9.0",
+    "prompt-toolkit>=3.0.48",
+    "click>=8.1.7",
+    "pydantic>=2.9.0",
+    "pyyaml>=6.0.2",
+    "python-dotenv>=1.0.1",
+    "tiktoken>=0.7.0",
+    "httpx>=0.27.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+    "black>=24.8.0",
+]
+
+[project.scripts]
+opennova = "opennova.main:main"
+
+[project.urls]
+Homepage = "https://github.com/Wardell-Stephen-CurryII/OpenNova"
+Repository = "https://github.com/Wardell-Stephen-CurryII/OpenNova"
+Issues = "https://github.com/Wardell-Stephen-CurryII/OpenNova/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"

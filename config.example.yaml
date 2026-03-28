@@ -1,0 +1,41 @@
+# Default configuration template for OpenNova
+# Copy this file to ~/.opennova/config.yaml and fill in your API keys
+
+# Default LLM provider to use
+default_provider: openai
+
+# Provider configurations
+providers:
+  openai:
+    # API key - use environment variable or set directly
+    api_key: ${OPENAI_API_KEY}
+    base_url: https://api.openai.com/v1
+    default_model: gpt-4o
+  
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    default_model: claude-sonnet-4
+  
+  deepseek:
+    api_key: ${DEEPSEEK_API_KEY}
+    base_url: https://api.deepseek.com/v1
+    default_model: deepseek-chat
+
+# Agent behavior configuration
+agent:
+  # Maximum iterations in ReAct loop
+  max_iterations: 20
+  
+  # Auto-confirm dangerous operations (not recommended)
+  auto_confirm: false
+  
+  # Show LLM thinking process
+  show_thinking: true
+
+# Security settings
+security:
+  # Enable sandbox mode for file operations
+  sandbox_mode: true
+  
+  # Timeout for shell commands (seconds)
+  command_timeout: 30
