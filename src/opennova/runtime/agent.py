@@ -124,7 +124,12 @@ class AgentRuntime:
             ProjectAnalyzerSkill,
         )
 
-        for skill_cls in [CodeReviewSkill, DocumentationSkill, GitHelperSkill, ProjectAnalyzerSkill]:
+        for skill_cls in [
+            CodeReviewSkill,
+            DocumentationSkill,
+            GitHelperSkill,
+            ProjectAnalyzerSkill,
+        ]:
             instance = skill_cls()
             if instance.name not in excluded:
                 self.skill_registry.register(instance)
@@ -253,12 +258,14 @@ class AgentRuntime:
                 step_task = step.description
                 result = await self._run_act_mode(step_task, stream=stream)
 
-                if "error" in result.lower() or "failed" in result.lower():
+                if result and ("error" in result.lower() or "failed" in result.lower()):
                     plan.mark_step_failed(step.id, result)
                     if not self._should_continue_on_failure():
                         break
-                else:
+                elif result:
                     plan.mark_step_done(step.id, result)
+                else:
+                    plan.mark_step_failed(step.id, "No result returned")
 
         return self.state.last_result or "Plan execution complete"
 
@@ -299,7 +306,8 @@ Only respond with the JSON object, no other text."""
         try:
             import json
 
-            data = json.loads(response.content)
+            content = response.content or "{}"
+            data = json.loads(content)
 
             steps = [
                 PlanStep(

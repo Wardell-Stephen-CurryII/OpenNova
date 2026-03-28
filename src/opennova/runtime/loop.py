@@ -9,6 +9,7 @@ Implements the core Reason-Act-Observe cycle:
 """
 
 import json
+import traceback
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -77,6 +78,7 @@ class ReActLoop:
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
         self.on_stream: Callable | None = None
+        self._errors: list[str] = []
 
     def set_context(self, messages: list[Message]) -> None:
         """Set initial conversation context."""
@@ -107,11 +109,14 @@ class ReActLoop:
         Returns:
             Final result string
         """
+        import traceback
+
         self.state.reset(task)
         self.on_thought = on_thought
         self.on_action = on_action
         self.on_result = on_result
         self.on_stream = on_stream
+        self._errors = []
 
         if not self.messages:
             self.messages = [
@@ -136,7 +141,7 @@ class ReActLoop:
                 action = self._parse_response(response)
 
                 if action.is_final:
-                    self.state.mark_complete(action.thought or response.content)
+                    self.state.mark_complete(action.thought or response.content or "")
                     break
 
                 if action.tool_name and action.tool_name in self.tool_registry:
@@ -159,11 +164,15 @@ class ReActLoop:
 
             except Exception as e:
                 self.state.increment_error()
-                error_msg = f"Error in iteration {self.state.iteration}: {e}"
+                error_detail = f"Error in iteration {self.state.iteration}: {type(e).__name__}: {e}"
+                tb = traceback.format_exc()
+                full_error = f"{error_detail}\n\nTraceback:\n{tb}"
+                self._errors.append(full_error)
+                print(f"\n[ERROR] {full_error}\n")
                 self.messages.append(
                     Message(
                         role="user",
-                        content=f"An error occurred: {error_msg}. Please try a different approach.",
+                        content=f"An error occurred: {error_detail}. Please try a different approach.",
                     )
                 )
 
@@ -171,7 +180,8 @@ class ReActLoop:
             return f"Task incomplete: reached maximum iterations ({self.max_iterations})"
 
         if self.state.has_too_many_errors():
-            return f"Task failed: too many errors ({self.state.error_count})"
+            error_summary = "\n\n".join(self._errors)
+            return f"Task failed: too many errors ({self.state.error_count})\n\nDetailed errors:\n{error_summary}"
 
         return self.state.last_result or "Task completed"
 
@@ -228,17 +238,18 @@ class ReActLoop:
         Returns:
             Parsed action with tool name and arguments
         """
+        content = response.content or ""
         action = ParsedAction(
-            thought=response.content,
+            thought=content,
             tool_name="",
             arguments={},
-            raw_response=response.content,
+            raw_response=content,
         )
 
         if response.tool_calls:
             tool_call = response.tool_calls[0]
             action.tool_name = tool_call.name
-            action.arguments = tool_call.arguments
+            action.arguments = tool_call.arguments or {}
 
             if self._is_dangerous_action(action.tool_name, action.arguments):
                 action.requires_confirmation = True
@@ -316,7 +327,9 @@ class ReActLoop:
 
             for name, prop in props.items():
                 req = " (required)" if name in required else ""
-                params_desc.append(f"    - {name}: {prop.get('description', prop.get('type', ''))}{req}")
+                params_desc.append(
+                    f"    - {name}: {prop.get('description', prop.get('type', ''))}{req}"
+                )
 
             params_str = "\n".join(params_desc) if params_desc else "    No parameters"
             tools_description.append(f"- {schema.name}: {schema.description}\n{params_str}")

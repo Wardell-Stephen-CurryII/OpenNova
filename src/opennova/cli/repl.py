@@ -44,6 +44,8 @@ class Renderer:
 
     def print_thinking(self, thought: str) -> None:
         """Display thinking process."""
+        if thought is None:
+            thought = "(thinking...)"
         self.console.print(Panel(thought, title="💭 Thinking", border_style="yellow"))
 
     def print_action(self, tool_name: str, args: dict[str, Any]) -> None:
@@ -60,7 +62,7 @@ class Renderer:
             style = "red"
             icon = "❌"
 
-        output = result.output
+        output = result.output or ""
         if len(output) > 500:
             output = output[:500] + "\n... [truncated]"
 
@@ -179,9 +181,7 @@ class REPL:
         self.config = config
         self.renderer = Renderer()
 
-        history_path = (
-            Path(history_file) if history_file else Path.home() / ".opennova" / "history"
-        )
+        history_path = Path(history_file) if history_file else Path.home() / ".opennova" / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.session: PromptSession | None = None
@@ -215,6 +215,8 @@ class REPL:
 
     async def start(self) -> None:
         """Start the REPL."""
+        import traceback as tb
+
         self.session = PromptSession(
             history=FileHistory(str(self.history_path)),
             auto_suggest=AutoSuggestFromHistory(),
@@ -232,6 +234,9 @@ class REPL:
                     style=self._get_prompt_style(),
                 )
 
+                if user_input is None:
+                    continue
+
                 user_input = user_input.strip()
 
                 if not user_input:
@@ -246,7 +251,9 @@ class REPL:
                 self.running = False
                 break
             except Exception as e:
-                self.renderer.print_error(str(e))
+                print(f"\n[ERROR] {type(e).__name__}: {e}")
+                print("Traceback:")
+                tb.print_exc()
 
         self.renderer.print_success("Goodbye!")
 
@@ -340,6 +347,7 @@ class REPL:
 
     async def _execute_task(self, task: str) -> None:
         """Execute a task with streaming output."""
+        import traceback
 
         def on_thought(thought: str) -> None:
             self.renderer.print_thinking(thought)
@@ -359,9 +367,19 @@ class REPL:
         self.agent.register_callback("stream", on_stream)
 
         print()
-        result = await self.agent.run(task)
-        print()
-        self.renderer.print_markdown(result)
+        try:
+            result = await self.agent.run(task)
+            print()
+            if result is None:
+                self.renderer.print_error("Task returned None - check logs for details")
+            else:
+                self.renderer.print_markdown(result)
+        except Exception as e:
+            print()
+            error_msg = f"Exception during task execution: {type(e).__name__}: {e}"
+            self.renderer.print_error(error_msg)
+            print("\nFull traceback:")
+            traceback.print_exc()
 
 
 async def run_repl(config: Config) -> None:
