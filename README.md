@@ -27,11 +27,11 @@ OpenNova is a minimalist AI coding assistant that runs in your terminal. It's de
 - ✅ Security guardrails (dangerous command detection, path sandboxing)
 - ✅ Rich terminal rendering (syntax highlighting, diff preview, progress bars)
 
-### Phase 3 (Planned)
-- 🔄 MCP (Model Context Protocol) integration
-- 🔄 Skill plugin system
-- 🔄 Cross-session memory persistence
-- 🔄 Project-aware context
+### Phase 3 ✅
+- ✅ MCP (Model Context Protocol) integration
+- ✅ Skill plugin system with auto-discovery
+- ✅ Built-in example skills (code review, docs generator, git helper)
+- ✅ Extensible architecture for custom tools
 
 ## Installation
 
@@ -78,6 +78,27 @@ agent:
   max_iterations: 20
   auto_confirm: false
   show_thinking: true
+
+# MCP server configuration
+mcp:
+  enabled: true
+  servers:
+    - name: filesystem
+      transport: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "./src"]
+    - name: github
+      transport: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+      env:
+        GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+
+# Skills configuration
+skills:
+  enabled: true
+  dirs: []
+  exclude: []
 ```
 
 Or use environment variables:
@@ -117,6 +138,7 @@ Inside the interactive REPL:
 | `/plan <task>` | Generate a plan before executing |
 | `/act <task>` | Execute directly (default mode) |
 | `/tools` | List available tools |
+| `/skills` | List loaded skills |
 | `/model` | Show current model info |
 | `/config` | Show current configuration |
 | `/history` | Show conversation history |
@@ -134,6 +156,67 @@ Inside the interactive REPL:
 | `delete_file` | Delete a file (requires confirmation) |
 | `list_directory` | List directory contents |
 | `execute_command` | Execute shell commands |
+
+## Built-in Skills
+
+OpenNova includes several example skills:
+
+| Skill | Description |
+|-------|-------------|
+| `code_review` | Review code for quality and best practices |
+| `generate_docs` | Generate documentation/docstrings |
+| `git_helper` | Git command assistance |
+| `analyze_project` | Analyze project structure |
+
+## Creating Custom Skills
+
+Create a skill file in `~/.opennova/skills/my_skill.py`:
+
+```python
+from opennova.skills.base import BaseSkill, SkillMetadata
+from opennova.tools.base import ToolResult
+
+
+class MySkill(BaseSkill):
+    """My custom skill."""
+
+    name = "my_skill"
+    description = "Does something useful"
+
+    metadata = SkillMetadata(
+        name="my_skill",
+        version="1.0.0",
+        description="A custom skill",
+        author="Your Name",
+    )
+
+    def execute(self, **kwargs) -> ToolResult:
+        # Your skill logic here
+        return ToolResult(success=True, output="Done!")
+```
+
+Skills are auto-discovered from:
+- `~/.opennova/skills/`
+- `.opennova/skills/`
+- Configured directories
+
+## MCP Integration
+
+OpenNova supports Model Context Protocol (MCP) servers for extended capabilities:
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    - name: filesystem
+      transport: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+```
+
+Supported transports:
+- **stdio**: Launch subprocess, communicate via stdin/stdout
+- **sse**: Connect via Server-Sent Events
 
 ## Architecture
 
@@ -170,6 +253,13 @@ opennova/
 ├── security/          # Security
 │   ├── guardrails.py  # Safety checks
 │   └── sandbox.py     # Path sandboxing
+├── mcp/               # MCP integration
+│   ├── types.py       # MCP data types
+│   └── connector.py   # MCP server connections
+├── skills/            # Skills system
+│   ├── base.py        # BaseSkill and loader
+│   ├── registry.py    # Skill management
+│   └── examples.py    # Example skills
 └── main.py            # Entry point
 ```
 

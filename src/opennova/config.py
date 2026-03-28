@@ -43,6 +43,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "sandbox_mode": True,
         "command_timeout": 30,
     },
+    "mcp": {
+        "enabled": True,
+        "servers": [],
+    },
+    "skills": {
+        "enabled": True,
+        "dirs": [],
+        "exclude": [],
+    },
 }
 
 
@@ -91,6 +100,25 @@ class Config:
 
         with open(save_path, "w") as f:
             yaml.dump(self.data, f, default_flow_style=False, sort_keys=False)
+
+    def get_mcp_servers(self) -> list[dict[str, Any]]:
+        """Get MCP server configurations."""
+        mcp_config = self.get("mcp", {})
+        if not mcp_config.get("enabled", True):
+            return []
+        return mcp_config.get("servers", [])
+
+    def get_skill_dirs(self) -> list[str]:
+        """Get skill directories to load from."""
+        skills_config = self.get("skills", {})
+        if not skills_config.get("enabled", True):
+            return []
+        return skills_config.get("dirs", [])
+
+    def get_excluded_skills(self) -> list[str]:
+        """Get list of excluded skill names."""
+        skills_config = self.get("skills", {})
+        return skills_config.get("exclude", [])
 
 
 def _expand_env_vars(value: Any) -> Any:
