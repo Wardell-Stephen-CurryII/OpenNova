@@ -190,8 +190,6 @@ class REPL:
         self.running = True
         self.current_task: str = ""
 
-        self._setup_key_bindings()
-
     def _setup_key_bindings(self) -> KeyBindings:
         """Set up key bindings."""
         kb = KeyBindings()
@@ -218,6 +216,8 @@ class REPL:
             auto_suggest=AutoSuggestFromHistory(),
             multiline=True,
             mouse_support=True,
+            key_bindings=self._setup_key_bindings(),
+            prompt_continuation="... ",
         )
 
         self.renderer.print_welcome()
