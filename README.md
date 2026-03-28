@@ -2,6 +2,8 @@
 
 A lightweight CLI AI Coding Agent built from scratch in Python.
 
+**[快速开始](docs/QUICKSTART.md)** | **[完整教程](docs/TUTORIAL.md)** | **[API 文档](docs/API.md)**
+
 ## Overview
 
 OpenNova is a minimalist AI coding assistant that runs in your terminal. It's designed to be:
