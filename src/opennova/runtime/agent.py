@@ -107,6 +107,10 @@ class AgentRuntime:
         )
         from opennova.tools.agent_tools import AgentTool, SendMessageTool
         from opennova.tools.ask_question_tool import AskUserQuestionTool
+        from opennova.tools.plan_mode_tools import (
+            EnterPlanModeTool,
+            ExitPlanModeTool,
+        )
 
         # File and shell tools
         self.tool_registry.register(ReadFileTool())
@@ -130,6 +134,10 @@ class AgentRuntime:
 
         # User interaction tools
         self.tool_registry.register(AskUserQuestionTool())
+
+        # Plan mode tools
+        self.tool_registry.register(EnterPlanModeTool())
+        self.tool_registry.register(ExitPlanModeTool())
 
     def _init_skills(self) -> None:
         """Initialize skill loading."""
