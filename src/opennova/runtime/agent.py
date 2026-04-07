@@ -111,6 +111,7 @@ class AgentRuntime:
             EnterPlanModeTool,
             ExitPlanModeTool,
         )
+        from opennova.tools.web_tools import WebFetchTool, WebSearchTool
 
         # File and shell tools
         self.tool_registry.register(ReadFileTool())
@@ -138,6 +139,10 @@ class AgentRuntime:
         # Plan mode tools
         self.tool_registry.register(EnterPlanModeTool())
         self.tool_registry.register(ExitPlanModeTool())
+
+        # Web tools
+        self.tool_registry.register(WebSearchTool())
+        self.tool_registry.register(WebFetchTool())
 
     def _init_skills(self) -> None:
         """Initialize skill loading."""
