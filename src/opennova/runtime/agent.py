@@ -17,6 +17,7 @@ from opennova.providers.base import BaseLLMProvider, Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
 from opennova.runtime.loop import ParsedAction, ReActLoop, run_simple_task
 from opennova.runtime.state import AgentState, AgentMode, Plan
+from opennova.tasks import TaskManager
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult, register_builtin_tools
 
 
@@ -52,6 +53,7 @@ class AgentRuntime:
         self.config = config
         self.state = AgentState()
         self.tool_registry = ToolRegistry()
+        self.task_manager = TaskManager()
 
         agent_config = config.get("agent", {})
         self.max_iterations = agent_config.get("max_iterations", 20)
@@ -65,6 +67,10 @@ class AgentRuntime:
 
         self.mcp_manager = None
         self.skill_registry = None
+
+        # Set global task manager for task tools
+        from opennova.tools.task_tools import set_global_task_manager
+        set_global_task_manager(self.task_manager)
 
         if register_default_tools:
             self._register_builtin_tools()
@@ -91,13 +97,30 @@ class AgentRuntime:
             WriteFileTool,
         )
         from opennova.tools.shell_tools import ExecuteCommandTool
+        from opennova.tools.task_tools import (
+            TaskCreateTool,
+            TaskGetTool,
+            TaskListTool,
+            TaskOutputTool,
+            TaskStopTool,
+            TaskUpdateTool,
+        )
 
+        # File and shell tools
         self.tool_registry.register(ReadFileTool())
         self.tool_registry.register(WriteFileTool())
         self.tool_registry.register(CreateFileTool())
         self.tool_registry.register(DeleteFileTool())
         self.tool_registry.register(ListDirectoryTool())
         self.tool_registry.register(ExecuteCommandTool(config=tool_config))
+
+        # Task management tools (Claude Code-style)
+        self.tool_registry.register(TaskCreateTool())
+        self.tool_registry.register(TaskListTool())
+        self.tool_registry.register(TaskGetTool())
+        self.tool_registry.register(TaskUpdateTool())
+        self.tool_registry.register(TaskStopTool())
+        self.tool_registry.register(TaskOutputTool())
 
     def _init_skills(self) -> None:
         """Initialize skill loading."""
