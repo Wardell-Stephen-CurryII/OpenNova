@@ -44,7 +44,12 @@ class Renderer:
 
     def __init__(self, console: Console | None = None):
         """Initialize renderer with optional console."""
-        self.console = console or Console()
+        self.console = console or Console(
+            force_terminal=True,
+            soft_wrap=False,  # Disable soft wrap to allow terminal scrolling
+            markup=True,
+            highlight=True,
+        )
 
     def print(self, message: Any = "", **kwargs) -> None:
         """Print message to console."""
@@ -155,9 +160,9 @@ class Renderer:
     def print_stream(self, chunk: StreamChunk) -> None:
         """Display streaming chunk."""
         if chunk.content:
-            print(chunk.content, end="", flush=True)
+            self.console.print(chunk.content, end="", markup=False)
         if chunk.finish_reason:
-            print()
+            self.console.print()
 
     def print_plan(self, plan: Plan, show_progress: bool = True) -> None:
         """Display a plan with status."""

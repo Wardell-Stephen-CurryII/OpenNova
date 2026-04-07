@@ -175,7 +175,12 @@ async def _run_single_task(
     from opennova.providers.base import StreamChunk
     from opennova.tools.base import ToolResult
 
-    console = Console()
+    console = Console(
+        force_terminal=True,
+        soft_wrap=True,
+        markup=True,
+        highlight=True,
+    )
 
     agent = AgentRuntime(config)
 
