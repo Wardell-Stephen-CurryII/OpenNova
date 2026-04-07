@@ -377,7 +377,10 @@ class MCPConnector:
             },
         )
 
-        await self._send_request("notifications/initialized")
+        # Wait for initialized notification from server
+        # Note: According to MCP spec, server should send notifications/initialized
+        # after receiving initialize request. We'll wait for it in the listen loop.
+        # For now, we'll proceed without waiting for the notification.
 
         return MCPServerInfo.from_dict(result, self.config.name)
 

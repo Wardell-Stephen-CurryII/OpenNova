@@ -144,12 +144,14 @@ class AgentRuntime:
             return
 
         self.mcp_manager = MCPManager(self.tool_registry)
+        self._mcp_server_configs: list[MCPServerConfig] = []
 
         servers = mcp_config.get("servers", [])
         for server_data in servers:
             try:
                 server_config = MCPServerConfig.from_dict(server_data)
-                self.mcp_manager.add_server(server_config)
+                # Store config for later connection
+                self._mcp_server_configs.append(server_config)
             except Exception:
                 pass
 
@@ -163,12 +165,8 @@ class AgentRuntime:
         if not self.mcp_manager:
             return {}
 
-        from opennova.mcp.types import MCPServerConfig
-
-        servers = self.config.get("mcp", {}).get("servers", [])
-        configs = [MCPServerConfig.from_dict(s) for s in servers]
-
-        return await self.mcp_manager.connect_all(configs)
+        # Use stored configs instead of re-parsing from config
+        return await self.mcp_manager.connect_all(self._mcp_server_configs)
 
     async def disconnect_mcp_servers(self) -> None:
         """Disconnect from all MCP servers."""
