@@ -228,8 +228,6 @@ class REPL:
             multiline=False,
             mouse_support=False,  # Disable mouse support to allow terminal scrolling
             key_bindings=self._setup_key_bindings(),
-            # Disable full screen mode to allow terminal scrolling
-            enable_page_navigation_bindings=True,
         )
 
         self.renderer.print_welcome()
@@ -239,8 +237,6 @@ class REPL:
                 user_input = await self.session.prompt_async(
                     "opennova> ",
                     style=self._get_prompt_style(),
-                    # Use non-fullscreen mode
-                    enable_suspend=True,
                 )
 
                 if user_input is None:
