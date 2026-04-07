@@ -105,6 +105,7 @@ class AgentRuntime:
             TaskStopTool,
             TaskUpdateTool,
         )
+        from opennova.tools.agent_tools import AgentTool, SendMessageTool
 
         # File and shell tools
         self.tool_registry.register(ReadFileTool())
@@ -121,6 +122,10 @@ class AgentRuntime:
         self.tool_registry.register(TaskUpdateTool())
         self.tool_registry.register(TaskStopTool())
         self.tool_registry.register(TaskOutputTool())
+
+        # Agent tools (Claude Code-style)
+        self.tool_registry.register(AgentTool())
+        self.tool_registry.register(SendMessageTool())
 
     def _init_skills(self) -> None:
         """Initialize skill loading."""
