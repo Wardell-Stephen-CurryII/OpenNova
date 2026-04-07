@@ -112,6 +112,13 @@ class AgentRuntime:
             ExitPlanModeTool,
         )
         from opennova.tools.web_tools import WebFetchTool, WebSearchTool
+        from opennova.tools.git_tools import (
+            GitBranchTool,
+            GitCommitTool,
+            GitDiffTool,
+            GitLogTool,
+            GitStatusTool,
+        )
 
         # File and shell tools
         self.tool_registry.register(ReadFileTool())
@@ -143,6 +150,13 @@ class AgentRuntime:
         # Web tools
         self.tool_registry.register(WebSearchTool())
         self.tool_registry.register(WebFetchTool())
+
+        # Git tools
+        self.tool_registry.register(GitCommitTool())
+        self.tool_registry.register(GitStatusTool())
+        self.tool_registry.register(GitDiffTool())
+        self.tool_registry.register(GitLogTool())
+        self.tool_registry.register(GitBranchTool())
 
     def _init_skills(self) -> None:
         """Initialize skill loading."""
