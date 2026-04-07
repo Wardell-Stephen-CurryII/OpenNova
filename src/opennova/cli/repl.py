@@ -38,7 +38,7 @@ class Renderer:
     def __init__(self, console: Console | None = None):
         self.console = console or Console(
             force_terminal=True,
-            soft_wrap=True,
+            soft_wrap=False,  # Disable soft wrap to allow terminal scrolling
             markup=True,
             highlight=True,
         )

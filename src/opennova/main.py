@@ -177,7 +177,7 @@ async def _run_single_task(
 
     console = Console(
         force_terminal=True,
-        soft_wrap=True,
+        soft_wrap=False,  # Disable soft wrap to allow terminal scrolling
         markup=True,
         highlight=True,
     )
