@@ -445,6 +445,7 @@ Only respond with the JSON object, no other text."""
             max_iterations=self.max_iterations,
             stream=stream,
             progress_callback=progress_callback,
+            iteration_start_callback=lambda messages: self._emit("iteration_start", messages),
         )
 
         def on_thought(thought: str) -> None:

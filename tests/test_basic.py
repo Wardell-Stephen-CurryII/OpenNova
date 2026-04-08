@@ -4,6 +4,8 @@ import asyncio
 import pytest
 
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
+from opennova.tools.agent_tools import AgentTool, SendMessageTool
+from opennova.tools.task_tools import set_global_task_manager
 from opennova.providers.base import Message, ToolSchema
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.state import AgentState
@@ -147,6 +149,105 @@ async def test_react_loop_reports_progress():
     assert progress_events[-1]["is_complete"] is True
 
 
+@pytest.mark.asyncio
+async def test_agent_tool_applies_follow_up_messages_during_run():
+    """Queued follow-up messages should be injected into an active child agent."""
+
+    class RecordingProvider(DummyProvider):
+        def __init__(self):
+            self.calls = 0
+            self.snapshots = []
+
+        async def chat(self, messages, tools=None, **kwargs):
+            from opennova.providers.base import FinishReason, LLMResponse
+
+            self.calls += 1
+            self.snapshots.append([message.content for message in messages])
+            if self.calls == 1:
+                await asyncio.sleep(0.05)
+                return LLMResponse(content="still working", finish_reason=FinishReason.LENGTH)
+            return LLMResponse(content="done", finish_reason=FinishReason.STOP)
+
+    class RecordingRuntime:
+        def __init__(self):
+            self.child_runtime = None
+
+        def create_child_runtime(self):
+            runtime = type("ChildRuntime", (), {})()
+            runtime.state = AgentState()
+            runtime.callback = None
+            runtime.llm = RecordingProvider()
+            runtime.tool_registry = ToolRegistry()
+            runtime.enable_mcp = False
+            runtime.enable_skills = False
+            runtime.register_default_tools = True
+
+            def register_callback(event, callback):
+                if event == "iteration_start":
+                    runtime.callback = callback
+
+            async def run(prompt, mode="act", stream=False, progress_callback=None):
+                loop = ReActLoop(
+                    llm=runtime.llm,
+                    tool_registry=runtime.tool_registry,
+                    state=runtime.state,
+                    stream=stream,
+                    progress_callback=progress_callback,
+                    iteration_start_callback=runtime.callback,
+                    max_iterations=3,
+                )
+                return await loop.run(prompt)
+
+            runtime.register_callback = register_callback
+            runtime.run = run
+            self.child_runtime = runtime
+            return runtime
+
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    runtime = RecordingRuntime()
+    tool = AgentTool(config={"runtime": runtime})
+
+    launch = tool.execute(
+        description="background recorder",
+        prompt="Record follow-ups",
+        run_in_background=True,
+    )
+
+    agent_id = launch.metadata["agentId"]
+    await asyncio.sleep(0.01)
+
+    send_result = SendMessageTool().execute(to=agent_id, message="Please include the follow-up")
+
+    assert send_result.success is True
+    assert send_result.metadata["pending_messages"] == 1
+
+    await asyncio.sleep(0.12)
+
+    task = manager.get_task(agent_id)
+    snapshots = runtime.child_runtime.llm.snapshots
+
+    assert task is not None
+    assert task.status == TaskStatus.COMPLETED
+    assert task.session_state["last_user_message"] == "Please include the follow-up"
+    assert task.session_state["pending_messages"] == 0
+    assert any("Additional instruction from the parent conversation:\nPlease include the follow-up" in snapshot for snapshot in snapshots)
+
+
+def test_send_message_reports_pending_queue_length():
+    """send_message should track queued follow-ups for running agents."""
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    task = manager.create_task(TaskType.LOCAL_AGENT, "Agent: queued")
+    manager.update_task_status(task.id, TaskStatus.RUNNING)
+
+    result = SendMessageTool().execute(to=task.id, message="hello")
+
+    assert result.success is True
+    assert result.metadata["pending_messages"] == 1
+    assert task.message_queue[0]["content"] == "hello"
+
+
 def test_create_child_runtime_inherits_flags():
     """Child runtimes should inherit config and feature flags."""
     config = {
@@ -171,3 +272,4 @@ def test_create_child_runtime_inherits_flags():
     assert child.register_default_tools == runtime.register_default_tools
     assert child.enable_mcp == runtime.enable_mcp
     assert child.enable_skills == runtime.enable_skills
+

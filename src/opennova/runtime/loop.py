@@ -58,6 +58,7 @@ class ReActLoop:
         max_iterations: int = 20,
         stream: bool = True,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        iteration_start_callback: Callable[[list[Message]], None] | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -75,6 +76,7 @@ class ReActLoop:
         self.max_iterations = max_iterations
         self.stream = stream
         self.progress_callback = progress_callback
+        self.iteration_start_callback = iteration_start_callback
         self.messages: list[Message] = []
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
@@ -136,6 +138,7 @@ class ReActLoop:
             and self.state.iteration < self.max_iterations
             and not self.state.has_too_many_errors()
         ):
+            self._emit_iteration_start()
             self.state.increment_iteration()
 
             try:
@@ -217,6 +220,11 @@ class ReActLoop:
             "is_complete": mark_complete,
         }
         self.progress_callback(payload)
+
+    def _emit_iteration_start(self) -> None:
+        """Notify listeners before a new iteration begins."""
+        if self.iteration_start_callback:
+            self.iteration_start_callback(self.messages)
 
     async def _think(self) -> LLMResponse:
         """

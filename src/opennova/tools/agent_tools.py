@@ -9,11 +9,11 @@ Provides:
 """
 
 import asyncio
-import copy
 from datetime import datetime
 from typing import Any
 
-from opennova.tasks import Task, TaskManager, TaskStatus, TaskType, TaskResult
+from opennova.providers.base import Message
+from opennova.tasks import Task, TaskStatus, TaskType
 from opennova.tools.base import BaseTool, ToolResult
 from opennova.tools.task_tools import get_global_task_manager
 
@@ -104,6 +104,7 @@ class AgentTool(BaseTool):
 
                 if result["success"]:
                     manager.update_task_status(task.id, TaskStatus.COMPLETED)
+                    manager.set_session_state(task.id, child_session_state=result.get("session_state", {}))
                     return ToolResult(
                         success=True,
                         output=result.get("output", "Agent completed successfully"),
@@ -162,10 +163,43 @@ class AgentTool(BaseTool):
                     enable_skills=False,
                 )
 
-            # Replay queued user follow-ups into the child runtime before execution
+            injected_messages: list[str] = []
             for message in task.messages:
                 if message.get("type") == "user_message":
-                    agent_runtime.state.last_result = message.get("content")
+                    content = message.get("content")
+                    if content:
+                        injected_messages.append(content)
+
+            if injected_messages:
+                combined_prompt = "\n\n".join(injected_messages)
+                agent_runtime.state.last_result = combined_prompt
+
+            def on_iteration_start(loop_messages: list[Message]) -> None:
+                queued_messages = manager.dequeue_messages(task.id)
+                if not queued_messages:
+                    return
+
+                followups = [
+                    message.get("content", "")
+                    for message in queued_messages
+                    if message.get("type") == "user_message" and message.get("content")
+                ]
+                if not followups:
+                    return
+
+                combined_followup = "\n\n".join(followups)
+                loop_messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            "Additional instruction from the parent conversation:\n"
+                            f"{combined_followup}"
+                        ),
+                    )
+                )
+                manager.set_session_state(task.id, last_user_message=followups[-1])
+
+            agent_runtime.register_callback("iteration_start", on_iteration_start)
 
             # Run the agent with progress reporting
             result = await agent_runtime.run(prompt, mode="act", stream=False, progress_callback=on_progress)
@@ -179,6 +213,7 @@ class AgentTool(BaseTool):
                 "duration_ms": duration_ms,
                 "tool_count": usage.tool_uses if usage else 0,
                 "token_count": usage.total_tokens if usage else 0,
+                "session_state": dict(task.session_state),
             }
         except Exception as e:
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -227,6 +262,7 @@ class AgentTool(BaseTool):
                 # Mark as notified
                 task.notified = True
                 manager.update_task_progress(task.id, activity="Agent completed", mark_complete=True)
+                manager.set_session_state(task.id, child_session_state=result.get("session_state", {}), pending_messages=0)
 
             else:
                 manager.update_task_status(task.id, TaskStatus.FAILED)
@@ -345,8 +381,15 @@ class SendMessageTool(BaseTool):
                     "timestamp": datetime.now().isoformat(),
                 },
             )
+            task.message_queue.append(
+                {
+                    "type": "user_message",
+                    "content": message,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
             manager.update_task_progress(to, activity="Received follow-up message")
-            manager.set_session_state(to, last_user_message=message)
+            manager.set_session_state(to, last_user_message=message, pending_messages=len(task.message_queue))
 
             return ToolResult(
                 success=True,
@@ -355,6 +398,7 @@ class SendMessageTool(BaseTool):
                     "agent_id": to,
                     "queued_message": message,
                     "message_count": len(task.messages),
+                    "pending_messages": len(task.message_queue),
                 },
             )
         except Exception as e:

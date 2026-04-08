@@ -104,6 +104,7 @@ class Task:
     usage: TaskUsage = field(default_factory=TaskUsage)
     messages: list[dict[str, Any]] = field(default_factory=list)
     session_state: dict[str, Any] = field(default_factory=dict)
+    message_queue: list[dict[str, Any]] = field(default_factory=list)
     retain: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -137,6 +138,7 @@ class Task:
             },
             "messages": self.messages,
             "session_state": self.session_state,
+            "message_queue": self.message_queue,
             "retain": self.retain,
             "metadata": self.metadata,
         }
@@ -171,6 +173,7 @@ class Task:
             usage=usage,
             messages=data.get("messages", []),
             session_state=data.get("session_state", {}),
+            message_queue=data.get("message_queue", []),
             retain=data.get("retain", True),
             metadata=data.get("metadata", {}),
         )
@@ -402,6 +405,23 @@ class TaskManager:
             return False
         task.session_state.update(state)
         return True
+
+    def dequeue_messages(self, task_id: str) -> list[dict[str, Any]]:
+        """Remove and return queued messages for a task."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return []
+
+        queued = task.message_queue.copy()
+        task.message_queue.clear()
+        return queued
+
+    def has_pending_messages(self, task_id: str) -> bool:
+        """Check whether a task has queued follow-up messages."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+        return bool(task.message_queue)
 
     def set_cleanup_callback(self, task_id: str, callback: Callable[[], None]) -> None:
         """Set cleanup callback for a task."""
