@@ -10,6 +10,7 @@ Manages the agent lifecycle:
 - Skill loading
 """
 
+import copy
 import os
 from typing import Any, Callable
 
@@ -54,6 +55,9 @@ class AgentRuntime:
         self.state = AgentState()
         self.tool_registry = ToolRegistry()
         self.task_manager = TaskManager()
+        self.register_default_tools = register_default_tools
+        self.enable_mcp = enable_mcp
+        self.enable_skills = enable_skills
 
         agent_config = config.get("agent", {})
         self.max_iterations = agent_config.get("max_iterations", 20)
@@ -137,7 +141,7 @@ class AgentRuntime:
         self.tool_registry.register(TaskOutputTool())
 
         # Agent tools (Claude Code-style)
-        self.tool_registry.register(AgentTool())
+        self.tool_registry.register(AgentTool(config={"runtime": self}))
         self.tool_registry.register(SendMessageTool())
 
         # User interaction tools
@@ -232,6 +236,16 @@ class AgentRuntime:
         if self.mcp_manager:
             await self.mcp_manager.disconnect_all()
 
+    def create_child_runtime(self) -> "AgentRuntime":
+        """Create a child runtime that inherits this runtime's configuration."""
+        child = AgentRuntime(
+            config=copy.deepcopy(self.config),
+            register_default_tools=self.register_default_tools,
+            enable_mcp=self.enable_mcp,
+            enable_skills=self.enable_skills,
+        )
+        return child
+
     def register_tool(self, tool: BaseTool) -> None:
         """
         Register a custom tool.
@@ -261,6 +275,7 @@ class AgentRuntime:
         task: str,
         mode: str = "act",
         stream: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         """
         Run the agent on a task.
@@ -279,7 +294,7 @@ class AgentRuntime:
         if mode == "plan":
             return await self._run_plan_mode(task, stream=stream)
         else:
-            return await self._run_act_mode(task, stream=stream)
+            return await self._run_act_mode(task, stream=stream, progress_callback=progress_callback)
 
     async def _run_plan_mode(self, task: str, stream: bool = True) -> str:
         """
@@ -407,7 +422,12 @@ Only respond with the JSON object, no other text."""
         """Whether to continue execution after a step failure."""
         return False
 
-    async def _run_act_mode(self, task: str, stream: bool = True) -> str:
+    async def _run_act_mode(
+        self,
+        task: str,
+        stream: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> str:
         """
         Run in act mode: execute directly without planning.
 
@@ -424,6 +444,7 @@ Only respond with the JSON object, no other text."""
             state=self.state,
             max_iterations=self.max_iterations,
             stream=stream,
+            progress_callback=progress_callback,
         )
 
         def on_thought(thought: str) -> None:

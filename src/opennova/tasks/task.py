@@ -103,6 +103,7 @@ class Task:
     progress: TaskProgressData = field(default_factory=TaskProgressData)
     usage: TaskUsage = field(default_factory=TaskUsage)
     messages: list[dict[str, Any]] = field(default_factory=list)
+    session_state: dict[str, Any] = field(default_factory=dict)
     retain: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -134,6 +135,8 @@ class Task:
                 "tool_uses": self.usage.tool_uses,
                 "duration_ms": self.usage.duration_ms,
             },
+            "messages": self.messages,
+            "session_state": self.session_state,
             "retain": self.retain,
             "metadata": self.metadata,
         }
@@ -167,6 +170,7 @@ class Task:
             progress=progress,
             usage=usage,
             messages=data.get("messages", []),
+            session_state=data.get("session_state", {}),
             retain=data.get("retain", True),
             metadata=data.get("metadata", {}),
         )
@@ -360,6 +364,43 @@ class TaskManager:
         if not task:
             return False
         task.messages.append(message)
+        return True
+
+    def update_task_progress(
+        self,
+        task_id: str,
+        activity: str | None = None,
+        token_count: int = 0,
+        tool_use_increment: int = 0,
+        last_tool_name: str | None = None,
+        mark_complete: bool = False,
+    ) -> bool:
+        """Update progress and aggregate usage for a task."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+
+        if activity:
+            task.progress.last_activity = activity
+        if token_count:
+            task.progress.token_count = token_count
+            task.usage.total_tokens += token_count
+        if tool_use_increment:
+            task.progress.tool_use_count += tool_use_increment
+            task.usage.tool_uses += tool_use_increment
+        if last_tool_name:
+            task.progress.last_tool_name = last_tool_name
+        if mark_complete and task.start_time:
+            task.usage.duration_ms = int((datetime.now() - task.start_time).total_seconds() * 1000)
+
+        return True
+
+    def set_session_state(self, task_id: str, **state: Any) -> bool:
+        """Merge session state for a task."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+        task.session_state.update(state)
         return True
 
     def set_cleanup_callback(self, task_id: str, callback: Callable[[], None]) -> None:

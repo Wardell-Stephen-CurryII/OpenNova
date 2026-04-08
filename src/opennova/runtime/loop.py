@@ -57,6 +57,7 @@ class ReActLoop:
         state: AgentState,
         max_iterations: int = 20,
         stream: bool = True,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -73,6 +74,7 @@ class ReActLoop:
         self.state = state
         self.max_iterations = max_iterations
         self.stream = stream
+        self.progress_callback = progress_callback
         self.messages: list[Message] = []
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
@@ -127,6 +129,7 @@ class ReActLoop:
             ]
 
         self.messages.append(Message(role="user", content=f"Task: {task}"))
+        self._report_progress(activity=f"Started task: {task}")
 
         while (
             not self.state.is_complete
@@ -142,17 +145,25 @@ class ReActLoop:
 
                 if action.is_final:
                     self.state.mark_complete(action.thought or response.content or "")
+                    self._report_progress(activity="Completed task", mark_complete=True)
                     break
 
                 if action.tool_name and action.tool_name in self.tool_registry:
                     if self.on_action:
                         self.on_action(action.tool_name, action.arguments)
 
+                    self._report_progress(activity=f"Running tool: {action.tool_name}", last_tool_name=action.tool_name)
                     result = await self._act(action)
 
                     if self.on_result:
                         self.on_result(result)
 
+                    self._report_progress(
+                        activity=f"Completed tool: {action.tool_name}",
+                        last_tool_name=action.tool_name,
+                        tool_use_increment=1,
+                        token_count=response.usage.total_tokens if response.usage else 0,
+                    )
                     self._observe(action, result)
                 else:
                     observation = Message(
@@ -184,6 +195,28 @@ class ReActLoop:
             return f"Task failed: too many errors ({self.state.error_count})\n\nDetailed errors:\n{error_summary}"
 
         return self.state.last_result or "Task completed"
+
+    def _report_progress(
+        self,
+        activity: str,
+        last_tool_name: str | None = None,
+        token_count: int = 0,
+        tool_use_increment: int = 0,
+        mark_complete: bool = False,
+    ) -> None:
+        """Report execution progress to the caller."""
+        if not self.progress_callback:
+            return
+
+        payload = {
+            "activity": activity,
+            "last_tool_name": last_tool_name,
+            "token_count": token_count,
+            "tool_use_increment": tool_use_increment,
+            "iteration": self.state.iteration,
+            "is_complete": mark_complete,
+        }
+        self.progress_callback(payload)
 
     async def _think(self) -> LLMResponse:
         """

@@ -9,6 +9,7 @@ Provides:
 """
 
 import asyncio
+import copy
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,11 @@ class AgentTool(BaseTool):
 
     name = "agent"
     description = "Launch a new agent (worker) to perform a task. Workers execute autonomously - especially research, implementation, or verification tasks. Use parallel agent launches for independent work."
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        """Initialize the agent tool with optional runtime context."""
+        super().__init__(config)
+        self.runtime = self.config.get("runtime")
 
     def execute(
         self,
@@ -64,6 +70,14 @@ class AgentTool(BaseTool):
                     **(metadata or {}),
                 },
             )
+            manager.set_session_state(
+                task.id,
+                prompt=prompt,
+                description=description,
+                subagent_type=subagent_type,
+                model=model,
+                parent_runtime_available=self.runtime is not None,
+            )
 
             if run_in_background:
                 # Register as async agent task
@@ -100,6 +114,7 @@ class AgentTool(BaseTool):
                             "totalDurationMs": result.get("duration_ms", 0),
                             "totalToolUseCount": result.get("tool_count", 0),
                             "totalTokens": result.get("token_count", 0),
+                            "messageCount": len(task.messages),
                         },
                     )
                 else:
@@ -120,35 +135,50 @@ class AgentTool(BaseTool):
     ) -> dict[str, Any]:
         """Run agent synchronously and return result."""
         start_time = datetime.now()
-        tool_count = 0
+        manager = get_global_task_manager()
+
+        def on_progress(progress: dict[str, Any]) -> None:
+            manager.update_task_progress(
+                task.id,
+                activity=progress.get("activity"),
+                token_count=progress.get("token_count", 0),
+                tool_use_increment=progress.get("tool_use_increment", 0),
+                last_tool_name=progress.get("last_tool_name"),
+                mark_complete=progress.get("is_complete", False),
+            )
 
         try:
             # Import runtime components
             from opennova.runtime.agent import AgentRuntime
-            from opennova.runtime.loop import ReActLoop
 
-            # Create a new runtime for this agent
-            # In production, this should use the parent runtime's config
-            agent_runtime = AgentRuntime(
-                config={},  # Will use default config
-                register_default_tools=True,
-                enable_mcp=False,  # Simplified for now
-                enable_skills=False,
-            )
+            # Create a child runtime that inherits the parent runtime configuration
+            if self.runtime is not None:
+                agent_runtime = self.runtime.create_child_runtime()
+            else:
+                agent_runtime = AgentRuntime(
+                    config={},
+                    register_default_tools=True,
+                    enable_mcp=False,
+                    enable_skills=False,
+                )
 
-            # Run the agent with the prompt
-            result = await agent_runtime.run(prompt, mode="act", stream=False)
+            # Replay queued user follow-ups into the child runtime before execution
+            for message in task.messages:
+                if message.get("type") == "user_message":
+                    agent_runtime.state.last_result = message.get("content")
 
-            # Count tool uses from result
-            # This is simplified - in production we'd track actual tool usage
+            # Run the agent with progress reporting
+            result = await agent_runtime.run(prompt, mode="act", stream=False, progress_callback=on_progress)
 
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            usage = getattr(task, "usage", None)
 
             return {
                 "success": True,
                 "output": result,
                 "duration_ms": duration_ms,
-                "tool_count": tool_count,
+                "tool_count": usage.tool_uses if usage else 0,
+                "token_count": usage.total_tokens if usage else 0,
             }
         except Exception as e:
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -156,7 +186,8 @@ class AgentTool(BaseTool):
                 "success": False,
                 "error": str(e),
                 "duration_ms": duration_ms,
-                "tool_count": tool_count,
+                "tool_count": task.usage.tool_uses,
+                "token_count": task.usage.total_tokens,
             }
 
     async def _run_agent_background(
@@ -195,6 +226,7 @@ class AgentTool(BaseTool):
 
                 # Mark as notified
                 task.notified = True
+                manager.update_task_progress(task.id, activity="Agent completed", mark_complete=True)
 
             else:
                 manager.update_task_status(task.id, TaskStatus.FAILED)
@@ -208,15 +240,18 @@ class AgentTool(BaseTool):
                 write_task_output(task.id, notification)
 
                 task.notified = True
+                manager.update_task_progress(task.id, activity="Agent failed")
 
         except asyncio.CancelledError:
             manager.update_task_status(task.id, TaskStatus.KILLED)
+            manager.update_task_progress(task.id, activity="Agent was stopped", mark_complete=True)
             write_task_output(
                 task.id,
                 f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>killed</status>\n<summary>Agent was stopped</summary>\n</task_notification>\n",
             )
         except Exception as e:
             manager.update_task_status(task.id, TaskStatus.FAILED)
+            manager.update_task_progress(task.id, activity="Agent failed", mark_complete=True)
             write_task_output(
                 task.id,
                 f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>failed</status>\n<summary>Agent failed with error</summary>\n<error>{str(e)}</error>\n</task_notification>\n",
@@ -300,8 +335,8 @@ class SendMessageTool(BaseTool):
                     error=f"Agent '{to}' is not running (status: {task.status.value}). Use task_create to start a new agent.",
                 )
 
-            # For now, append message to task's messages
-            # In production, this would actually communicate with the running agent
+            # For now, append message to task's messages so active/background agents can consume it.
+            # This keeps follow-ups visible to the running task until fully interactive messaging is added.
             manager.add_message(
                 to,
                 {
@@ -310,10 +345,17 @@ class SendMessageTool(BaseTool):
                     "timestamp": datetime.now().isoformat(),
                 },
             )
+            manager.update_task_progress(to, activity="Received follow-up message")
+            manager.set_session_state(to, last_user_message=message)
 
             return ToolResult(
                 success=True,
                 output=f"Sent message to agent {to}",
+                metadata={
+                    "agent_id": to,
+                    "queued_message": message,
+                    "message_count": len(task.messages),
+                },
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
