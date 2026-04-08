@@ -6,6 +6,7 @@ import pytest
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
 from opennova.tools.agent_tools import AgentTool, SendMessageTool
 from opennova.tools.task_tools import set_global_task_manager
+from opennova.utils.task_output import read_task_output
 from opennova.providers.base import Message, ToolSchema
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.state import AgentState
@@ -246,6 +247,119 @@ def test_send_message_reports_pending_queue_length():
     assert result.success is True
     assert result.metadata["pending_messages"] == 1
     assert task.message_queue[0]["content"] == "hello"
+
+
+def test_send_message_rejects_non_running_agents():
+    """send_message should reject completed agents."""
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    task = manager.create_task(TaskType.LOCAL_AGENT, "Agent: finished")
+    manager.update_task_status(task.id, TaskStatus.COMPLETED)
+
+    result = SendMessageTool().execute(to=task.id, message="late update")
+
+    assert result.success is False
+    assert "is not running" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_background_agent_completion_notification_includes_usage():
+    """Background agent notifications should include actual usage and final session state."""
+
+    class SuccessfulRuntime:
+        def create_child_runtime(self):
+            runtime = type("ChildRuntime", (), {})()
+            runtime.state = AgentState()
+
+            def register_callback(event, callback):
+                return None
+
+            async def run(prompt, mode="act", stream=False, progress_callback=None):
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "activity": "Completed tool: mock_tool",
+                            "token_count": 9,
+                            "tool_use_increment": 2,
+                            "last_tool_name": "mock_tool",
+                            "is_complete": True,
+                        }
+                    )
+                return "background success"
+
+            runtime.register_callback = register_callback
+            runtime.run = run
+            return runtime
+
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    tool = AgentTool(config={"runtime": SuccessfulRuntime()})
+
+    launch = tool.execute(
+        description="background success",
+        prompt="Do the work",
+        run_in_background=True,
+    )
+
+    agent_id = launch.metadata["agentId"]
+    await asyncio.sleep(0.05)
+
+    task = manager.get_task(agent_id)
+    output, _ = read_task_output(agent_id)
+
+    assert task is not None
+    assert task.status == TaskStatus.COMPLETED
+    assert task.usage.total_tokens == 9
+    assert task.usage.tool_uses == 2
+    assert task.usage.duration_ms >= 0
+    assert task.session_state["last_agent_result"] == "background success"
+    assert "<total_tokens>9</total_tokens>" in output
+    assert "<tool_uses>2</tool_uses>" in output
+    assert "<pending_messages>0</pending_messages>" in output
+
+
+@pytest.mark.asyncio
+async def test_background_agent_failure_notification_includes_duration():
+    """Background agent failures should record duration and error state consistently."""
+
+    class FailingRuntime:
+        def create_child_runtime(self):
+            runtime = type("ChildRuntime", (), {})()
+            runtime.state = AgentState()
+
+            def register_callback(event, callback):
+                return None
+
+            async def run(prompt, mode="act", stream=False, progress_callback=None):
+                raise RuntimeError("boom")
+
+            runtime.register_callback = register_callback
+            runtime.run = run
+            return runtime
+
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    tool = AgentTool(config={"runtime": FailingRuntime()})
+
+    launch = tool.execute(
+        description="background failure",
+        prompt="Fail the work",
+        run_in_background=True,
+    )
+
+    agent_id = launch.metadata["agentId"]
+    await asyncio.sleep(0.05)
+
+    task = manager.get_task(agent_id)
+    output, _ = read_task_output(agent_id)
+
+    assert task is not None
+    assert task.status == TaskStatus.FAILED
+    assert task.session_state["last_error"] == "boom"
+    assert task.usage.duration_ms >= 0
+    assert "<status>failed</status>" in output
+    assert "<error>boom</error>" in output
+    assert "<duration_ms>" in output
 
 
 def test_create_child_runtime_inherits_flags():

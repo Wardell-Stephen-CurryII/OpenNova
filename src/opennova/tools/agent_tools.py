@@ -29,6 +29,26 @@ class AgentTool(BaseTool):
         super().__init__(config)
         self.runtime = self.config.get("runtime")
 
+    def _apply_result_to_task(self, task: Task, result: dict[str, Any], status: TaskStatus) -> None:
+        """Persist final task state consistently for foreground and background agents."""
+        manager = get_global_task_manager()
+        manager.update_task_status(task.id, status)
+
+        pending_messages = len(task.message_queue)
+        session_updates = {
+            "pending_messages": pending_messages,
+            "completed_at": datetime.now().isoformat(),
+        }
+        if result.get("session_state"):
+            session_updates["child_session_state"] = result["session_state"]
+        if result.get("output"):
+            session_updates["last_agent_result"] = result["output"]
+        if result.get("error"):
+            session_updates["last_error"] = result["error"]
+
+        manager.set_session_state(task.id, **session_updates)
+        task.usage.duration_ms = result.get("duration_ms", task.usage.duration_ms)
+
     def execute(
         self,
         description: str,
@@ -103,8 +123,7 @@ class AgentTool(BaseTool):
                 result = asyncio.run(self._run_agent_sync(task, prompt))
 
                 if result["success"]:
-                    manager.update_task_status(task.id, TaskStatus.COMPLETED)
-                    manager.set_session_state(task.id, child_session_state=result.get("session_state", {}))
+                    self._apply_result_to_task(task, result, TaskStatus.COMPLETED)
                     return ToolResult(
                         success=True,
                         output=result.get("output", "Agent completed successfully"),
@@ -119,7 +138,7 @@ class AgentTool(BaseTool):
                         },
                     )
                 else:
-                    manager.update_task_status(task.id, TaskStatus.FAILED)
+                    self._apply_result_to_task(task, result, TaskStatus.FAILED)
                     return ToolResult(
                         success=False,
                         output="",
@@ -214,6 +233,7 @@ class AgentTool(BaseTool):
                 "tool_count": usage.tool_uses if usage else 0,
                 "token_count": usage.total_tokens if usage else 0,
                 "session_state": dict(task.session_state),
+                "pending_messages": len(task.message_queue),
             }
         except Exception as e:
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -223,6 +243,7 @@ class AgentTool(BaseTool):
                 "duration_ms": duration_ms,
                 "tool_count": task.usage.tool_uses,
                 "token_count": task.usage.total_tokens,
+                "pending_messages": len(task.message_queue),
             }
 
     async def _run_agent_background(
@@ -247,7 +268,7 @@ class AgentTool(BaseTool):
 
             if result["success"]:
                 # Update final status
-                manager.update_task_status(task.id, TaskStatus.COMPLETED)
+                self._apply_result_to_task(task, result, TaskStatus.COMPLETED)
 
                 # Write completion notification
                 notification = self._format_completion_notification(
@@ -256,22 +277,25 @@ class AgentTool(BaseTool):
                     result["output"],
                     result["duration_ms"],
                     result["tool_count"],
+                    result.get("token_count", 0),
+                    result.get("pending_messages", 0),
                 )
                 write_task_output(task.id, notification)
 
                 # Mark as notified
                 task.notified = True
                 manager.update_task_progress(task.id, activity="Agent completed", mark_complete=True)
-                manager.set_session_state(task.id, child_session_state=result.get("session_state", {}), pending_messages=0)
 
             else:
-                manager.update_task_status(task.id, TaskStatus.FAILED)
+                self._apply_result_to_task(task, result, TaskStatus.FAILED)
 
                 # Write failure notification
                 notification = self._format_failure_notification(
                     task.id,
                     task.description,
                     result["error"],
+                    result.get("duration_ms", 0),
+                    result.get("pending_messages", 0),
                 )
                 write_task_output(task.id, notification)
 
@@ -281,16 +305,31 @@ class AgentTool(BaseTool):
         except asyncio.CancelledError:
             manager.update_task_status(task.id, TaskStatus.KILLED)
             manager.update_task_progress(task.id, activity="Agent was stopped", mark_complete=True)
+            manager.set_session_state(task.id, last_error="Agent was stopped", pending_messages=len(task.message_queue))
             write_task_output(
                 task.id,
-                f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>killed</status>\n<summary>Agent was stopped</summary>\n</task_notification>\n",
+                f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>killed</status>\n<summary>Agent was stopped</summary>\n<pending_messages>{len(task.message_queue)}</pending_messages>\n</task_notification>\n",
             )
         except Exception as e:
-            manager.update_task_status(task.id, TaskStatus.FAILED)
+            self._apply_result_to_task(
+                task,
+                {
+                    "error": str(e),
+                    "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                    "pending_messages": len(task.message_queue),
+                },
+                TaskStatus.FAILED,
+            )
             manager.update_task_progress(task.id, activity="Agent failed", mark_complete=True)
             write_task_output(
                 task.id,
-                f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>failed</status>\n<summary>Agent failed with error</summary>\n<error>{str(e)}</error>\n</task_notification>\n",
+                self._format_failure_notification(
+                    task.id,
+                    task.description,
+                    str(e),
+                    int((datetime.now() - start_time).total_seconds() * 1000),
+                    len(task.message_queue),
+                ),
             )
 
     def _format_completion_notification(
@@ -300,18 +339,21 @@ class AgentTool(BaseTool):
         result: str,
         duration_ms: int,
         tool_count: int,
+        token_count: int,
+        pending_messages: int,
     ) -> str:
         """Format completion notification."""
         return f"""<task_notification>
 <task-id>{agent_id}</task-id>
 <status>completed</status>
-<summary>Agent "{description}" completed</summary>
+<summary>Agent \"{description}\" completed</summary>
 <result>{result[:5000]}{'...' if len(result) > 5000 else ''}</result>
 <usage>
-  <total_tokens>N</total_tokens>
+  <total_tokens>{token_count}</total_tokens>
   <tool_uses>{tool_count}</tool_uses>
   <duration_ms>{duration_ms}</duration_ms>
 </usage>
+<pending_messages>{pending_messages}</pending_messages>
 </task_notification>
 """
 
@@ -320,13 +362,19 @@ class AgentTool(BaseTool):
         agent_id: str,
         description: str,
         error: str,
+        duration_ms: int,
+        pending_messages: int,
     ) -> str:
         """Format failure notification."""
         return f"""<task_notification>
 <task-id>{agent_id}</task-id>
 <status>failed</status>
-<summary>Agent "{description}" failed</summary>
+<summary>Agent \"{description}\" failed</summary>
 <error>{error[:1000]}</error>
+<usage>
+  <duration_ms>{duration_ms}</duration_ms>
+</usage>
+<pending_messages>{pending_messages}</pending_messages>
 </task_notification>
 """
 
