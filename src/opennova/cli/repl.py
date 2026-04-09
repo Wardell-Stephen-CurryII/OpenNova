@@ -305,8 +305,10 @@ class REPL:
 
         self.renderer.print(f"[yellow]Planning: {args}[/yellow]")
 
-        def on_plan(plan: Plan) -> None:
+        def on_plan(plan: Plan, plan_file_path: Any = None) -> None:
             self.renderer.print_plan(plan)
+            if plan_file_path:
+                self.renderer.print(f"[green]Plan saved to:[/green] {plan_file_path}")
 
         self.agent.register_callback("plan", on_plan)
 

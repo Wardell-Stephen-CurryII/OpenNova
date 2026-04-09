@@ -173,6 +173,7 @@ async def _run_single_task(
     """Run a single task and exit."""
     from rich.console import Console
     from opennova.providers.base import StreamChunk
+    from opennova.runtime.state import Plan
     from opennova.tools.base import ToolResult
 
     console = Console(
@@ -206,10 +207,18 @@ async def _run_single_task(
         if chunk.content:
             print(chunk.content, end="", flush=True)
 
+    def on_plan(plan: Plan, plan_file_path: str | None = None) -> None:
+        step_count = len(plan.steps)
+        console.print(f"[cyan]Generated plan with {step_count} steps.[/cyan]")
+        if plan_file_path:
+            console.print(f"[green]Plan saved to:[/green] {plan_file_path}\n")
+
     agent.register_callback("thought", on_thought)
     agent.register_callback("action", on_action)
     agent.register_callback("result", on_result)
     agent.register_callback("stream", on_stream)
+    if plan_mode:
+        agent.register_callback("plan", on_plan)
 
     try:
         result = await agent.run(

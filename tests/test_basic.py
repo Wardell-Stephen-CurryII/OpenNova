@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+from pathlib import Path
 import pytest
 
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
@@ -496,4 +497,58 @@ def test_create_child_runtime_inherits_flags():
     assert child.register_default_tools == runtime.register_default_tools
     assert child.enable_mcp == runtime.enable_mcp
     assert child.enable_skills == runtime.enable_skills
+
+
+def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
+    """Plan mode should persist generated plans to .opennova/plan with a timestamped filename."""
+
+    class PlanSavingRuntime(AgentRuntime):
+        def __init__(self):
+            self.state = AgentState()
+            self.llm = DummyProvider()
+            self._callbacks = {}
+            self.auto_confirm = False
+
+        async def _create_plan(self, task: str):
+            from opennova.runtime.state import Plan, PlanStep
+
+            return Plan(
+                task="Persist plan",
+                steps=[PlanStep(id="step_1", description="Write plan to disk", tool_hint="write_file")],
+            )
+
+        async def _confirm_plan(self, plan):
+            return False
+
+    previous_cwd = Path.cwd()
+    try:
+        import os
+
+        os.chdir(tmp_path)
+        runtime = PlanSavingRuntime()
+        captured = {}
+
+        def on_plan(plan, plan_file_path=None):
+            captured["plan"] = plan
+            captured["plan_file_path"] = Path(plan_file_path) if plan_file_path else None
+
+        runtime.register_callback("plan", on_plan)
+        result = asyncio.run(runtime.run("Persist this plan", mode="plan", stream=False))
+
+        assert result == "Plan cancelled by user"
+        assert captured["plan_file_path"] is not None
+        assert runtime.state.plan_file_path == captured["plan_file_path"]
+        assert captured["plan_file_path"].parent == Path(".opennova") / "plan"
+        assert captured["plan_file_path"].name.startswith("plan_")
+        assert captured["plan_file_path"].suffix == ".md"
+        assert len(captured["plan_file_path"].stem.replace("plan_", "")) == 15
+        assert captured["plan_file_path"].exists()
+
+        saved_content = captured["plan_file_path"].read_text(encoding="utf-8")
+        assert "# Saved Plan: Persist plan" in saved_content
+        assert "- Task: Persist this plan" in saved_content
+        assert "- Saved path: .opennova/plan/" in saved_content
+        assert "1. **step_1** — Write plan to disk" in saved_content
+    finally:
+        os.chdir(previous_cwd)
 

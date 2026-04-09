@@ -9,6 +9,7 @@ Defines the state data structures for tracking agent execution:
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Literal
 
 
@@ -157,6 +158,7 @@ class AgentState:
     is_complete: bool = False
     requires_confirmation: bool = False
     current_plan: Plan | None = None
+    plan_file_path: Path | None = None
     error_count: int = 0
     max_errors: int = 3
     last_action: str | None = None
@@ -170,6 +172,7 @@ class AgentState:
         self.is_complete = False
         self.requires_confirmation = False
         self.current_plan = None
+        self.plan_file_path = None
         self.error_count = 0
         self.last_action = None
         self.last_result = None
@@ -199,6 +202,10 @@ class AgentState:
         """Set the current plan."""
         self.current_plan = plan
 
+    def set_plan_file_path(self, path: str | Path) -> None:
+        """Set the saved plan file path."""
+        self.plan_file_path = Path(path)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -207,5 +214,6 @@ class AgentState:
             "iteration": self.iteration,
             "is_complete": self.is_complete,
             "error_count": self.error_count,
+            "plan_file_path": str(self.plan_file_path) if self.plan_file_path else None,
             "current_plan": self.current_plan.to_dict() if self.current_plan else None,
         }

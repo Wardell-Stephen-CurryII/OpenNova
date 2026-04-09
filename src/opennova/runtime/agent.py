@@ -12,10 +12,13 @@ Manages the agent lifecycle:
 
 import copy
 import os
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from opennova.providers.base import BaseLLMProvider, Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
+from opennova.planning.planner import Planner
 from opennova.runtime.loop import ParsedAction, ReActLoop, run_simple_task
 from opennova.runtime.state import AgentState, AgentMode, Plan
 from opennova.tasks import TaskManager
@@ -310,8 +313,10 @@ class AgentRuntime:
         plan = await self._create_plan(task)
 
         self.state.set_plan(plan)
+        plan_file_path = self._save_plan_to_project(plan)
+        self.state.set_plan_file_path(plan_file_path)
 
-        self._emit("plan", plan)
+        self._emit("plan", plan, plan_file_path)
 
         if not self.auto_confirm:
             confirmed = await self._confirm_plan(plan)
@@ -400,6 +405,46 @@ Only respond with the JSON object, no other text."""
                 description=task,
             )
             return Plan(task=task, steps=[step])
+
+    def _save_plan_to_project(self, plan: Plan) -> Path:
+        """Save a generated plan to the project-local .opennova/plan directory."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        plan_dir = Path(".opennova") / "plan"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        plan_path = plan_dir / f"plan_{timestamp}.md"
+        plan_path.write_text(self._render_saved_plan(plan, plan_path), encoding="utf-8")
+        return plan_path
+
+    def _render_saved_plan(self, plan: Plan, plan_path: Path) -> str:
+        """Render a generated plan into a readable markdown document."""
+        summary = Planner(self.llm).get_plan_summary(plan)
+        lines = [
+            f"# Saved Plan: {plan.task}",
+            "",
+            f"- Task: {self.state.current_task or plan.task}",
+            f"- Generated at: {datetime.now().isoformat(timespec='seconds')}",
+            f"- Saved path: {plan_path}",
+            "",
+            "## Summary",
+            "",
+            summary,
+            "",
+            "## Steps",
+            "",
+        ]
+
+        for index, step in enumerate(plan.steps, start=1):
+            lines.append(f"{index}. **{step.id}** — {step.description}")
+            if step.tool_hint:
+                lines.append(f"   - Tool hint: `{step.tool_hint}`")
+            lines.append(f"   - Status: `{step.status.value}`")
+            if step.result_summary:
+                lines.append(f"   - Result: {step.result_summary}")
+            if step.error:
+                lines.append(f"   - Error: {step.error}")
+            lines.append("")
+
+        return "\n".join(lines).rstrip() + "\n"
 
     async def _confirm_plan(self, plan: Plan) -> bool:
         """
