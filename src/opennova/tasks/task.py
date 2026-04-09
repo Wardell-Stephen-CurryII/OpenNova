@@ -8,6 +8,7 @@ Implements Claude Code-style task management:
 - Progress tracking and notifications
 """
 
+import hashlib
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -60,6 +61,17 @@ def generate_task_id(task_type: TaskType) -> str:
     random_bytes = secrets.token_bytes(8)
     suffix = "".join(TASK_ID_ALPHABET[b % len(TASK_ID_ALPHABET)] for b in random_bytes)
     return f"{prefix}{suffix}"
+
+
+def generate_message_id(content: str, timestamp: str) -> str:
+    """Generate a stable message identifier from content and timestamp."""
+    digest = hashlib.sha1(f"{timestamp}:{content}".encode("utf-8")).hexdigest()
+    return f"msg_{digest[:12]}"
+
+
+def generate_follow_up_batch_id(task_id: str, delivered_count: int) -> str:
+    """Generate a deterministic follow-up batch identifier for a task."""
+    return f"batch_{task_id}_{delivered_count + 1}"
 
 
 @dataclass
@@ -431,22 +443,23 @@ class TaskManager:
         task.delivered_messages.extend(messages)
         return True
 
-    def record_follow_up_batch(self, task_id: str, messages: list[dict[str, Any]], rendered_content: str) -> bool:
+    def record_follow_up_batch(self, task_id: str, messages: list[dict[str, Any]], rendered_content: str) -> dict[str, Any] | None:
         """Record a delivered follow-up batch and its rendered user-facing content."""
         task = self._tasks.get(task_id)
         if not task:
-            return False
+            return None
 
         delivered_at = datetime.now().isoformat()
-        task.follow_up_batches.append(
-            {
-                "delivered_at": delivered_at,
-                "message_count": len(messages),
-                "messages": [message.copy() for message in messages],
-                "rendered_content": rendered_content,
-            }
-        )
-        return True
+        batch = {
+            "batch_id": generate_follow_up_batch_id(task_id, len(task.follow_up_batches)),
+            "delivered_at": delivered_at,
+            "message_count": len(messages),
+            "message_ids": [message.get("message_id") for message in messages if message.get("message_id")],
+            "messages": [message.copy() for message in messages],
+            "rendered_content": rendered_content,
+        }
+        task.follow_up_batches.append(batch)
+        return batch
 
     def has_pending_messages(self, task_id: str) -> bool:
         """Check whether a task has queued follow-up messages."""

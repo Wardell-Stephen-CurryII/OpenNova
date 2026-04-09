@@ -15,6 +15,7 @@ from typing import Any
 
 from opennova.providers.base import Message
 from opennova.tasks import Task, TaskStatus, TaskType
+from opennova.tasks.task import generate_message_id
 from opennova.tools.base import BaseTool, ToolResult
 from opennova.tools.task_tools import get_global_task_manager
 
@@ -234,11 +235,20 @@ class AgentTool(BaseTool):
                     )
                 )
                 manager.mark_messages_delivered(task.id, queued_messages)
-                manager.record_follow_up_batch(task.id, queued_messages, rendered_followup)
+                for delivered_message in task.delivered_messages[-len(queued_messages):]:
+                    delivered_message["delivery_state"] = "delivered"
+                    delivered_message["delivered_at"] = datetime.now().isoformat()
+                batch = manager.record_follow_up_batch(task.id, queued_messages, rendered_followup)
+                batch_id = batch.get("batch_id") if batch else None
+                delivered_message_ids = [
+                    message.get("message_id") for message in queued_messages if message.get("message_id")
+                ]
                 manager.set_session_state(
                     task.id,
                     last_user_message=followups[-1],
                     last_follow_up_batch=rendered_followup,
+                    last_follow_up_batch_id=batch_id,
+                    last_delivered_message_ids=delivered_message_ids,
                     pending_messages=len(task.message_queue),
                     delivered_messages=len(task.delivered_messages),
                     delivered_follow_up_batches=len(task.follow_up_batches),
@@ -471,27 +481,21 @@ class SendMessageTool(BaseTool):
                     error=f"Agent '{to}' is not running (status: {task.status.value}). Use task_create to start a new agent.",
                 )
 
-            # For now, append message to task's messages so active/background agents can consume it.
-            # This keeps follow-ups visible to the running task until fully interactive messaging is added.
-            manager.add_message(
-                to,
-                {
-                    "type": "user_message",
-                    "content": message,
-                    "timestamp": datetime.now().isoformat(),
-                },
-            )
-            task.message_queue.append(
-                {
-                    "type": "user_message",
-                    "content": message,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
+            message_record = {
+                "type": "user_message",
+                "content": message,
+                "timestamp": datetime.now().isoformat(),
+            }
+            message_record["message_id"] = generate_message_id(message_record["content"], message_record["timestamp"])
+            message_record["delivery_state"] = "queued"
+
+            manager.add_message(to, message_record.copy())
+            task.message_queue.append(message_record.copy())
             manager.update_task_progress(to, activity="Received follow-up message")
             manager.set_session_state(
                 to,
                 last_user_message=message,
+                last_queued_message_id=message_record["message_id"],
                 pending_messages=len(task.message_queue),
                 delivered_messages=len(task.delivered_messages),
                 delivered_follow_up_batches=len(task.follow_up_batches),
@@ -503,6 +507,8 @@ class SendMessageTool(BaseTool):
                 metadata={
                     "agent_id": to,
                     "queued_message": message,
+                    "message_id": message_record["message_id"],
+                    "delivery_state": message_record["delivery_state"],
                     "message_count": len(task.messages),
                     "pending_messages": len(task.message_queue),
                     "delivered_messages": len(task.delivered_messages),

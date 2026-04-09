@@ -306,6 +306,8 @@ async def test_agent_tool_applies_follow_up_messages_during_run():
 
     assert send_result.success is True
     assert send_result.metadata["pending_messages"] == 1
+    assert send_result.metadata["message_id"].startswith("msg_")
+    assert send_result.metadata["delivery_state"] == "queued"
 
     await asyncio.sleep(0.12)
 
@@ -319,10 +321,16 @@ async def test_agent_tool_applies_follow_up_messages_during_run():
     assert task.session_state["delivered_messages"] == 1
     assert task.session_state["delivered_follow_up_batches"] == 1
     assert task.session_state["last_follow_up_batch"] == "Additional instruction from the parent conversation:\nPlease include the follow-up"
+    assert task.session_state["last_follow_up_batch_id"].startswith("batch_")
+    assert task.session_state["last_delivered_message_ids"] == [send_result.metadata["message_id"]]
     assert len(task.delivered_messages) == 1
     assert task.delivered_messages[0]["content"] == "Please include the follow-up"
+    assert task.delivered_messages[0]["message_id"] == send_result.metadata["message_id"]
+    assert task.delivered_messages[0]["delivery_state"] == "delivered"
     assert len(task.follow_up_batches) == 1
+    assert task.follow_up_batches[0]["batch_id"].startswith("batch_")
     assert task.follow_up_batches[0]["message_count"] == 1
+    assert task.follow_up_batches[0]["message_ids"] == [send_result.metadata["message_id"]]
     assert task.follow_up_batches[0]["rendered_content"] == "Additional instruction from the parent conversation:\nPlease include the follow-up"
     assert any("Additional instruction from the parent conversation:\nPlease include the follow-up" in snapshot for snapshot in snapshots)
 
@@ -340,7 +348,11 @@ def test_send_message_reports_pending_queue_length():
     assert result.metadata["pending_messages"] == 1
     assert result.metadata["delivered_messages"] == 0
     assert result.metadata["delivered_follow_up_batches"] == 0
+    assert result.metadata["message_id"].startswith("msg_")
+    assert result.metadata["delivery_state"] == "queued"
     assert task.message_queue[0]["content"] == "hello"
+    assert task.message_queue[0]["message_id"] == result.metadata["message_id"]
+    assert task.message_queue[0]["delivery_state"] == "queued"
 
 
 def test_send_message_rejects_non_running_agents():
