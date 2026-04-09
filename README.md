@@ -2,7 +2,9 @@
 
 A lightweight CLI AI Coding Agent built from scratch in Python.
 
-**[快速开始](docs/QUICKSTART.md)** | **[完整教程](docs/TUTORIAL.md)** | **[API 文档](docs/API.md)**
+**English** | **[简体中文](README.zh-CN.md)**
+
+**[Quickstart (Chinese)](docs/QUICKSTART.md)** | **[Tutorial (Chinese)](docs/TUTORIAL.md)** | **[API Reference (Chinese)](docs/API.md)**
 
 ## Overview
 
@@ -67,11 +69,11 @@ providers:
   openai:
     api_key: ${OPENAI_API_KEY}
     default_model: gpt-4o
-  
+
   anthropic:
     api_key: ${ANTHROPIC_API_KEY}
     default_model: claude-sonnet-4
-  
+
   deepseek:
     api_key: ${DEEPSEEK_API_KEY}
     default_model: deepseek-chat
@@ -296,7 +298,7 @@ uv run ruff check src/
 
 ## License
 
-MIT
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for the full text.
 
 ## Author
 
