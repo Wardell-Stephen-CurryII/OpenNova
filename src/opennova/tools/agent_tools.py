@@ -9,6 +9,7 @@ Provides:
 """
 
 import asyncio
+import concurrent.futures
 from datetime import datetime
 from typing import Any
 
@@ -48,6 +49,17 @@ class AgentTool(BaseTool):
 
         manager.set_session_state(task.id, **session_updates)
         task.usage.duration_ms = result.get("duration_ms", task.usage.duration_ms)
+
+    def _run_agent_sync_blocking(self, task: Task, prompt: str) -> dict[str, Any]:
+        """Run the async agent workflow from synchronous contexts."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._run_agent_sync(task, prompt))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(lambda: asyncio.run(self._run_agent_sync(task, prompt)))
+            return future.result()
 
     def execute(
         self,
@@ -120,7 +132,7 @@ class AgentTool(BaseTool):
             else:
                 # Run synchronously
                 manager.update_task_status(task.id, TaskStatus.RUNNING)
-                result = asyncio.run(self._run_agent_sync(task, prompt))
+                result = self._run_agent_sync_blocking(task, prompt)
 
                 if result["success"]:
                     self._apply_result_to_task(task, result, TaskStatus.COMPLETED)

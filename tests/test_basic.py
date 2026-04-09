@@ -1,6 +1,7 @@
 """Basic tests for OpenNova."""
 
 import asyncio
+import threading
 import pytest
 
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
@@ -99,6 +100,89 @@ class DummyProvider:
 
     def get_model_info(self):
         return {"model": self.model}
+
+
+def test_agent_tool_sync_execution_works_inside_running_event_loop():
+    """Synchronous agent execution should still work when an event loop is already running."""
+
+    class SyncCompatibleRuntime:
+        def create_child_runtime(self):
+            runtime = type("ChildRuntime", (), {})()
+            runtime.state = AgentState()
+            runtime.thread_names = []
+
+            def register_callback(event, callback):
+                return None
+
+            async def run(prompt, mode="act", stream=False, progress_callback=None):
+                runtime.thread_names.append(threading.current_thread().name)
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "activity": "Completed tool: mock_tool",
+                            "token_count": 4,
+                            "tool_use_increment": 1,
+                            "last_tool_name": "mock_tool",
+                            "is_complete": True,
+                        }
+                    )
+                return "sync success"
+
+            runtime.register_callback = register_callback
+            runtime.run = run
+            return runtime
+
+    async def invoke_tool():
+        manager = TaskManager()
+        set_global_task_manager(manager)
+        tool = AgentTool(config={"runtime": SyncCompatibleRuntime()})
+        return tool.execute(description="sync child", prompt="Run sync child")
+
+    result = asyncio.run(invoke_tool())
+
+    assert result.success is True
+    assert result.output == "sync success"
+    assert result.metadata["totalTokens"] == 4
+    assert result.metadata["totalToolUseCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_sync_execution_uses_worker_thread_when_loop_running():
+    """Nested loop execution should move synchronous agent runs off the active event loop."""
+
+    class WorkerThreadRuntime:
+        def __init__(self):
+            self.child_runtime = None
+
+        def create_child_runtime(self):
+            runtime = type("ChildRuntime", (), {})()
+            runtime.state = AgentState()
+            runtime.thread_names = []
+
+            def register_callback(event, callback):
+                return None
+
+            async def run(prompt, mode="act", stream=False, progress_callback=None):
+                runtime.thread_names.append(threading.current_thread().name)
+                return "worker thread success"
+
+            runtime.register_callback = register_callback
+            runtime.run = run
+            self.child_runtime = runtime
+            return runtime
+
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    runtime = WorkerThreadRuntime()
+    tool = AgentTool(config={"runtime": runtime})
+
+    result = tool.execute(description="nested sync", prompt="Run while loop active")
+
+    assert result.success is True
+    assert result.output == "worker thread success"
+    assert runtime.child_runtime is not None
+    assert runtime.child_runtime.thread_names
+    assert all(name != threading.current_thread().name for name in runtime.child_runtime.thread_names)
 
 
 @pytest.mark.asyncio
