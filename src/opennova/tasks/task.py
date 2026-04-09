@@ -105,6 +105,8 @@ class Task:
     messages: list[dict[str, Any]] = field(default_factory=list)
     session_state: dict[str, Any] = field(default_factory=dict)
     message_queue: list[dict[str, Any]] = field(default_factory=list)
+    delivered_messages: list[dict[str, Any]] = field(default_factory=list)
+    follow_up_batches: list[dict[str, Any]] = field(default_factory=list)
     retain: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -139,6 +141,8 @@ class Task:
             "messages": self.messages,
             "session_state": self.session_state,
             "message_queue": self.message_queue,
+            "delivered_messages": self.delivered_messages,
+            "follow_up_batches": self.follow_up_batches,
             "retain": self.retain,
             "metadata": self.metadata,
         }
@@ -174,6 +178,8 @@ class Task:
             messages=data.get("messages", []),
             session_state=data.get("session_state", {}),
             message_queue=data.get("message_queue", []),
+            delivered_messages=data.get("delivered_messages", []),
+            follow_up_batches=data.get("follow_up_batches", []),
             retain=data.get("retain", True),
             metadata=data.get("metadata", {}),
         )
@@ -415,6 +421,32 @@ class TaskManager:
         queued = task.message_queue.copy()
         task.message_queue.clear()
         return queued
+
+    def mark_messages_delivered(self, task_id: str, messages: list[dict[str, Any]]) -> bool:
+        """Record messages that were delivered to a running task."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+
+        task.delivered_messages.extend(messages)
+        return True
+
+    def record_follow_up_batch(self, task_id: str, messages: list[dict[str, Any]], rendered_content: str) -> bool:
+        """Record a delivered follow-up batch and its rendered user-facing content."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+
+        delivered_at = datetime.now().isoformat()
+        task.follow_up_batches.append(
+            {
+                "delivered_at": delivered_at,
+                "message_count": len(messages),
+                "messages": [message.copy() for message in messages],
+                "rendered_content": rendered_content,
+            }
+        )
+        return True
 
     def has_pending_messages(self, task_id: str) -> bool:
         """Check whether a task has queued follow-up messages."""

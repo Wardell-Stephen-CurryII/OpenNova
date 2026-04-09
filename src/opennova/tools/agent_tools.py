@@ -36,8 +36,12 @@ class AgentTool(BaseTool):
         manager.update_task_status(task.id, status)
 
         pending_messages = len(task.message_queue)
+        delivered_messages = len(task.delivered_messages)
+        delivered_follow_up_batches = len(task.follow_up_batches)
         session_updates = {
             "pending_messages": pending_messages,
+            "delivered_messages": delivered_messages,
+            "delivered_follow_up_batches": delivered_follow_up_batches,
             "completed_at": datetime.now().isoformat(),
         }
         if result.get("session_state"):
@@ -219,16 +223,26 @@ class AgentTool(BaseTool):
                     return
 
                 combined_followup = "\n\n".join(followups)
+                rendered_followup = (
+                    "Additional instruction from the parent conversation:\n"
+                    f"{combined_followup}"
+                )
                 loop_messages.append(
                     Message(
                         role="user",
-                        content=(
-                            "Additional instruction from the parent conversation:\n"
-                            f"{combined_followup}"
-                        ),
+                        content=rendered_followup,
                     )
                 )
-                manager.set_session_state(task.id, last_user_message=followups[-1])
+                manager.mark_messages_delivered(task.id, queued_messages)
+                manager.record_follow_up_batch(task.id, queued_messages, rendered_followup)
+                manager.set_session_state(
+                    task.id,
+                    last_user_message=followups[-1],
+                    last_follow_up_batch=rendered_followup,
+                    pending_messages=len(task.message_queue),
+                    delivered_messages=len(task.delivered_messages),
+                    delivered_follow_up_batches=len(task.follow_up_batches),
+                )
 
             agent_runtime.register_callback("iteration_start", on_iteration_start)
 
@@ -246,6 +260,8 @@ class AgentTool(BaseTool):
                 "token_count": usage.total_tokens if usage else 0,
                 "session_state": dict(task.session_state),
                 "pending_messages": len(task.message_queue),
+                "delivered_messages": len(task.delivered_messages),
+                "delivered_follow_up_batches": len(task.follow_up_batches),
             }
         except Exception as e:
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -256,6 +272,8 @@ class AgentTool(BaseTool):
                 "tool_count": task.usage.tool_uses,
                 "token_count": task.usage.total_tokens,
                 "pending_messages": len(task.message_queue),
+                "delivered_messages": len(task.delivered_messages),
+                "delivered_follow_up_batches": len(task.follow_up_batches),
             }
 
     async def _run_agent_background(
@@ -291,6 +309,8 @@ class AgentTool(BaseTool):
                     result["tool_count"],
                     result.get("token_count", 0),
                     result.get("pending_messages", 0),
+                    result.get("delivered_messages", 0),
+                    result.get("delivered_follow_up_batches", 0),
                 )
                 write_task_output(task.id, notification)
 
@@ -308,6 +328,8 @@ class AgentTool(BaseTool):
                     result["error"],
                     result.get("duration_ms", 0),
                     result.get("pending_messages", 0),
+                    result.get("delivered_messages", 0),
+                    result.get("delivered_follow_up_batches", 0),
                 )
                 write_task_output(task.id, notification)
 
@@ -317,10 +339,16 @@ class AgentTool(BaseTool):
         except asyncio.CancelledError:
             manager.update_task_status(task.id, TaskStatus.KILLED)
             manager.update_task_progress(task.id, activity="Agent was stopped", mark_complete=True)
-            manager.set_session_state(task.id, last_error="Agent was stopped", pending_messages=len(task.message_queue))
+            manager.set_session_state(
+                task.id,
+                last_error="Agent was stopped",
+                pending_messages=len(task.message_queue),
+                delivered_messages=len(task.delivered_messages),
+                delivered_follow_up_batches=len(task.follow_up_batches),
+            )
             write_task_output(
                 task.id,
-                f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>killed</status>\n<summary>Agent was stopped</summary>\n<pending_messages>{len(task.message_queue)}</pending_messages>\n</task_notification>\n",
+                f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>killed</status>\n<summary>Agent was stopped</summary>\n<pending_messages>{len(task.message_queue)}</pending_messages>\n<delivered_messages>{len(task.delivered_messages)}</delivered_messages>\n<delivered_follow_up_batches>{len(task.follow_up_batches)}</delivered_follow_up_batches>\n</task_notification>\n",
             )
         except Exception as e:
             self._apply_result_to_task(
@@ -329,6 +357,8 @@ class AgentTool(BaseTool):
                     "error": str(e),
                     "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000),
                     "pending_messages": len(task.message_queue),
+                    "delivered_messages": len(task.delivered_messages),
+                    "delivered_follow_up_batches": len(task.follow_up_batches),
                 },
                 TaskStatus.FAILED,
             )
@@ -341,6 +371,8 @@ class AgentTool(BaseTool):
                     str(e),
                     int((datetime.now() - start_time).total_seconds() * 1000),
                     len(task.message_queue),
+                    len(task.delivered_messages),
+                    len(task.follow_up_batches),
                 ),
             )
 
@@ -353,6 +385,8 @@ class AgentTool(BaseTool):
         tool_count: int,
         token_count: int,
         pending_messages: int,
+        delivered_messages: int,
+        delivered_follow_up_batches: int,
     ) -> str:
         """Format completion notification."""
         return f"""<task_notification>
@@ -366,6 +400,8 @@ class AgentTool(BaseTool):
   <duration_ms>{duration_ms}</duration_ms>
 </usage>
 <pending_messages>{pending_messages}</pending_messages>
+<delivered_messages>{delivered_messages}</delivered_messages>
+<delivered_follow_up_batches>{delivered_follow_up_batches}</delivered_follow_up_batches>
 </task_notification>
 """
 
@@ -376,6 +412,8 @@ class AgentTool(BaseTool):
         error: str,
         duration_ms: int,
         pending_messages: int,
+        delivered_messages: int,
+        delivered_follow_up_batches: int,
     ) -> str:
         """Format failure notification."""
         return f"""<task_notification>
@@ -387,6 +425,8 @@ class AgentTool(BaseTool):
   <duration_ms>{duration_ms}</duration_ms>
 </usage>
 <pending_messages>{pending_messages}</pending_messages>
+<delivered_messages>{delivered_messages}</delivered_messages>
+<delivered_follow_up_batches>{delivered_follow_up_batches}</delivered_follow_up_batches>
 </task_notification>
 """
 
@@ -449,7 +489,13 @@ class SendMessageTool(BaseTool):
                 }
             )
             manager.update_task_progress(to, activity="Received follow-up message")
-            manager.set_session_state(to, last_user_message=message, pending_messages=len(task.message_queue))
+            manager.set_session_state(
+                to,
+                last_user_message=message,
+                pending_messages=len(task.message_queue),
+                delivered_messages=len(task.delivered_messages),
+                delivered_follow_up_batches=len(task.follow_up_batches),
+            )
 
             return ToolResult(
                 success=True,
@@ -459,6 +505,8 @@ class SendMessageTool(BaseTool):
                     "queued_message": message,
                     "message_count": len(task.messages),
                     "pending_messages": len(task.message_queue),
+                    "delivered_messages": len(task.delivered_messages),
+                    "delivered_follow_up_batches": len(task.follow_up_batches),
                 },
             )
         except Exception as e:

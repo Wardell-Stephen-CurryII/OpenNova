@@ -316,6 +316,14 @@ async def test_agent_tool_applies_follow_up_messages_during_run():
     assert task.status == TaskStatus.COMPLETED
     assert task.session_state["last_user_message"] == "Please include the follow-up"
     assert task.session_state["pending_messages"] == 0
+    assert task.session_state["delivered_messages"] == 1
+    assert task.session_state["delivered_follow_up_batches"] == 1
+    assert task.session_state["last_follow_up_batch"] == "Additional instruction from the parent conversation:\nPlease include the follow-up"
+    assert len(task.delivered_messages) == 1
+    assert task.delivered_messages[0]["content"] == "Please include the follow-up"
+    assert len(task.follow_up_batches) == 1
+    assert task.follow_up_batches[0]["message_count"] == 1
+    assert task.follow_up_batches[0]["rendered_content"] == "Additional instruction from the parent conversation:\nPlease include the follow-up"
     assert any("Additional instruction from the parent conversation:\nPlease include the follow-up" in snapshot for snapshot in snapshots)
 
 
@@ -330,6 +338,8 @@ def test_send_message_reports_pending_queue_length():
 
     assert result.success is True
     assert result.metadata["pending_messages"] == 1
+    assert result.metadata["delivered_messages"] == 0
+    assert result.metadata["delivered_follow_up_batches"] == 0
     assert task.message_queue[0]["content"] == "hello"
 
 
@@ -400,6 +410,8 @@ async def test_background_agent_completion_notification_includes_usage():
     assert "<total_tokens>9</total_tokens>" in output
     assert "<tool_uses>2</tool_uses>" in output
     assert "<pending_messages>0</pending_messages>" in output
+    assert "<delivered_messages>0</delivered_messages>" in output
+    assert "<delivered_follow_up_batches>0</delivered_follow_up_batches>" in output
 
 
 @pytest.mark.asyncio
@@ -444,6 +456,8 @@ async def test_background_agent_failure_notification_includes_duration():
     assert "<status>failed</status>" in output
     assert "<error>boom</error>" in output
     assert "<duration_ms>" in output
+    assert "<delivered_messages>0</delivered_messages>" in output
+    assert "<delivered_follow_up_batches>0</delivered_follow_up_batches>" in output
 
 
 def test_create_child_runtime_inherits_flags():
