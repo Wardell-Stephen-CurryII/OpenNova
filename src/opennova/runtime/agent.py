@@ -71,6 +71,7 @@ class AgentRuntime:
 
         self.loop: ReActLoop | None = None
         self._callbacks: dict[str, Callable] = {}
+        self.planner = Planner(self.llm)
 
         self.mcp_manager = None
         self.skill_registry = None
@@ -151,8 +152,8 @@ class AgentRuntime:
         self.tool_registry.register(AskUserQuestionTool())
 
         # Plan mode tools
-        self.tool_registry.register(EnterPlanModeTool())
-        self.tool_registry.register(ExitPlanModeTool())
+        self.tool_registry.register(EnterPlanModeTool(config={"state": self.state}))
+        self.tool_registry.register(ExitPlanModeTool(config={"state": self.state}))
 
         # Web tools
         self.tool_registry.register(WebSearchTool())
@@ -247,6 +248,7 @@ class AgentRuntime:
             enable_mcp=self.enable_mcp,
             enable_skills=self.enable_skills,
         )
+        child.auto_confirm = self.auto_confirm
         return child
 
     def register_tool(self, tool: BaseTool) -> None:
@@ -356,55 +358,8 @@ class AgentRuntime:
         Returns:
             Generated Plan
         """
-        from opennova.runtime.state import PlanStep, PlanStatus
-
-        plan_prompt = f"""Break down the following task into clear, actionable steps.
-
-Task: {task}
-
-Respond with a JSON object in this format:
-{{
-    "task_summary": "Brief task description",
-    "steps": [
-        {{"id": "step_1", "description": "Step description", "tool_hint": "suggested_tool"}},
-        ...
-    ]
-}}
-
-Only respond with the JSON object, no other text."""
-
-        messages = [
-            Message(role="system", content="You are a helpful assistant that creates task plans."),
-            Message(role="user", content=plan_prompt),
-        ]
-
-        response = await self.llm.chat(messages, temperature=0.7)
-
-        try:
-            import json
-
-            content = response.content or "{}"
-            data = json.loads(content)
-
-            steps = [
-                PlanStep(
-                    id=s.get("id", f"step_{i + 1}"),
-                    description=s.get("description", ""),
-                    tool_hint=s.get("tool_hint"),
-                )
-                for i, s in enumerate(data.get("steps", []))
-            ]
-
-            return Plan(
-                task=data.get("task_summary", task),
-                steps=steps,
-            )
-        except json.JSONDecodeError:
-            step = PlanStep(
-                id="step_1",
-                description=task,
-            )
-            return Plan(task=task, steps=[step])
+        plan = await self.planner.create_plan(task)
+        return self.planner.optimize_plan(plan)
 
     def _save_plan_to_project(self, plan: Plan) -> Path:
         """Save a generated plan to the project-local .opennova/plan directory."""

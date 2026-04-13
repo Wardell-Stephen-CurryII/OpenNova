@@ -201,6 +201,7 @@ class AgentState:
     def set_plan(self, plan: Plan) -> None:
         """Set the current plan."""
         self.current_plan = plan
+        self.mode = "plan"
 
     def set_plan_file_path(self, path: str | Path) -> None:
         """Set the saved plan file path."""

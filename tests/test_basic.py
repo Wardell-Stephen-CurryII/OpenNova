@@ -12,6 +12,7 @@ from opennova.utils.task_output import read_task_output
 from opennova.providers.base import Message, ToolSchema
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.state import AgentState
+from opennova.tools.plan_mode_tools import EnterPlanModeTool, ExitPlanModeTool
 from opennova.runtime.loop import ReActLoop
 from opennova.tasks import TaskManager, TaskStatus, TaskType
 
@@ -508,6 +509,7 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
             self.llm = DummyProvider()
             self._callbacks = {}
             self.auto_confirm = False
+            self.planner = None
 
         async def _create_plan(self, task: str):
             from opennova.runtime.state import Plan, PlanStep
@@ -551,4 +553,67 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
         assert "1. **step_1** — Write plan to disk" in saved_content
     finally:
         os.chdir(previous_cwd)
+
+
+def test_agent_runtime_create_plan_uses_shared_planner():
+    """Runtime plan creation should delegate to the shared Planner instance."""
+
+    class PlannerStub:
+        def __init__(self):
+            self.create_calls = []
+            self.optimize_calls = []
+
+        async def create_plan(self, task: str):
+            from opennova.runtime.state import Plan, PlanStep
+
+            self.create_calls.append(task)
+            return Plan(task=task, steps=[PlanStep(id="step_1", description="stub step")])
+
+        def optimize_plan(self, plan):
+            self.optimize_calls.append(plan.task)
+            return plan
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.planner = PlannerStub()
+
+    plan = asyncio.run(AgentRuntime._create_plan(runtime, "Unify planning"))
+
+    assert plan.task == "Unify planning"
+    assert runtime.planner.create_calls == ["Unify planning"]
+    assert runtime.planner.optimize_calls == ["Unify planning"]
+
+
+def test_enter_plan_mode_tool_updates_runtime_state():
+    """Entering plan mode via the tool should update the shared runtime state."""
+    state = AgentState()
+    tool = EnterPlanModeTool(config={"state": state})
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert state.mode == "plan"
+    assert result.metadata["mode"] == "plan"
+    assert result.metadata["current_mode"] == "plan"
+    assert result.metadata["has_plan"] is False
+
+
+def test_exit_plan_mode_tool_reports_runtime_plan_state(tmp_path: Path):
+    """Exiting plan mode should expose the runtime plan state and saved plan path."""
+    from opennova.runtime.state import Plan, PlanStep
+
+    state = AgentState()
+    state.set_mode("plan")
+    state.set_plan(Plan(task="Saved plan", steps=[PlanStep(id="step_1", description="review")]))
+    state.set_plan_file_path(tmp_path / "plan.md")
+    tool = ExitPlanModeTool(config={"state": state})
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert state.requires_confirmation is True
+    assert result.metadata["status"] == "awaiting_approval"
+    assert result.metadata["mode"] == "plan"
+    assert result.metadata["has_plan"] is True
+    assert result.metadata["plan_file_path"].endswith("plan.md")
+    assert result.metadata["requires_confirmation"] is True
 
