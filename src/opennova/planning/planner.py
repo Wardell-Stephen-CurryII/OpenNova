@@ -20,16 +20,16 @@ PLANNING_PROMPT = """You are a task planning assistant. Your job is to break dow
 
 Given a task, create a structured plan with the following format:
 ```json
-{
+{{
     "task_summary": "Brief description of the task",
     "steps": [
-        {
+        {{
             "id": "step_1",
             "description": "Clear description of what to do",
             "tool_hint": "suggested tool name (optional)"
-        }
+        }}
     ]
-}
+}}
 ```
 
 Guidelines:
