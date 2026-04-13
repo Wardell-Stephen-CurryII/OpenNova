@@ -20,7 +20,7 @@ from opennova.providers.base import BaseLLMProvider, Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
 from opennova.planning.planner import Planner
 from opennova.runtime.loop import ParsedAction, ReActLoop, run_simple_task
-from opennova.runtime.state import AgentState, AgentMode, Plan
+from opennova.runtime.state import AgentState, AgentMode, Plan, PlanApprovalStatus, PlanStatus
 from opennova.tasks import TaskManager
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult, register_builtin_tools
 
@@ -303,7 +303,7 @@ class AgentRuntime:
 
     async def _run_plan_mode(self, task: str, stream: bool = True) -> str:
         """
-        Run in plan mode: generate plan first, then execute.
+        Run in plan mode: generate a reviewable plan artifact and stop for approval.
 
         Args:
             task: Task description
@@ -313,19 +313,32 @@ class AgentRuntime:
             Final result string
         """
         plan = await self._create_plan(task)
+        return self._prepare_plan_for_approval(plan)
 
+    def _prepare_plan_for_approval(self, plan: Plan) -> str:
+        """Persist plan state and return an approval-gated response."""
         self.state.set_plan(plan)
         plan_file_path = self._save_plan_to_project(plan)
         self.state.set_plan_file_path(plan_file_path)
+        self.state.mark_plan_awaiting_approval()
 
         self._emit("plan", plan, plan_file_path)
+        return "Plan ready for approval"
 
-        if not self.auto_confirm:
-            confirmed = await self._confirm_plan(plan)
-            if not confirmed:
-                return "Plan cancelled by user"
+    async def execute_approved_plan(self, stream: bool = True) -> str:
+        """Execute the current approved plan step by step."""
+        plan = self.state.current_plan
+        if not plan:
+            return "No plan available for execution"
 
-        self.state.set_mode("act")
+        if self.state.plan_approval_status not in {
+            PlanApprovalStatus.APPROVED,
+            PlanApprovalStatus.EXECUTING,
+        }:
+            return "Plan approval required before execution"
+
+        self.state.mark_plan_executing()
+        plan.status = PlanStatus.EXECUTING
 
         if plan.steps:
             for step in plan.steps:

@@ -13,6 +13,28 @@ from opennova.runtime.state import AgentState
 from opennova.tools.base import BaseTool, ToolResult
 
 
+def _build_plan_mode_metadata(state: AgentState | None) -> dict[str, Any]:
+    """Build consistent plan-mode metadata from shared runtime state."""
+    if not isinstance(state, AgentState):
+        return {
+            "mode": "plan",
+            "current_mode": "plan",
+            "has_plan": False,
+            "plan_file_path": None,
+            "requires_confirmation": True,
+            "plan_approval_status": "awaiting_approval",
+        }
+
+    return {
+        "mode": "plan",
+        "current_mode": state.mode,
+        "has_plan": bool(state.current_plan),
+        "plan_file_path": str(state.plan_file_path) if state.plan_file_path else None,
+        "requires_confirmation": state.requires_confirmation,
+        "plan_approval_status": state.plan_approval_status.value,
+    }
+
+
 class EnterPlanModeTool(BaseTool):
     """Enter plan mode for planning implementation tasks."""
 
@@ -58,16 +80,13 @@ In plan mode, you'll:
 - This tool REQUIRES user approval before implementation
 - Once in plan mode, explore thoroughly and create a detailed plan before calling ExitPlanMode
 """
+            metadata = _build_plan_mode_metadata(state if isinstance(state, AgentState) else None)
+            metadata["instructions"] = instructions
+
             return ToolResult(
                 success=True,
                 output="Entered plan mode. Please explore the codebase and design your approach.",
-                metadata={
-                    "mode": "plan",
-                    "current_mode": state.mode if isinstance(state, AgentState) else "plan",
-                    "has_plan": bool(state.current_plan) if isinstance(state, AgentState) else False,
-                    "plan_file_path": str(state.plan_file_path) if isinstance(state, AgentState) and state.plan_file_path else None,
-                    "instructions": instructions,
-                },
+                metadata=metadata,
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
@@ -89,7 +108,7 @@ class ExitPlanModeTool(BaseTool):
         try:
             state = self.config.get("state")
             if isinstance(state, AgentState):
-                state.requires_confirmation = True
+                state.mark_plan_awaiting_approval()
 
             instructions = """## How This Tool Works
 
@@ -103,17 +122,14 @@ Ensure your plan is complete and unambiguous:
 - If you have unresolved questions about requirements or approach, use AskUserQuestion first
 - Once your plan is finalized, use THIS tool to request approval
 """
+            metadata = _build_plan_mode_metadata(state if isinstance(state, AgentState) else None)
+            metadata["status"] = "awaiting_approval"
+            metadata["instructions"] = instructions
+
             return ToolResult(
                 success=True,
                 output="Plan mode exited. Awaiting user approval of the plan.",
-                metadata={
-                    "status": "awaiting_approval",
-                    "mode": state.mode if isinstance(state, AgentState) else "plan",
-                    "has_plan": bool(state.current_plan) if isinstance(state, AgentState) else False,
-                    "plan_file_path": str(state.plan_file_path) if isinstance(state, AgentState) and state.plan_file_path else None,
-                    "requires_confirmation": state.requires_confirmation if isinstance(state, AgentState) else True,
-                    "instructions": instructions,
-                },
+                metadata=metadata,
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))

@@ -39,6 +39,16 @@ class PlanStatus(str, Enum):
     FAILED = "failed"
 
 
+class PlanApprovalStatus(str, Enum):
+    """Approval lifecycle for the current plan."""
+
+    NONE = "none"
+    DRAFT = "draft"
+    AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
+    EXECUTING = "executing"
+
+
 @dataclass
 class PlanStep:
     """A single step in a plan."""
@@ -159,6 +169,7 @@ class AgentState:
     requires_confirmation: bool = False
     current_plan: Plan | None = None
     plan_file_path: Path | None = None
+    plan_approval_status: PlanApprovalStatus = PlanApprovalStatus.NONE
     error_count: int = 0
     max_errors: int = 3
     last_action: str | None = None
@@ -173,6 +184,7 @@ class AgentState:
         self.requires_confirmation = False
         self.current_plan = None
         self.plan_file_path = None
+        self.plan_approval_status = PlanApprovalStatus.NONE
         self.error_count = 0
         self.last_action = None
         self.last_result = None
@@ -202,10 +214,36 @@ class AgentState:
         """Set the current plan."""
         self.current_plan = plan
         self.mode = "plan"
+        self.plan_approval_status = PlanApprovalStatus.DRAFT
+        self.requires_confirmation = False
 
     def set_plan_file_path(self, path: str | Path) -> None:
         """Set the saved plan file path."""
         self.plan_file_path = Path(path)
+
+    def mark_plan_awaiting_approval(self) -> None:
+        """Mark the current plan as ready for user approval."""
+        self.mode = "plan"
+        self.plan_approval_status = PlanApprovalStatus.AWAITING_APPROVAL
+        self.requires_confirmation = True
+
+    def mark_plan_approved(self) -> None:
+        """Mark the current plan as approved for execution."""
+        self.plan_approval_status = PlanApprovalStatus.APPROVED
+        self.requires_confirmation = False
+
+    def mark_plan_executing(self) -> None:
+        """Mark the current plan as executing."""
+        self.mode = "act"
+        self.plan_approval_status = PlanApprovalStatus.EXECUTING
+        self.requires_confirmation = False
+
+    def clear_plan_state(self) -> None:
+        """Clear any active plan lifecycle state."""
+        self.current_plan = None
+        self.plan_file_path = None
+        self.plan_approval_status = PlanApprovalStatus.NONE
+        self.requires_confirmation = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -215,6 +253,8 @@ class AgentState:
             "iteration": self.iteration,
             "is_complete": self.is_complete,
             "error_count": self.error_count,
+            "requires_confirmation": self.requires_confirmation,
+            "plan_approval_status": self.plan_approval_status.value,
             "plan_file_path": str(self.plan_file_path) if self.plan_file_path else None,
             "current_plan": self.current_plan.to_dict() if self.current_plan else None,
         }

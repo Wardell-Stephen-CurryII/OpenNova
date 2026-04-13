@@ -16,7 +16,7 @@ from opennova.tools.task_tools import (
 from opennova.utils.task_output import read_task_output
 from opennova.providers.base import Message, ToolSchema
 from opennova.runtime.agent import AgentRuntime
-from opennova.runtime.state import AgentState
+from opennova.runtime.state import AgentState, PlanApprovalStatus
 from opennova.tools.plan_mode_tools import EnterPlanModeTool, ExitPlanModeTool
 from opennova.runtime.loop import ReActLoop
 from opennova.tasks import TaskManager, TaskStatus, TaskType
@@ -610,9 +610,6 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
                 steps=[PlanStep(id="step_1", description="Write plan to disk", tool_hint="write_file")],
             )
 
-        async def _confirm_plan(self, plan):
-            return False
-
     previous_cwd = Path.cwd()
     try:
         import os
@@ -628,9 +625,13 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
         runtime.register_callback("plan", on_plan)
         result = asyncio.run(runtime.run("Persist this plan", mode="plan", stream=False))
 
-        assert result == "Plan cancelled by user"
+        assert result == "Plan ready for approval"
         assert captured["plan_file_path"] is not None
         assert runtime.state.plan_file_path == captured["plan_file_path"]
+        assert runtime.state.current_plan is not None
+        assert runtime.state.plan_approval_status == PlanApprovalStatus.AWAITING_APPROVAL
+        assert runtime.state.requires_confirmation is True
+        assert runtime.state.mode == "plan"
         assert captured["plan_file_path"].parent == Path(".opennova") / "plan"
         assert captured["plan_file_path"].name.startswith("plan_")
         assert captured["plan_file_path"].suffix == ".md"
@@ -644,6 +645,47 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
         assert "1. **step_1** — Write plan to disk" in saved_content
     finally:
         os.chdir(previous_cwd)
+
+
+def test_agent_runtime_execute_approved_plan_runs_steps():
+    """Approved plans should execute only after explicit approval."""
+    from opennova.runtime.state import Plan, PlanStep, StepStatus
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.state.set_plan(Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+    runtime.state.mark_plan_awaiting_approval()
+    runtime.state.mark_plan_approved()
+
+    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None):
+        runtime.state.last_result = f"done: {task}"
+        return f"done: {task}"
+
+    runtime._run_act_mode = fake_run_act_mode
+    runtime._should_continue_on_failure = lambda: False
+
+    result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
+
+    assert result == "done: Do thing"
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.EXECUTING
+    assert runtime.state.mode == "act"
+    assert runtime.state.current_plan is not None
+    assert runtime.state.current_plan.steps[0].status == StepStatus.DONE
+
+
+def test_agent_runtime_execute_approved_plan_requires_approval():
+    """Plan execution should refuse to start before approval."""
+    from opennova.runtime.state import Plan, PlanStep
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.state.set_plan(Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+    runtime.state.mark_plan_awaiting_approval()
+
+    result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
+
+    assert result == "Plan approval required before execution"
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.AWAITING_APPROVAL
 
 
 def test_agent_runtime_create_plan_uses_shared_planner():
@@ -686,6 +728,7 @@ def test_enter_plan_mode_tool_updates_runtime_state():
     assert result.metadata["mode"] == "plan"
     assert result.metadata["current_mode"] == "plan"
     assert result.metadata["has_plan"] is False
+    assert result.metadata["plan_approval_status"] == "none"
 
 
 def test_exit_plan_mode_tool_reports_runtime_plan_state(tmp_path: Path):
@@ -702,9 +745,12 @@ def test_exit_plan_mode_tool_reports_runtime_plan_state(tmp_path: Path):
 
     assert result.success is True
     assert state.requires_confirmation is True
+    assert state.plan_approval_status == PlanApprovalStatus.AWAITING_APPROVAL
     assert result.metadata["status"] == "awaiting_approval"
     assert result.metadata["mode"] == "plan"
     assert result.metadata["has_plan"] is True
     assert result.metadata["plan_file_path"].endswith("plan.md")
     assert result.metadata["requires_confirmation"] is True
+    assert result.metadata["plan_approval_status"] == "awaiting_approval"
+
 
