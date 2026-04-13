@@ -16,6 +16,19 @@ from opennova.runtime.state import Plan, PlanStep, PlanStatus
 from opennova.planning.models import PlanTemplate, PlanResult, COMMON_TEMPLATES
 
 
+TEMPLATE_PREFERRED_KEYWORDS = {
+    "unit test",
+    "unit tests",
+    "write tests",
+    "add tests",
+    "testing",
+    "generate docs",
+    "documentation",
+    "docstring",
+    "docstrings",
+}
+
+
 PLANNING_PROMPT = """You are a task planning assistant. Your job is to break down tasks into clear, actionable steps.
 
 Given a task, create a structured plan with the following format:
@@ -79,7 +92,9 @@ class Planner:
         """
         Create a plan for a task.
 
-        First checks templates, then falls back to LLM.
+        Prefer LLM-authored plans for broad development requests, while keeping
+        templates available for narrowly-scoped template-friendly tasks and as
+        a fallback when LLM planning fails.
 
         Args:
             task: Task description
@@ -87,13 +102,40 @@ class Planner:
         Returns:
             Plan with steps
         """
-        if self.use_templates:
-            for template in self.templates:
-                if template.matches(task):
-                    plan = template.create_plan(task)
-                    return plan
+        preferred_template = self._select_template(task)
+        if preferred_template and self._should_prefer_template(task):
+            return preferred_template.create_plan(task)
 
-        return await self._create_llm_plan(task)
+        llm_plan = await self._create_llm_plan(task)
+        if self._is_fallback_plan(llm_plan, task) and preferred_template:
+            return preferred_template.create_plan(task)
+
+        return llm_plan
+
+    def _select_template(self, task: str) -> PlanTemplate | None:
+        """Return the first matching template for a task, if any."""
+        if not self.use_templates:
+            return None
+
+        for template in self.templates:
+            if template.matches(task):
+                return template
+
+        return None
+
+    def _should_prefer_template(self, task: str) -> bool:
+        """Whether a task is narrow enough to prefer a canned template."""
+        task_lower = task.lower()
+        return any(keyword in task_lower for keyword in TEMPLATE_PREFERRED_KEYWORDS)
+
+    def _is_fallback_plan(self, plan: Plan, task: str) -> bool:
+        """Detect the single-step fallback plan shape used when planning fails."""
+        return (
+            plan.task == task
+            and len(plan.steps) == 1
+            and plan.steps[0].id == "step_1"
+            and plan.steps[0].description == task
+        )
 
     async def _create_llm_plan(self, task: str) -> Plan:
         """

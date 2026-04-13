@@ -20,7 +20,7 @@ from opennova.providers.base import BaseLLMProvider, Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
 from opennova.planning.planner import Planner
 from opennova.runtime.loop import ParsedAction, ReActLoop, run_simple_task
-from opennova.runtime.state import AgentState, AgentMode, Plan, PlanApprovalStatus, PlanStatus
+from opennova.runtime.state import AgentState, AgentMode, Plan, PlanApprovalStatus, PlanStatus, PlanStep
 from opennova.tasks import TaskManager
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult, register_builtin_tools
 
@@ -310,6 +310,33 @@ class AgentRuntime:
         self._emit("plan", plan, plan_file_path)
         return "Plan ready for approval"
 
+    def _build_step_execution_task(self, plan: Plan, step: PlanStep) -> str:
+        """Build an act-mode task prompt for an approved plan step."""
+        remaining_steps = [
+            pending_step.description
+            for pending_step in plan.steps
+            if pending_step.id != step.id and pending_step.status.value == "pending"
+        ]
+
+        lines = [
+            "Execute the approved development plan step.",
+            f"Overall plan: {plan.task}",
+            f"Current step ({step.id}): {step.description}",
+        ]
+
+        if remaining_steps:
+            lines.append("Remaining planned steps:")
+            lines.extend(f"- {description}" for description in remaining_steps)
+
+        lines.extend(
+            [
+                "Work on the current step while keeping the approved plan in mind.",
+                "Do not re-plan from scratch unless execution reveals a concrete blocker.",
+            ]
+        )
+
+        return "\n".join(lines)
+
     async def execute_approved_plan(self, stream: bool = True) -> str:
         """Execute the current approved plan step by step."""
         plan = self.state.current_plan
@@ -332,7 +359,7 @@ class AgentRuntime:
 
                 plan.mark_step_running(step.id)
 
-                step_task = step.description
+                step_task = self._build_step_execution_task(plan, step)
                 result = await self._run_act_mode(step_task, stream=stream)
 
                 if result and ("error" in result.lower() or "failed" in result.lower()):

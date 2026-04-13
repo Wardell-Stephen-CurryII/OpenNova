@@ -55,7 +55,7 @@ class ReActLoop:
         llm: BaseLLMProvider,
         tool_registry: ToolRegistry,
         state: AgentState,
-        max_iterations: int = 20,
+        max_iterations: int = 500,
         stream: bool = True,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         iteration_start_callback: Callable[[list[Message]], None] | None = None,

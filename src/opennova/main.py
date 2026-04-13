@@ -231,6 +231,16 @@ async def _run_single_task(
         console.print("[bold]Result:[/bold]")
         console.print(result)
 
+        if plan_mode:
+            if click.confirm("Execute this saved plan now?", default=False):
+                agent.state.mark_plan_approved()
+                execution_result = await agent.execute_approved_plan(stream=stream)
+                console.print()
+                console.print("[bold]Execution Result:[/bold]")
+                console.print(execution_result)
+            else:
+                console.print("[yellow]Plan kept for later execution.[/yellow]")
+
     except KeyboardInterrupt:
         console.print("\n[yellow]Task interrupted.[/yellow]")
         sys.exit(1)

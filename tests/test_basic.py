@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from pathlib import Path
+from unittest.mock import patch
 import pytest
 
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
@@ -591,6 +592,35 @@ def test_task_update_tool_rejects_invalid_dependencies():
     assert third.blocked_by == [second.id]
     assert second.blocks == [third.id]
 
+def test_planner_prefers_llm_plan_for_broad_development_requests():
+    """Broad coding tasks should use LLM planning before generic templates."""
+    from opennova.planning.planner import Planner
+    from opennova.runtime.state import Plan, PlanStep
+
+    class LLMProvider(DummyProvider):
+        async def chat(self, messages, tools=None, **kwargs):
+            class Response:
+                content = (
+                    '{"task_summary": "Implement logout", '
+                    '"steps": ['
+                    '{"id": "step_1", "description": "Inspect the existing auth flow"}, '
+                    '{"id": "step_2", "description": "Add the logout action and UI entry point"}'
+                    ']}'
+                )
+
+            return Response()
+
+    planner = Planner(LLMProvider())
+
+    plan = asyncio.run(planner.create_plan("Implement logout flow in the CLI"))
+
+    assert plan.task == "Implement logout"
+    assert [step.description for step in plan.steps] == [
+        "Inspect the existing auth flow",
+        "Add the logout action and UI entry point",
+    ]
+
+
 def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
     """Plan mode should persist generated plans to .opennova/plan with a timestamped filename."""
 
@@ -657,7 +687,10 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
     runtime.state.mark_plan_awaiting_approval()
     runtime.state.mark_plan_approved()
 
+    captured_tasks = []
+
     async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None):
+        captured_tasks.append(task)
         runtime.state.last_result = f"done: {task}"
         return f"done: {task}"
 
@@ -666,7 +699,10 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
 
     result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
 
-    assert result == "done: Do thing"
+    assert "Current step (step_1): Do thing" in result
+    assert captured_tasks
+    assert "Overall plan: Execute plan" in captured_tasks[0]
+    assert "Current step (step_1): Do thing" in captured_tasks[0]
     assert runtime.state.plan_approval_status == PlanApprovalStatus.EXECUTING
     assert runtime.state.mode == "act"
     assert runtime.state.current_plan is not None
@@ -714,6 +750,76 @@ def test_agent_runtime_create_plan_uses_shared_planner():
     assert plan.task == "Unify planning"
     assert runtime.planner.create_calls == ["Unify planning"]
     assert runtime.planner.optimize_calls == ["Unify planning"]
+
+
+def test_run_single_task_plan_mode_executes_after_confirmation():
+    """CLI plan mode should approve and execute on the same runtime instance."""
+    from opennova.main import _run_single_task
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.register_callback = lambda event, callback: None
+
+    async def fake_run(task: str, mode: str = "act", stream: bool = True, progress_callback=None):
+        from opennova.runtime.state import Plan, PlanStep
+
+        runtime.state.reset(task)
+        runtime.state.set_mode(mode)
+        runtime.state.set_plan(Plan(task="Approved plan", steps=[PlanStep(id="step_1", description="Ship it")]))
+        runtime.state.mark_plan_awaiting_approval()
+        return "Plan ready for approval"
+
+    async def fake_execute(stream: bool = True):
+        return "executed approved plan"
+
+    runtime.run = fake_run
+    runtime.execute_approved_plan = fake_execute
+
+    with patch("opennova.main.AgentRuntime", return_value=runtime), patch(
+        "opennova.main.click.confirm", return_value=True
+    ):
+        asyncio.run(_run_single_task(config=None, task="Do work", plan_mode=True, stream=False))
+
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_repl_plan_command_executes_after_approval():
+    """REPL /plan should approve and execute without resetting away the saved plan."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.register_callback = lambda event, callback: None
+
+    async def fake_run(task: str, mode: str = "act", stream: bool = True, progress_callback=None):
+        from opennova.runtime.state import Plan, PlanStep
+
+        runtime.state.reset(task)
+        runtime.state.set_mode(mode)
+        runtime.state.set_plan(Plan(task="Approved plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+        runtime.state.mark_plan_awaiting_approval()
+        return "Plan ready for approval"
+
+    executed = []
+
+    async def fake_execute(stream: bool = True):
+        executed.append(True)
+        return "executed"
+
+    runtime.run = fake_run
+    runtime.execute_approved_plan = fake_execute
+
+    repl = REPL(runtime, config=None)
+    repl.renderer.print = lambda *args, **kwargs: None
+    repl.renderer.print_plan = lambda *args, **kwargs: None
+    repl.renderer.print_markdown = lambda *args, **kwargs: None
+    repl._prompt_plan_execution = lambda: asyncio.sleep(0, result=True)
+
+    await repl._cmd_plan("Do thing")
+
+    assert executed == [True]
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.APPROVED
 
 
 def test_enter_plan_mode_tool_updates_runtime_state():

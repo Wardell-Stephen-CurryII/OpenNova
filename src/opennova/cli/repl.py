@@ -315,6 +315,22 @@ class REPL:
         result = await self.agent.run(args, mode="plan")
         self.renderer.print_markdown(result)
 
+        approved = await self._prompt_plan_execution()
+        if not approved:
+            self.renderer.print("[yellow]Plan kept for later execution.[/yellow]")
+            return
+
+        self.agent.state.mark_plan_approved()
+        execution_result = await self.agent.execute_approved_plan()
+        self.renderer.print_markdown(execution_result)
+
+    async def _prompt_plan_execution(self) -> bool:
+        """Prompt the user to approve execution of the current saved plan."""
+        response = await self.session.prompt_async(
+            "Execute this plan now? [y/N]: "
+        )
+        return response.strip().lower() in {"y", "yes"}
+
     async def _cmd_act(self, args: str) -> None:
         """Execute in act mode."""
         if not args:
