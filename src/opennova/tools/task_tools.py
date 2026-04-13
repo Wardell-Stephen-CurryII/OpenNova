@@ -34,6 +34,27 @@ def get_global_task_manager() -> TaskManager:
     return _global_task_manager
 
 
+def _format_dependency_details(manager: TaskManager, task: Task) -> list[str]:
+    """Build human-readable dependency details for task output."""
+    details: list[str] = []
+
+    if task.blocked_by:
+        open_blockers = manager.get_open_blocker_ids(task.id)
+        blocker_text = ", ".join(task.blocked_by)
+        if open_blockers:
+            details.append(f"blocked_by: {blocker_text} (open: {', '.join(open_blockers)})")
+        else:
+            details.append(f"blocked_by: {blocker_text} (open: none)")
+
+    if task.blocks:
+        details.append(f"blocks: {', '.join(task.blocks)}")
+
+    if task.blocked_by:
+        details.append(f"is_blocked: {manager.is_task_blocked(task.id)}")
+
+    return details
+
+
 class TaskCreateTool(BaseTool):
     """Create a new structured task for tracking work."""
 
@@ -110,15 +131,15 @@ class TaskListTool(BaseTool):
                     task.status.value, "?"
                 )
                 owner = task.metadata.get("owner", "")
-                blocked_info = ""
+                dependency_details = _format_dependency_details(manager, task)
 
                 output_lines.append(
                     f"  [{task.id}] {status_icon} {task.description[:60]}{'...' if len(task.description) > 60 else ''}"
                 )
                 if owner:
                     output_lines.append(f"      owner: {owner}")
-                if blocked_info:
-                    output_lines.append(f"      {blocked_info}")
+                for detail in dependency_details:
+                    output_lines.append(f"      {detail}")
 
             return ToolResult(
                 success=True,
@@ -163,19 +184,24 @@ class TaskGetTool(BaseTool):
                 f"Type: {task.type.value}",
             ]
 
+            dependency_details = _format_dependency_details(manager, task)
+            if dependency_details:
+                output_lines.append("")
+                output_lines.append("Dependencies:")
+                for detail in dependency_details:
+                    output_lines.append(f"  {detail}")
+
             if task.start_time:
                 output_lines.append(f"Started: {task.start_time.isoformat()}")
             if task.end_time:
                 output_lines.append(f"Ended: {task.end_time.isoformat()}")
 
-            # Add metadata
             if task.metadata:
                 output_lines.append("\nMetadata:")
                 for key, value in task.metadata.items():
-                    if key != "description":  # Already shown
+                    if key != "description":
                         output_lines.append(f"  {key}: {value}")
 
-            # Add usage info if available
             if task.usage and task.usage.total_tokens > 0:
                 output_lines.append(
                     f"\nUsage: {task.usage.total_tokens} tokens, {task.usage.tool_uses} tool uses, {task.usage.duration_ms}ms"
@@ -237,7 +263,6 @@ class TaskUpdateTool(BaseTool):
                     error=f"Task '{task_id}' not found",
                 )
 
-            # Update status
             if status:
                 try:
                     task_status = TaskStatus(status)
@@ -249,7 +274,19 @@ class TaskUpdateTool(BaseTool):
                         error=f"Invalid status: {status}. Must be one of: pending, running, completed, failed, killed",
                     )
 
-            # Update metadata
+            dependency_targets = []
+            for dependent_task_id in add_blocks or []:
+                success, error = manager.add_dependency(task_id, dependent_task_id)
+                if not success:
+                    return ToolResult(success=False, output="", error=error)
+                dependency_targets.append(dependent_task_id)
+
+            for prerequisite_task_id in add_blocked_by or []:
+                success, error = manager.add_dependency(prerequisite_task_id, task_id)
+                if not success:
+                    return ToolResult(success=False, output="", error=error)
+                dependency_targets.append(prerequisite_task_id)
+
             if subject:
                 task.metadata["subject"] = subject
             if active_form:
@@ -258,7 +295,6 @@ class TaskUpdateTool(BaseTool):
                 task.metadata["owner"] = owner
 
             if description:
-                # Update the main description
                 subject_part = task.metadata.get("subject", "")
                 task.description = f"{subject_part}: {description}"
                 task.metadata["description"] = description
@@ -266,7 +302,6 @@ class TaskUpdateTool(BaseTool):
             if metadata:
                 for key, value in metadata.items():
                     if value is None:
-                        # Delete key if value is None
                         task.metadata.pop(key, None)
                     else:
                         task.metadata[key] = value
@@ -274,7 +309,10 @@ class TaskUpdateTool(BaseTool):
             return ToolResult(
                 success=True,
                 output=f"Updated task {task_id}",
-                metadata={"task": task.to_dict()},
+                metadata={
+                    "task": task.to_dict(),
+                    "updated_dependencies": dependency_targets,
+                },
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))

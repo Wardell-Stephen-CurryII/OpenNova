@@ -119,6 +119,8 @@ class Task:
     message_queue: list[dict[str, Any]] = field(default_factory=list)
     delivered_messages: list[dict[str, Any]] = field(default_factory=list)
     follow_up_batches: list[dict[str, Any]] = field(default_factory=list)
+    blocks: list[str] = field(default_factory=list)
+    blocked_by: list[str] = field(default_factory=list)
     retain: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -155,6 +157,8 @@ class Task:
             "message_queue": self.message_queue,
             "delivered_messages": self.delivered_messages,
             "follow_up_batches": self.follow_up_batches,
+            "blocks": self.blocks,
+            "blocked_by": self.blocked_by,
             "retain": self.retain,
             "metadata": self.metadata,
         }
@@ -192,6 +196,8 @@ class Task:
             message_queue=data.get("message_queue", []),
             delivered_messages=data.get("delivered_messages", []),
             follow_up_batches=data.get("follow_up_batches", []),
+            blocks=data.get("blocks", []),
+            blocked_by=data.get("blocked_by", []),
             retain=data.get("retain", True),
             metadata=data.get("metadata", {}),
         )
@@ -467,6 +473,72 @@ class TaskManager:
         if not task:
             return False
         return bool(task.message_queue)
+
+    def _has_dependency_path(self, start_task_id: str, target_task_id: str) -> bool:
+        """Check whether dependency edges connect start_task_id to target_task_id."""
+        stack = [start_task_id]
+        visited: set[str] = set()
+
+        while stack:
+            current_task_id = stack.pop()
+            if current_task_id == target_task_id:
+                return True
+            if current_task_id in visited:
+                continue
+            visited.add(current_task_id)
+
+            current_task = self._tasks.get(current_task_id)
+            if not current_task:
+                continue
+            stack.extend(current_task.blocks)
+
+        return False
+
+    def add_dependency(self, prerequisite_task_id: str, dependent_task_id: str) -> tuple[bool, str | None]:
+        """Make dependent_task_id wait for prerequisite_task_id to complete."""
+        prerequisite_task = self._tasks.get(prerequisite_task_id)
+        dependent_task = self._tasks.get(dependent_task_id)
+
+        if not prerequisite_task:
+            return False, f"Task '{prerequisite_task_id}' not found"
+        if not dependent_task:
+            return False, f"Task '{dependent_task_id}' not found"
+        if prerequisite_task_id == dependent_task_id:
+            return False, "A task cannot depend on itself"
+        if self._has_dependency_path(dependent_task_id, prerequisite_task_id):
+            return False, "Dependency cycle detected"
+
+        if dependent_task_id not in prerequisite_task.blocks:
+            prerequisite_task.blocks.append(dependent_task_id)
+        if prerequisite_task_id not in dependent_task.blocked_by:
+            dependent_task.blocked_by.append(prerequisite_task_id)
+
+        return True, None
+
+    def is_task_blocked(self, task_id: str) -> bool:
+        """Check whether a task is blocked by unfinished prerequisites."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+
+        for blocker_id in task.blocked_by:
+            blocker = self._tasks.get(blocker_id)
+            if blocker and blocker.status != TaskStatus.COMPLETED:
+                return True
+        return False
+
+    def get_open_blocker_ids(self, task_id: str) -> list[str]:
+        """Return blocker task IDs that are not yet completed."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return []
+
+        open_blockers = []
+        for blocker_id in task.blocked_by:
+            blocker = self._tasks.get(blocker_id)
+            if blocker and blocker.status != TaskStatus.COMPLETED:
+                open_blockers.append(blocker_id)
+        return open_blockers
 
     def set_cleanup_callback(self, task_id: str, callback: Callable[[], None]) -> None:
         """Set cleanup callback for a task."""

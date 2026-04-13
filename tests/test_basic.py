@@ -7,7 +7,12 @@ import pytest
 
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
 from opennova.tools.agent_tools import AgentTool, SendMessageTool
-from opennova.tools.task_tools import set_global_task_manager
+from opennova.tools.task_tools import (
+    TaskGetTool,
+    TaskListTool,
+    TaskUpdateTool,
+    set_global_task_manager,
+)
 from opennova.utils.task_output import read_task_output
 from opennova.providers.base import Message, ToolSchema
 from opennova.runtime.agent import AgentRuntime
@@ -499,6 +504,92 @@ def test_create_child_runtime_inherits_flags():
     assert child.enable_mcp == runtime.enable_mcp
     assert child.enable_skills == runtime.enable_skills
 
+
+def test_task_dependency_fields_round_trip_through_serialization():
+    """Task dependency fields should survive serialization and deserialization."""
+    manager = TaskManager()
+    prerequisite = manager.create_task(TaskType.LOCAL_WORKFLOW, "Prepare work")
+    dependent = manager.create_task(TaskType.LOCAL_WORKFLOW, "Ship work")
+
+    success, error = manager.add_dependency(prerequisite.id, dependent.id)
+
+    assert success is True
+    assert error is None
+
+    restored = type(prerequisite).from_dict(prerequisite.to_dict())
+    restored_dependent = type(dependent).from_dict(dependent.to_dict())
+
+    assert restored.blocks == [dependent.id]
+    assert restored.blocked_by == []
+    assert restored_dependent.blocks == []
+    assert restored_dependent.blocked_by == [prerequisite.id]
+
+
+def test_task_update_tool_applies_dependency_graph_and_reports_outputs():
+    """task_update should wire dependencies into manager state and task list/get output."""
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    prerequisite = manager.create_task(TaskType.LOCAL_WORKFLOW, "Prepare work")
+    dependent = manager.create_task(TaskType.LOCAL_WORKFLOW, "Ship work")
+
+    result = TaskUpdateTool().execute(task_id=prerequisite.id, add_blocks=[dependent.id])
+
+    assert result.success is True
+    assert result.metadata["updated_dependencies"] == [dependent.id]
+    assert prerequisite.blocks == [dependent.id]
+    assert dependent.blocked_by == [prerequisite.id]
+    assert manager.is_task_blocked(dependent.id) is True
+    assert manager.get_open_blocker_ids(dependent.id) == [prerequisite.id]
+
+    list_result = TaskListTool().execute()
+    assert list_result.success is True
+    assert f"blocked_by: {prerequisite.id} (open: {prerequisite.id})" in list_result.output
+    assert f"blocks: {dependent.id}" in list_result.output
+    assert "is_blocked: True" in list_result.output
+
+    get_result = TaskGetTool().execute(task_id=dependent.id)
+    assert get_result.success is True
+    assert "Dependencies:" in get_result.output
+    assert f"blocked_by: {prerequisite.id} (open: {prerequisite.id})" in get_result.output
+    assert "is_blocked: True" in get_result.output
+    assert get_result.metadata["task"]["blocked_by"] == [prerequisite.id]
+
+    manager.update_task_status(prerequisite.id, TaskStatus.COMPLETED)
+
+    unblocked_result = TaskGetTool().execute(task_id=dependent.id)
+    assert manager.is_task_blocked(dependent.id) is False
+    assert manager.get_open_blocker_ids(dependent.id) == []
+    assert f"blocked_by: {prerequisite.id} (open: none)" in unblocked_result.output
+    assert "is_blocked: False" in unblocked_result.output
+
+
+def test_task_update_tool_rejects_invalid_dependencies():
+    """task_update should reject missing tasks, self-dependencies, and cycles."""
+    manager = TaskManager()
+    set_global_task_manager(manager)
+    first = manager.create_task(TaskType.LOCAL_WORKFLOW, "First")
+    second = manager.create_task(TaskType.LOCAL_WORKFLOW, "Second")
+    third = manager.create_task(TaskType.LOCAL_WORKFLOW, "Third")
+
+    missing = TaskUpdateTool().execute(task_id=first.id, add_blocks=["wmissing"])
+    assert missing.success is False
+    assert missing.error == "Task 'wmissing' not found"
+
+    self_dependency = TaskUpdateTool().execute(task_id=first.id, add_blocks=[first.id])
+    assert self_dependency.success is False
+    assert self_dependency.error == "A task cannot depend on itself"
+
+    initial = TaskUpdateTool().execute(task_id=first.id, add_blocks=[second.id])
+    assert initial.success is True
+
+    cycle = TaskUpdateTool().execute(task_id=second.id, add_blocks=[first.id])
+    assert cycle.success is False
+    assert cycle.error == "Dependency cycle detected"
+
+    reverse_form = TaskUpdateTool().execute(task_id=third.id, add_blocked_by=[second.id])
+    assert reverse_form.success is True
+    assert third.blocked_by == [second.id]
+    assert second.blocks == [third.id]
 
 def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
     """Plan mode should persist generated plans to .opennova/plan with a timestamped filename."""
