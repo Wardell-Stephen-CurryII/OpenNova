@@ -168,6 +168,7 @@ class AgentRuntime:
 
     def _init_skills(self) -> None:
         """Initialize skill loading."""
+        from opennova.skills.examples import get_builtin_skill_classes
         from opennova.skills.registry import SkillRegistry
 
         skills_config = self.config.get("skills", {})
@@ -179,27 +180,11 @@ class AgentRuntime:
         skill_dirs = skills_config.get("dirs", [])
         excluded = skills_config.get("exclude", [])
 
-        self.skill_registry.load_from_dirs(skill_dirs if skill_dirs else None)
-
-        for name in excluded:
-            self.skill_registry.disable_skill(name)
-
-        from opennova.skills.examples import (
-            CodeReviewSkill,
-            DocumentationSkill,
-            GitHelperSkill,
-            ProjectAnalyzerSkill,
+        self.skill_registry.load_all(
+            directories=skill_dirs if skill_dirs else None,
+            builtins=get_builtin_skill_classes(),
+            excluded=excluded,
         )
-
-        for skill_cls in [
-            CodeReviewSkill,
-            DocumentationSkill,
-            GitHelperSkill,
-            ProjectAnalyzerSkill,
-        ]:
-            instance = skill_cls()
-            if instance.name not in excluded:
-                self.skill_registry.register(instance)
 
     def _init_mcp(self) -> None:
         """Initialize MCP server connections."""
@@ -540,10 +525,19 @@ class AgentRuntime:
         Returns:
             Number of skills loaded
         """
-        if not self.skill_registry:
-            from opennova.skills.registry import SkillRegistry
+        from opennova.skills.examples import get_builtin_skill_classes
+        from opennova.skills.registry import SkillRegistry
 
+        if not self.skill_registry:
             self.skill_registry = SkillRegistry(self.tool_registry)
 
-        self.skill_registry.load_from_dirs()
+        skills_config = self.config.get("skills", {})
+        skill_dirs = skills_config.get("dirs", [])
+        excluded = skills_config.get("exclude", [])
+
+        self.skill_registry.load_all(
+            directories=skill_dirs if skill_dirs else None,
+            builtins=get_builtin_skill_classes(),
+            excluded=excluded,
+        )
         return len(self.skill_registry)

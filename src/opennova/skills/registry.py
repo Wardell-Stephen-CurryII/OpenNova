@@ -62,6 +62,22 @@ class SkillRegistry:
         self.skills: dict[str, LoadedSkill] = {}
         self._stats = SkillStats()
 
+    def _store_loaded_skill(self, name: str, skill: LoadedSkill) -> None:
+        """Store a loaded skill and register it if enabled."""
+        self.skills[name] = skill
+
+        if skill.metadata and not skill.metadata.enabled:
+            return
+
+        instance = skill.get_instance()
+        if instance:
+            self.tool_registry.register(instance)
+
+    def _unregister_skill_tool(self, name: str) -> None:
+        """Remove a skill tool from the tool registry if present."""
+        if self.tool_registry.has_tool(name):
+            self.tool_registry.unregister(name)
+
     def load_from_dirs(
         self,
         directories: list[str | Path] | None = None,
@@ -80,12 +96,7 @@ class SkillRegistry:
         for name, skill in loaded.items():
             if skill.load_error:
                 continue
-
-            self.skills[name] = skill
-
-            instance = skill.get_instance()
-            if instance:
-                self.tool_registry.register(instance)
+            self._store_loaded_skill(name, skill)
 
         self._update_stats()
 
@@ -110,18 +121,53 @@ class SkillRegistry:
                 continue
 
             name = skill.metadata.name if skill.metadata else skill.skill_class.__name__
-
-            self.skills[name] = skill
-
-            instance = skill.get_instance()
-            if instance:
-                self.tool_registry.register(instance)
-
+            self._store_loaded_skill(name, skill)
             loaded_names.append(name)
 
         self._update_stats()
 
         return loaded_names
+
+    def load_all(
+        self,
+        directories: list[str | Path] | None = None,
+        builtins: list[type[BaseSkill]] | None = None,
+        excluded: list[str] | None = None,
+        replace_existing: bool = True,
+    ) -> dict[str, LoadedSkill]:
+        """Load built-in and discovered skills through one canonical path."""
+        excluded_names = set(excluded or [])
+
+        if replace_existing:
+            self.clear()
+
+        loaded: dict[str, LoadedSkill] = {}
+
+        for skill_class in builtins or []:
+            instance = skill_class()
+            metadata = instance.get_metadata()
+            metadata.enabled = metadata.enabled and metadata.name not in excluded_names
+            loaded_skill = LoadedSkill(
+                skill_class=skill_class,
+                instance=instance,
+                metadata=metadata,
+                source_type="builtin",
+            )
+            loaded[metadata.name] = loaded_skill
+            self._store_loaded_skill(metadata.name, loaded_skill)
+
+        discovered = SkillLoader.load_all_skills(directories)
+        for name, skill in discovered.items():
+            if skill.load_error:
+                continue
+            if skill.metadata:
+                skill.metadata.enabled = skill.metadata.enabled and name not in excluded_names
+                skill.source_type = "discovered"
+            loaded[name] = skill
+            self._store_loaded_skill(name, skill)
+
+        self._update_stats()
+        return loaded
 
     def register(self, skill: BaseSkill) -> None:
         """
@@ -135,6 +181,7 @@ class SkillRegistry:
             skill_class=type(skill),
             instance=skill,
             metadata=metadata,
+            source_type="builtin",
         )
 
         self.tool_registry.register(skill)
@@ -155,10 +202,7 @@ class SkillRegistry:
             return False
 
         del self.skills[name]
-
-        if self.tool_registry.has_tool(name):
-            self.tool_registry.unregister(name)
-
+        self._unregister_skill_tool(name)
         self._update_stats()
 
         return True
@@ -229,10 +273,7 @@ class SkillRegistry:
             return False
 
         skill.metadata.enabled = False
-
-        if self.tool_registry.has_tool(name):
-            self.tool_registry.unregister(name)
-
+        self._unregister_skill_tool(name)
         self._update_stats()
 
         return True
@@ -273,6 +314,7 @@ class SkillRegistry:
         info: dict[str, Any] = {
             "name": name,
             "source": skill.source_path,
+            "source_type": skill.source_type,
             "error": skill.load_error,
         }
 

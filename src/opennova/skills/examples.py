@@ -223,3 +223,13 @@ class ProjectAnalyzerSkill(BaseSkill):
                 output += f"  {display_ext}: {count}\n"
 
         return ToolResult(success=True, output=output)
+
+
+def get_builtin_skill_classes() -> list[type[BaseSkill]]:
+    """Return the built-in skill classes shipped with OpenNova."""
+    return [
+        CodeReviewSkill,
+        DocumentationSkill,
+        GitHelperSkill,
+        ProjectAnalyzerSkill,
+    ]

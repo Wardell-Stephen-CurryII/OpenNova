@@ -106,6 +106,7 @@ class LoadedSkill:
     skill_class: type[BaseSkill]
     instance: BaseSkill | None = None
     metadata: SkillMetadata | None = None
+    source_type: str = "discovered"
     source_path: str | None = None
     load_error: str | None = None
 
