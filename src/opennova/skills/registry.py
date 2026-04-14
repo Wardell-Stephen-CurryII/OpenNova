@@ -78,56 +78,6 @@ class SkillRegistry:
         if self.tool_registry.has_tool(name):
             self.tool_registry.unregister(name)
 
-    def load_from_dirs(
-        self,
-        directories: list[str | Path] | None = None,
-    ) -> dict[str, LoadedSkill]:
-        """
-        Load skills from directories.
-
-        Args:
-            directories: Custom directories to load from
-
-        Returns:
-            Dict of loaded skills
-        """
-        loaded = SkillLoader.load_all_skills(directories)
-
-        for name, skill in loaded.items():
-            if skill.load_error:
-                continue
-            self._store_loaded_skill(name, skill)
-
-        self._update_stats()
-
-        return loaded
-
-    def load_skill_file(self, file_path: str | Path) -> list[str]:
-        """
-        Load a single skill file.
-
-        Args:
-            file_path: Path to skill file
-
-        Returns:
-            List of loaded skill names
-        """
-        skills = SkillLoader.load_skill_file(file_path)
-
-        loaded_names = []
-
-        for skill in skills:
-            if skill.load_error:
-                continue
-
-            name = skill.metadata.name if skill.metadata else skill.skill_class.__name__
-            self._store_loaded_skill(name, skill)
-            loaded_names.append(name)
-
-        self._update_stats()
-
-        return loaded_names
-
     def load_all(
         self,
         directories: list[str | Path] | None = None,

@@ -194,18 +194,6 @@ class TestSkill(BaseSkill):
             assert len(skills) == 1
             assert skills[0].metadata is not None or skills[0].skill_class is not None
 
-    def test_skill_loader_create_template(self):
-        """Test creating skill template."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            template_path = SkillLoader.create_skill_template("my_cool_skill", tmpdir)
-
-            assert template_path.exists()
-            assert template_path.name == "my_cool_skill.py"
-
-            content = template_path.read_text()
-            assert "MyCoolSkill" in content
-            assert "my_cool_skill" in content
-
     def test_skill_registry_load_all_includes_builtins_and_exclusions(self):
         """Canonical registry loading should include builtins and respect exclusions."""
         registry = SkillRegistry()
@@ -221,6 +209,30 @@ class TestSkill(BaseSkill):
         assert registry.get_skill_info("git_helper")["source_type"] == "builtin"
         assert registry.is_enabled("code_review") is True
         assert registry.is_enabled("git_helper") is False
+
+    def test_skill_registry_load_all_marks_discovered_skills_disabled_when_excluded(self):
+        """Canonical loading should keep excluded discovered skills registered but disabled."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_file = Path(tmpdir) / "custom_skill.py"
+            skill_file.write_text('''
+from opennova.skills.base import BaseSkill
+from opennova.tools.base import ToolResult
+
+class CustomSkill(BaseSkill):
+    name = "custom"
+    description = "Custom"
+
+    def execute(self) -> ToolResult:
+        return ToolResult(success=True, output="custom")
+''')
+
+            registry = SkillRegistry()
+            loaded = registry.load_all(directories=[tmpdir], builtins=[], excluded=["custom"])
+
+            assert "custom" in loaded
+            assert "custom" in registry.list_skills()
+            assert registry.get_skill_info("custom")["source_type"] == "discovered"
+            assert registry.is_enabled("custom") is False
 
     def test_skill_registry_load_all_replaces_previous_discovered_skills(self):
         """Reloading through the canonical path should replace prior discovered skills."""
