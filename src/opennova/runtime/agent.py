@@ -406,31 +406,45 @@ class AgentRuntime:
         self.state.mark_plan_executing()
         plan.status = PlanStatus.EXECUTING
 
-        if plan.steps:
-            for step in plan.steps:
-                if self.state.is_complete:
-                    break
+        while True:
+            if self.state.is_complete:
+                break
 
-                plan.mark_step_running(step.id)
-                self._emit("thought", f"Executing plan step {step.id}: {step.description}")
+            step = plan.get_next_step()
+            if not step:
+                break
 
-                step_task = self._build_step_execution_task(plan, step)
-                result = await self._run_act_mode(
-                    step_task,
-                    stream=stream,
-                    preserve_plan_state=True,
-                )
+            plan.mark_step_running(step.id)
+            self._emit("thought", f"Executing plan step {step.id}: {step.description}")
 
-                if result and ("error" in result.lower() or "failed" in result.lower()):
-                    plan.mark_step_failed(step.id, result)
-                    if not self._should_continue_on_failure():
-                        break
-                elif result:
-                    plan.mark_step_done(step.id, result)
-                else:
-                    plan.mark_step_failed(step.id, "No result returned")
+            step_task = self._build_step_execution_task(plan, step)
+            result = await self._run_act_mode(
+                step_task,
+                stream=stream,
+                preserve_plan_state=True,
+            )
 
-        return self.state.last_result or "Plan execution complete"
+            if not result:
+                plan.mark_step_failed(step.id, "No result returned")
+                self.state.mark_plan_failed()
+                return self.state.last_result or "Plan execution complete"
+
+            if result.startswith("Task incomplete:") or result.startswith("Task failed:"):
+                plan.mark_step_failed(step.id, result)
+                self.state.mark_plan_failed()
+                if not self._should_continue_on_failure():
+                    return self.state.last_result or result
+                continue
+
+            plan.mark_step_done(step.id, result)
+
+        final_result = self.state.last_result or "Plan execution complete"
+        if plan.status == PlanStatus.DONE:
+            self.state.clear_plan_state()
+        elif plan.status == PlanStatus.FAILED:
+            self.state.mark_plan_failed()
+
+        return final_result
 
     async def _create_plan(self, task: str) -> Plan:
         """

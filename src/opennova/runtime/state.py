@@ -47,6 +47,7 @@ class PlanApprovalStatus(str, Enum):
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
     EXECUTING = "executing"
+    FAILED = "failed"
 
 
 @dataclass
@@ -112,6 +113,8 @@ class Plan:
                 step.status = StepStatus.FAILED
                 step.error = error
                 break
+
+        self._update_plan_status()
 
     def _update_plan_status(self) -> None:
         """Update overall plan status based on steps."""
@@ -254,6 +257,12 @@ class AgentState:
         self.current_plan = None
         self.plan_file_path = None
         self.plan_approval_status = PlanApprovalStatus.NONE
+        self.requires_confirmation = False
+
+    def mark_plan_failed(self) -> None:
+        """Mark the current plan as failed while preserving it for inspection."""
+        self.mode = "act"
+        self.plan_approval_status = PlanApprovalStatus.FAILED
         self.requires_confirmation = False
 
     def to_dict(self) -> dict[str, Any]:

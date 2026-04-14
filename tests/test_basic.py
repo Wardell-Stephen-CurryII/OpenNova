@@ -709,12 +709,83 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
     assert captured_tasks[0][1] is True
     assert "Overall plan: Execute plan" in captured_tasks[0][0]
     assert "Current step (step_1): Do thing" in captured_tasks[0][0]
-    assert runtime.state.plan_approval_status == PlanApprovalStatus.EXECUTING
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.NONE
     assert runtime.state.mode == "act"
+    assert runtime.state.current_plan is None
+    assert runtime.state.plan_file_path is None
+    assert emitted_thoughts == ["Executing plan step step_1: Do thing"]
+
+
+def test_agent_runtime_execute_approved_plan_skips_completed_steps():
+    """Approved plan execution should resume from the next pending step."""
+    from opennova.runtime.state import Plan, PlanStep, StepStatus
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.show_thinking = True
+    plan = Plan(
+        task="Execute plan",
+        steps=[
+            PlanStep(id="step_1", description="Already done", status=StepStatus.DONE),
+            PlanStep(id="step_2", description="Do next"),
+        ],
+    )
+    runtime.state.set_plan(plan)
+    runtime.state.set_plan_file_path("saved-plan.md")
+    runtime.state.mark_plan_awaiting_approval()
+    runtime.state.mark_plan_approved()
+
+    captured_tasks = []
+    emitted_thoughts = []
+    runtime._emit = lambda event, *args: emitted_thoughts.append(args[0]) if event == "thought" else None
+
+    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+        captured_tasks.append((task, preserve_plan_state))
+        runtime.state.last_result = f"done: {task}"
+        return f"done: {task}"
+
+    runtime._run_act_mode = fake_run_act_mode
+    runtime._should_continue_on_failure = lambda: False
+
+    result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
+
+    assert "Current step (step_2): Do next" in result
+    assert len(captured_tasks) == 1
+    assert "Current step (step_2): Do next" in captured_tasks[0][0]
+    assert emitted_thoughts == ["Executing plan step step_2: Do next"]
+    assert runtime.state.current_plan is None
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.NONE
+
+
+def test_agent_runtime_execute_approved_plan_marks_failures_for_inspection():
+    """Failed approved plan execution should preserve the failed plan for inspection."""
+    from opennova.runtime.state import Plan, PlanStatus, PlanStep, StepStatus
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.show_thinking = True
+    runtime.state.set_plan(Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+    runtime.state.set_plan_file_path("saved-plan.md")
+    runtime.state.mark_plan_awaiting_approval()
+    runtime.state.mark_plan_approved()
+    runtime._emit = lambda *args, **kwargs: None
+
+    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+        runtime.state.last_result = f"Task failed: {task}"
+        return runtime.state.last_result
+
+    runtime._run_act_mode = fake_run_act_mode
+    runtime._should_continue_on_failure = lambda: False
+
+    result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
+
+    assert result.startswith("Task failed:")
     assert runtime.state.current_plan is not None
     assert runtime.state.plan_file_path is not None
-    assert runtime.state.current_plan.steps[0].status == StepStatus.DONE
-    assert emitted_thoughts == ["Executing plan step step_1: Do thing"]
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.FAILED
+    assert runtime.state.current_plan.status == PlanStatus.FAILED
+    assert runtime.state.current_plan.steps[0].status == StepStatus.FAILED
+    assert runtime.state.current_plan.steps[0].error == result
 
 
 def test_agent_runtime_execute_approved_plan_requires_approval():
@@ -869,6 +940,8 @@ def test_agent_runtime_clear_conversation_resets_context_and_state():
     assert len(runtime.context_manager) == 0
     assert runtime.state.current_task == ""
 
+
+def test_run_single_task_plan_mode_executes_after_confirmation():
     """CLI plan mode should approve and execute on the same runtime instance."""
     from opennova.main import _run_single_task
 
@@ -897,6 +970,40 @@ def test_agent_runtime_clear_conversation_resets_context_and_state():
         asyncio.run(_run_single_task(config=None, task="Do work", plan_mode=True, stream=False))
 
     assert runtime.state.plan_approval_status == PlanApprovalStatus.APPROVED
+
+
+def test_run_single_task_plan_mode_decline_keeps_plan_waiting():
+    """CLI plan mode should keep the saved plan awaiting approval when execution is declined."""
+    from opennova.main import _run_single_task
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.register_callback = lambda event, callback: None
+    executed = []
+
+    async def fake_run(task: str, mode: str = "act", stream: bool = True, progress_callback=None):
+        from opennova.runtime.state import Plan, PlanStep
+
+        runtime.state.reset(task)
+        runtime.state.set_mode(mode)
+        runtime.state.set_plan(Plan(task="Approved plan", steps=[PlanStep(id="step_1", description="Ship it")]))
+        runtime.state.mark_plan_awaiting_approval()
+        return "Plan ready for approval"
+
+    async def fake_execute(stream: bool = True):
+        executed.append(True)
+        return "executed approved plan"
+
+    runtime.run = fake_run
+    runtime.execute_approved_plan = fake_execute
+
+    with patch("opennova.main.AgentRuntime", return_value=runtime), patch(
+        "opennova.main.click.confirm", return_value=False
+    ):
+        asyncio.run(_run_single_task(config=None, task="Do work", plan_mode=True, stream=False))
+
+    assert executed == []
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.AWAITING_APPROVAL
 
 
 @pytest.mark.asyncio
