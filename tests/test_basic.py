@@ -683,14 +683,18 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
 
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
+    runtime.show_thinking = True
     runtime.state.set_plan(Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+    runtime.state.set_plan_file_path("saved-plan.md")
     runtime.state.mark_plan_awaiting_approval()
     runtime.state.mark_plan_approved()
 
     captured_tasks = []
+    emitted_thoughts = []
+    runtime._emit = lambda event, *args: emitted_thoughts.append(args[0]) if event == "thought" else None
 
-    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None):
-        captured_tasks.append(task)
+    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+        captured_tasks.append((task, preserve_plan_state))
         runtime.state.last_result = f"done: {task}"
         return f"done: {task}"
 
@@ -701,12 +705,15 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
 
     assert "Current step (step_1): Do thing" in result
     assert captured_tasks
-    assert "Overall plan: Execute plan" in captured_tasks[0]
-    assert "Current step (step_1): Do thing" in captured_tasks[0]
+    assert captured_tasks[0][1] is True
+    assert "Overall plan: Execute plan" in captured_tasks[0][0]
+    assert "Current step (step_1): Do thing" in captured_tasks[0][0]
     assert runtime.state.plan_approval_status == PlanApprovalStatus.EXECUTING
     assert runtime.state.mode == "act"
     assert runtime.state.current_plan is not None
+    assert runtime.state.plan_file_path is not None
     assert runtime.state.current_plan.steps[0].status == StepStatus.DONE
+    assert emitted_thoughts == ["Executing plan step step_1: Do thing"]
 
 
 def test_agent_runtime_execute_approved_plan_requires_approval():
@@ -790,7 +797,8 @@ async def test_repl_plan_command_executes_after_approval():
 
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
-    runtime.register_callback = lambda event, callback: None
+    registered_events = []
+    runtime.register_callback = lambda event, callback: registered_events.append(event)
 
     async def fake_run(task: str, mode: str = "act", stream: bool = True, progress_callback=None):
         from opennova.runtime.state import Plan, PlanStep
@@ -820,6 +828,7 @@ async def test_repl_plan_command_executes_after_approval():
 
     assert executed == [True]
     assert runtime.state.plan_approval_status == PlanApprovalStatus.APPROVED
+    assert {"plan", "thought", "action", "result", "stream"}.issubset(set(registered_events))
 
 
 def test_enter_plan_mode_tool_updates_runtime_state():

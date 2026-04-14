@@ -99,6 +99,7 @@ class ReActLoop:
         on_action: Callable | None = None,
         on_result: Callable | None = None,
         on_stream: Callable | None = None,
+        preserve_plan_state: bool = False,
     ) -> str:
         """
         Run the ReAct loop for a task.
@@ -115,7 +116,10 @@ class ReActLoop:
         """
         import traceback
 
-        self.state.reset(task)
+        if preserve_plan_state:
+            self.state.reset_execution(task)
+        else:
+            self.state.reset(task)
         self.on_thought = on_thought
         self.on_action = on_action
         self.on_result = on_result

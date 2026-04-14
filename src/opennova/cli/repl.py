@@ -297,6 +297,25 @@ class REPL:
         """Show help."""
         self.renderer.print_help()
 
+    def _register_act_callbacks(self) -> None:
+        """Register the same visible callbacks used by normal act mode."""
+        def on_thought(thought: str) -> None:
+            self.renderer.print_thinking(thought)
+
+        def on_action(tool_name: str, args: dict) -> None:
+            self.renderer.print_action(tool_name, args)
+
+        def on_result(result: ToolResult) -> None:
+            self.renderer.print_result(result)
+
+        def on_stream(chunk: StreamChunk) -> None:
+            self.renderer.print_stream(chunk)
+
+        self.agent.register_callback("thought", on_thought)
+        self.agent.register_callback("action", on_action)
+        self.agent.register_callback("result", on_result)
+        self.agent.register_callback("stream", on_stream)
+
     async def _cmd_plan(self, args: str) -> None:
         """Execute in plan mode."""
         if not args:
@@ -321,6 +340,8 @@ class REPL:
             return
 
         self.agent.state.mark_plan_approved()
+        self._register_act_callbacks()
+        self.renderer.print("[cyan]Executing approved plan...[/cyan]")
         execution_result = await self.agent.execute_approved_plan()
         self.renderer.print_markdown(execution_result)
 
@@ -372,22 +393,7 @@ class REPL:
         """Execute a task with streaming output."""
         import traceback
 
-        def on_thought(thought: str) -> None:
-            self.renderer.print_thinking(thought)
-
-        def on_action(tool_name: str, args: dict) -> None:
-            self.renderer.print_action(tool_name, args)
-
-        def on_result(result: ToolResult) -> None:
-            self.renderer.print_result(result)
-
-        def on_stream(chunk: StreamChunk) -> None:
-            self.renderer.print_stream(chunk)
-
-        self.agent.register_callback("thought", on_thought)
-        self.agent.register_callback("action", on_action)
-        self.agent.register_callback("result", on_result)
-        self.agent.register_callback("stream", on_stream)
+        self._register_act_callbacks()
 
         print()
         try:

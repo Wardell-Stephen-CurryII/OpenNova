@@ -189,6 +189,17 @@ class AgentState:
         self.last_action = None
         self.last_result = None
 
+    def reset_execution(self, task: str = "") -> None:
+        """Reset per-run execution fields while preserving approved plan state."""
+        self.current_task = task
+        self.mode = "act"
+        self.iteration = 0
+        self.is_complete = False
+        self.requires_confirmation = False
+        self.error_count = 0
+        self.last_action = None
+        self.last_result = None
+
     def increment_iteration(self) -> None:
         """Increment iteration counter."""
         self.iteration += 1

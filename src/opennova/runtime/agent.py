@@ -358,9 +358,14 @@ class AgentRuntime:
                     break
 
                 plan.mark_step_running(step.id)
+                self._emit("thought", f"Executing plan step {step.id}: {step.description}")
 
                 step_task = self._build_step_execution_task(plan, step)
-                result = await self._run_act_mode(step_task, stream=stream)
+                result = await self._run_act_mode(
+                    step_task,
+                    stream=stream,
+                    preserve_plan_state=True,
+                )
 
                 if result and ("error" in result.lower() or "failed" in result.lower()):
                     plan.mark_step_failed(step.id, result)
@@ -452,6 +457,7 @@ class AgentRuntime:
         task: str,
         stream: bool = True,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        preserve_plan_state: bool = False,
     ) -> str:
         """
         Run in act mode: execute directly without planning.
@@ -492,6 +498,7 @@ class AgentRuntime:
             on_action=on_action,
             on_result=on_result,
             on_stream=on_stream if stream else None,
+            preserve_plan_state=preserve_plan_state,
         )
 
     async def chat(self, message: str, stream: bool = True) -> str:

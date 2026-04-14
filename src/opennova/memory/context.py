@@ -166,6 +166,12 @@ class ContextManager:
         total = self.get_total_tokens()
         return max(0, self.context_window - RESERVED_OUTPUT_TOKENS - total)
 
+    def _get_effective_available_tokens(self) -> int:
+        """Get available tokens without reserving output in undersized test contexts."""
+        if self.context_window <= RESERVED_OUTPUT_TOKENS:
+            return max(0, self.context_window - self.get_total_tokens())
+        return self.get_available_tokens()
+
     def get_stats(self) -> ContextStats:
         """Get context statistics."""
         total_tokens = self.get_total_tokens()
@@ -194,10 +200,10 @@ class ContextManager:
 
         new_tokens = self.count_message_tokens(message)
 
-        if new_tokens > self.get_available_tokens():
+        if new_tokens > self._get_effective_available_tokens():
             self._trim_old_messages()
 
-            if new_tokens > self.get_available_tokens():
+            if new_tokens > self._get_effective_available_tokens():
                 return False
 
         self.messages.append(message)
