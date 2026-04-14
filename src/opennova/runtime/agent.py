@@ -81,6 +81,7 @@ class AgentRuntime:
         self.planner = Planner(self.llm)
 
         self.mcp_manager = None
+        self._mcp_server_configs = []
         self.skill_registry = None
 
         # Set global task manager for task tools
@@ -221,11 +222,25 @@ class AgentRuntime:
         Returns:
             Dict of server names to connection status
         """
-        if not self.mcp_manager:
+        if not self.mcp_manager or not self._mcp_server_configs:
             return {}
 
         # Use stored configs instead of re-parsing from config
         return await self.mcp_manager.connect_all(self._mcp_server_configs)
+
+    async def _ensure_mcp_ready(self) -> dict[str, bool]:
+        """Lazily connect configured MCP servers before act-mode execution."""
+        mcp_manager = getattr(self, "mcp_manager", None)
+        mcp_server_configs = getattr(self, "_mcp_server_configs", [])
+        if not mcp_manager or not mcp_server_configs:
+            return {}
+
+        connected_servers = set(mcp_manager.get_server_names())
+        enabled_configs = [config for config in mcp_server_configs if config.enabled]
+        if enabled_configs and all(config.name in connected_servers for config in enabled_configs):
+            return {config.name: True for config in enabled_configs}
+
+        return await self.connect_mcp_servers()
 
     async def disconnect_mcp_servers(self) -> None:
         """Disconnect from all MCP servers."""
@@ -508,6 +523,8 @@ class AgentRuntime:
         Returns:
             Final result string
         """
+        await self._ensure_mcp_ready()
+
         self.loop = ReActLoop(
             llm=self.llm,
             tool_registry=self.tool_registry,

@@ -362,7 +362,10 @@ class ReActLoop:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
 
         try:
-            result = tool.execute(**action.arguments)
+            if hasattr(tool, "async_execute"):
+                result = await tool.async_execute(**action.arguments)
+            else:
+                result = tool.execute(**action.arguments)
             if self.working_memory and action_record:
                 status = ActionStatus.SUCCESS if result.success else ActionStatus.FAILED
                 self.working_memory.update_action(

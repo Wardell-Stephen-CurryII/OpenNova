@@ -1,22 +1,28 @@
 """Tests for Phase 3 modules (MCP and Skills)."""
 
+import asyncio
 import pytest
 import tempfile
 from pathlib import Path
 import os
 
+from opennova.mcp.connector import MCPConnector, MCPManager, MCPToolWrapper
 from opennova.mcp.types import (
+    MCPConnectionState,
     MCPServerConfig,
     MCPTool,
     MCPToolResult,
     MCPMessage,
     TransportType,
 )
+from opennova.providers.base import FinishReason, LLMResponse
 from opennova.skills.base import BaseSkill, SkillMetadata, SkillLoader
 from opennova.skills.examples import get_builtin_skill_classes
 from opennova.skills.registry import SkillRegistry
 from opennova.runtime.agent import AgentRuntime
-from opennova.tools.base import ToolResult
+from opennova.runtime.loop import ReActLoop
+from opennova.runtime.state import AgentState
+from opennova.tools.base import ToolRegistry, ToolResult
 
 
 class TestMCPTypes:
@@ -258,8 +264,130 @@ class SecondSkill(BaseSkill):
             assert registry.get_skill_info("second")["source_type"] == "discovered"
 
 
-class TestSkillIntegration:
-    """Tests for skill integration with agent."""
+
+
+class TestMCPRuntimeIntegration:
+    """Tests for MCP runtime integration."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_act_mode_lazily_connects_mcp_servers(self):
+        class DummyProvider:
+            model = "gpt-4o"
+
+            async def chat(self, messages, tools=None, **kwargs):
+                return LLMResponse(content="done", finish_reason=FinishReason.STOP)
+
+            async def stream_chat(self, messages, tools=None, **kwargs):
+                if False:
+                    yield None
+
+            def get_model_info(self):
+                return {"model": self.model}
+
+        async def connect_all(configs):
+            runtime._connect_called_with = [config.name for config in configs]
+            return {config.name: True for config in configs}
+
+        runtime = AgentRuntime.__new__(AgentRuntime)
+        runtime.state = AgentState()
+        runtime.tool_registry = ToolRegistry()
+        runtime.max_iterations = 5
+        runtime.show_thinking = False
+        runtime._callbacks = {}
+        runtime.llm = DummyProvider()
+        from opennova.memory.context import ContextManager
+        from opennova.memory.project import ProjectMemory
+        from opennova.memory.working import WorkingMemory
+        runtime.context_manager = ContextManager(model="gpt-4o")
+        runtime.working_memory = WorkingMemory()
+        runtime.project_memory = ProjectMemory(project_path=tempfile.mkdtemp())
+        runtime._emit = lambda *args, **kwargs: None
+        runtime.mcp_manager = type(
+            "Manager",
+            (),
+            {
+                "get_server_names": lambda self: [],
+                "connect_all": lambda self, configs: connect_all(configs),
+            },
+        )()
+        runtime._mcp_server_configs = [MCPServerConfig(name="filesystem")]
+
+        result = await AgentRuntime._run_act_mode(runtime, "Use MCP", stream=False)
+
+        assert result == "done"
+        assert runtime._connect_called_with == ["filesystem"]
+
+    @pytest.mark.asyncio
+    async def test_react_loop_awaits_async_tool_execution(self):
+        class AsyncTool(BaseSkill):
+            name = "async_tool"
+            description = "Async test tool"
+
+            def execute(self, **kwargs) -> ToolResult:
+                raise RuntimeError("sync path should not be used")
+
+            async def async_execute(self, value: str) -> ToolResult:
+                await asyncio.sleep(0)
+                return ToolResult(success=True, output=f"async:{value}")
+
+        class ToolCallingProvider:
+            model = "dummy"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, messages, tools=None, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    from opennova.providers.base import ToolCall, Usage
+                    return LLMResponse(
+                        content="run async tool",
+                        tool_calls=[ToolCall(id="call_1", name="async_tool", arguments={"value": "ok"})],
+                        finish_reason=FinishReason.TOOL_CALL,
+                        usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+                    )
+                return LLMResponse(content="finished", finish_reason=FinishReason.STOP)
+
+            async def stream_chat(self, messages, tools=None, **kwargs):
+                if False:
+                    yield None
+
+        registry = ToolRegistry()
+        registry.clear()
+        registry.register(AsyncTool())
+        loop = ReActLoop(ToolCallingProvider(), registry, AgentState(), stream=False)
+
+        result = await loop.run("Call async tool")
+
+        assert result == "finished"
+
+    def test_mcp_manager_unregisters_tools_on_remove_server(self):
+        registry = ToolRegistry()
+        registry.clear()
+        manager = MCPManager(registry)
+        manager._registered_tools_by_server["filesystem"] = ["filesystem_read_file"]
+
+        class DummyConnector:
+            async def disconnect(self):
+                return None
+
+        manager.connectors["filesystem"] = DummyConnector()
+        registry.register(type("Tool", (), {"name": "filesystem_read_file", "description": "", "get_schema": lambda self: None})())
+
+        asyncio.run(manager.remove_server("filesystem"))
+
+        assert not registry.has_tool("filesystem_read_file")
+
+    @pytest.mark.asyncio
+    async def test_connector_disconnect_fails_pending_requests(self):
+        connector = MCPConnector(MCPServerConfig(name="filesystem"))
+        future = asyncio.get_running_loop().create_future()
+        connector._pending_requests[1] = future
+
+        await connector.disconnect()
+
+        assert future.done()
+        assert isinstance(future.exception(), RuntimeError)
 
     def test_runtime_reload_skills_matches_startup_configuration(self):
         """Runtime reload should use the same built-in and exclusion rules as startup."""

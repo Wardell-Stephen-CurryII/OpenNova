@@ -264,6 +264,7 @@ class MCPConnector:
         self._pending_requests: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._listener_task: asyncio.Task | None = None
+        self._initialized = asyncio.Event()
 
     async def connect(self) -> None:
         """Connect to the MCP server."""
@@ -271,6 +272,7 @@ class MCPConnector:
             return
 
         self.state = MCPConnectionState.CONNECTING
+        self._initialized = asyncio.Event()
 
         try:
             if self.config.transport == TransportType.STDIO:
@@ -292,10 +294,13 @@ class MCPConnector:
 
         except Exception as e:
             self.state = MCPConnectionState.ERROR
+            self._fail_pending_requests(e)
             raise RuntimeError(f"Failed to connect to MCP server: {e}") from e
 
     async def disconnect(self) -> None:
         """Disconnect from the MCP server."""
+        self._fail_pending_requests(RuntimeError("MCP server disconnected"))
+
         if self._listener_task:
             self._listener_task.cancel()
             try:
@@ -319,14 +324,28 @@ class MCPConnector:
             async for message in self.transport.receive_stream():
                 if message.id is not None and message.id in self._pending_requests:
                     future = self._pending_requests.pop(message.id)
+                    if future.done():
+                        continue
                     if message.error:
                         future.set_exception(RuntimeError(message.error))
                     else:
                         future.set_result(message.result)
+                    continue
+
+                if message.method == "notifications/initialized":
+                    self._initialized.set()
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            self.state = MCPConnectionState.ERROR
+            self._fail_pending_requests(e)
+
+    def _fail_pending_requests(self, error: Exception) -> None:
+        """Fail all pending requests with the provided error."""
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(error)
+        self._pending_requests.clear()
 
     def _get_next_id(self) -> int:
         """Get next request ID."""
@@ -350,7 +369,7 @@ class MCPConnector:
             params=params,
         )
 
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_requests[request_id] = future
 
         try:
@@ -376,12 +395,7 @@ class MCPConnector:
                 "capabilities": {},
             },
         )
-
-        # Wait for initialized notification from server
-        # Note: According to MCP spec, server should send notifications/initialized
-        # after receiving initialize request. We'll wait for it in the listen loop.
-        # For now, we'll proceed without waiting for the notification.
-
+        self._initialized.set()
         return MCPServerInfo.from_dict(result, self.config.name)
 
     async def _discover_tools(self) -> None:
@@ -465,17 +479,15 @@ class MCPToolWrapper(BaseTool):
         self.parameters = mcp_tool.input_schema
 
     def execute(self, **kwargs: Any) -> ToolResult:
-        """Execute the MCP tool."""
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            future = asyncio.ensure_future(self._async_execute(**kwargs))
-            return loop.run_until_complete(future)
-        else:
-            return loop.run_until_complete(self._async_execute(**kwargs))
+        """Execute the MCP tool in synchronous contexts only."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_execute(**kwargs))
+        raise RuntimeError("MCP tools must be executed via async_execute inside the runtime loop")
 
-    async def _async_execute(self, **kwargs: Any) -> ToolResult:
+    async def async_execute(self, **kwargs: Any) -> ToolResult:
         """Async execution."""
-        # Get the original tool name (without server prefix)
         original_name = self.mcp_tool.name
         result = await self.connector.call_tool(original_name, kwargs)
 
@@ -501,6 +513,7 @@ class MCPManager:
         """Initialize MCP manager."""
         self.tool_registry = tool_registry
         self.connectors: dict[str, MCPConnector] = {}
+        self._registered_tools_by_server: dict[str, list[str]] = {}
 
     async def add_server(self, config: MCPServerConfig) -> bool:
         """
@@ -524,9 +537,12 @@ class MCPManager:
             await connector.connect()
             self.connectors[config.name] = connector
 
+            registered_tools = []
             for mcp_tool in connector.get_tools():
                 wrapper = MCPToolWrapper(mcp_tool, connector)
                 self.tool_registry.register(wrapper)
+                registered_tools.append(wrapper.name)
+            self._registered_tools_by_server[config.name] = registered_tools
 
             return True
 
@@ -536,6 +552,9 @@ class MCPManager:
 
     async def remove_server(self, name: str) -> None:
         """Disconnect and remove an MCP server."""
+        for tool_name in self._registered_tools_by_server.pop(name, []):
+            self.tool_registry.unregister(tool_name)
+
         if name in self.connectors:
             connector = self.connectors.pop(name)
             await connector.disconnect()
