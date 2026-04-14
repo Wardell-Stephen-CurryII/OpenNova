@@ -13,6 +13,8 @@ import traceback
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from opennova.memory.context import ContextManager
+from opennova.memory.working import ActionStatus, WorkingMemory
 from opennova.providers.base import (
     BaseLLMProvider,
     FinishReason,
@@ -59,6 +61,8 @@ class ReActLoop:
         stream: bool = True,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         iteration_start_callback: Callable[[list[Message]], None] | None = None,
+        context_manager: ContextManager | None = None,
+        working_memory: WorkingMemory | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -77,20 +81,32 @@ class ReActLoop:
         self.stream = stream
         self.progress_callback = progress_callback
         self.iteration_start_callback = iteration_start_callback
-        self.messages: list[Message] = []
+        self.context_manager = context_manager or ContextManager(model=llm.model)
+        self.working_memory = working_memory
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
         self.on_stream: Callable | None = None
         self._errors: list[str] = []
 
+    @property
+    def messages(self) -> list[Message]:
+        """Expose the current context-manager message list."""
+        return self.context_manager.messages
+
+    @messages.setter
+    def messages(self, messages: list[Message]) -> None:
+        self.context_manager.messages = messages
+
     def set_context(self, messages: list[Message]) -> None:
         """Set initial conversation context."""
-        self.messages = messages.copy()
+        self.context_manager.clear()
+        for message in messages:
+            self.context_manager.add_message(message)
 
     def add_message(self, message: Message) -> None:
         """Add a message to the context."""
-        self.messages.append(message)
+        self.context_manager.add_message(message)
 
     async def run(
         self,
@@ -127,14 +143,14 @@ class ReActLoop:
         self._errors = []
 
         if not self.messages:
-            self.messages = [
+            self.add_message(
                 Message(
                     role="system",
                     content=self._build_system_prompt(),
                 )
-            ]
+            )
 
-        self.messages.append(Message(role="user", content=f"Task: {task}"))
+        self.add_message(Message(role="user", content=f"Task: {task}"))
         self._report_progress(activity=f"Started task: {task}")
 
         while (
@@ -178,7 +194,7 @@ class ReActLoop:
                         content="Please use an available tool to complete the task. "
                         "Available tools: " + ", ".join(self.tool_registry.list_names()),
                     )
-                    self.messages.append(observation)
+                    self.add_message(observation)
 
             except Exception as e:
                 self.state.increment_error()
@@ -187,7 +203,7 @@ class ReActLoop:
                 full_error = f"{error_detail}\n\nTraceback:\n{tb}"
                 self._errors.append(full_error)
                 print(f"\n[ERROR] {full_error}\n")
-                self.messages.append(
+                self.add_message(
                     Message(
                         role="user",
                         content=f"An error occurred: {error_detail}. Please try a different approach.",
@@ -245,7 +261,7 @@ class ReActLoop:
             usage = None
 
             async for chunk in self.llm.stream_chat(
-                self.messages,
+                self.context_manager.get_messages_for_llm(),
                 tools=tools,
                 temperature=0.7,
             ):
@@ -267,7 +283,7 @@ class ReActLoop:
             )
         else:
             response = await self.llm.chat(
-                self.messages,
+                self.context_manager.get_messages_for_llm(),
                 tools=tools,
                 temperature=0.7,
             )
@@ -304,6 +320,32 @@ class ReActLoop:
 
         return action
 
+    def _record_file_observation(self, action: ParsedAction, result: ToolResult) -> None:
+        """Record file-tool observations in working memory when metadata is available."""
+        if not self.working_memory:
+            return
+
+        file_path = None
+        if isinstance(result.metadata, dict):
+            file_path = result.metadata.get("file_path")
+        if not file_path:
+            file_path = action.arguments.get("file_path")
+        if not file_path:
+            return
+
+        change_types = {
+            "read_file": "read",
+            "write_file": "modified",
+            "create_file": "created",
+            "delete_file": "deleted",
+        }
+        change_type = change_types.get(action.tool_name)
+        if not change_type:
+            return
+
+        preview = (result.output or result.error or "")[:200] or None
+        self.working_memory.observe_file(file_path, change_type, preview)
+
     async def _act(self, action: ParsedAction) -> ToolResult:
         """
         Act step: Execute a tool.
@@ -315,11 +357,29 @@ class ReActLoop:
             Tool execution result
         """
         tool = self.tool_registry.get(action.tool_name)
+        action_record = None
+        if self.working_memory:
+            action_record = self.working_memory.record_action(action.tool_name, action.arguments)
 
         try:
             result = tool.execute(**action.arguments)
+            if self.working_memory and action_record:
+                status = ActionStatus.SUCCESS if result.success else ActionStatus.FAILED
+                self.working_memory.update_action(
+                    action_record.id,
+                    status,
+                    result=result.output,
+                    error=result.error,
+                )
+                self._record_file_observation(action, result)
             return result
         except Exception as e:
+            if self.working_memory and action_record:
+                self.working_memory.update_action(
+                    action_record.id,
+                    ActionStatus.FAILED,
+                    error=str(e),
+                )
             return ToolResult(
                 success=False,
                 output="",
@@ -334,7 +394,7 @@ class ReActLoop:
             action: The action that was executed
             result: The tool execution result
         """
-        self.messages.append(
+        self.add_message(
             Message(
                 role="assistant",
                 content=action.thought or "",
@@ -350,7 +410,7 @@ class ReActLoop:
             )
         )
 
-        self.messages.append(
+        self.add_message(
             Message(
                 role="tool",
                 content=result.to_string(),

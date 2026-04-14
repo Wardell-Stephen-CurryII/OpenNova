@@ -14,8 +14,12 @@ import copy
 import os
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
+from opennova.memory.context import ContextManager
+from opennova.memory.project import ProjectMemory
+from opennova.memory.working import WorkingMemory
 from opennova.providers.base import BaseLLMProvider, Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
 from opennova.planning.planner import Planner
@@ -68,6 +72,9 @@ class AgentRuntime:
         self.auto_confirm = agent_config.get("auto_confirm", False)
 
         self.llm = ProviderFactory.create_provider(config)
+        self.project_memory = ProjectMemory(project_path=os.getcwd())
+        self.working_memory = WorkingMemory()
+        self.context_manager = ContextManager(model=self.llm.model)
 
         self.loop: ReActLoop | None = None
         self._callbacks: dict[str, Callable] = {}
@@ -337,6 +344,38 @@ class AgentRuntime:
 
         return "\n".join(lines)
 
+    def _build_memory_messages(self, task: str) -> list[Message]:
+        """Build compact memory context messages for an act-mode run."""
+        memory_parts = [self.project_memory.get_project_context()]
+        relevant_decisions = self.project_memory.get_relevant_decisions(task, limit=3)
+
+        if relevant_decisions:
+            decision_lines = [
+                f"- {decision.description}: {decision.reasoning}"
+                for decision in relevant_decisions
+            ]
+            memory_parts.append("Relevant prior decisions:\n" + "\n".join(decision_lines))
+
+        memory_text = "\n\n".join(part for part in memory_parts if part)
+        if not memory_text.strip():
+            return []
+
+        return [
+            Message(
+                role="system",
+                content="Use this project memory when it is relevant to the current task:\n\n"
+                + memory_text,
+            )
+        ]
+
+    def _record_run_session(self, task: str, success: bool, started_at: float) -> None:
+        """Persist a lightweight session summary for the completed run."""
+        self.project_memory.record_session(
+            task=task,
+            success=success,
+            duration_seconds=max(0.0, perf_counter() - started_at),
+        )
+
     async def execute_approved_plan(self, stream: bool = True) -> str:
         """Execute the current approved plan step by step."""
         plan = self.state.current_plan
@@ -477,7 +516,14 @@ class AgentRuntime:
             stream=stream,
             progress_callback=progress_callback,
             iteration_start_callback=lambda messages: self._emit("iteration_start", messages),
+            context_manager=self.context_manager,
+            working_memory=self.working_memory,
         )
+        started_at = perf_counter()
+        self.context_manager.clear()
+        self.working_memory.set_task(task)
+        self.working_memory.start_task()
+        self.loop.set_context(self._build_memory_messages(task))
 
         def on_thought(thought: str) -> None:
             if self.show_thinking:
@@ -492,14 +538,28 @@ class AgentRuntime:
         def on_stream(chunk: StreamChunk) -> None:
             self._emit("stream", chunk)
 
-        return await self.loop.run(
-            task,
-            on_thought=on_thought if self.show_thinking else None,
-            on_action=on_action,
-            on_result=on_result,
-            on_stream=on_stream if stream else None,
-            preserve_plan_state=preserve_plan_state,
+        try:
+            result = await self.loop.run(
+                task,
+                on_thought=on_thought if self.show_thinking else None,
+                on_action=on_action,
+                on_result=on_result,
+                on_stream=on_stream if stream else None,
+                preserve_plan_state=preserve_plan_state,
+            )
+        except Exception:
+            self.working_memory.complete_task(success=False, error="Act mode execution failed")
+            self._record_run_session(task, success=False, started_at=started_at)
+            raise
+
+        success = not (
+            result.startswith("Task incomplete:")
+            or result.startswith("Task failed:")
+            or result == "Plan approval required before execution"
         )
+        self.working_memory.complete_task(success=success, error=None if success else result)
+        self._record_run_session(task, success=success, started_at=started_at)
+        return result
 
     async def chat(self, message: str, stream: bool = True) -> str:
         """
