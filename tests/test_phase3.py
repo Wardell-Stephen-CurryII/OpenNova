@@ -250,9 +250,10 @@ class FirstSkill(BaseSkill):
         return ToolResult(success=True, output="first")
 ''')
 
-            registry = SkillRegistry()
+            registry = SkillRegistry(ToolRegistry())
             registry.load_all(directories=[tmpdir], builtins=[])
             assert "first" in registry.list_skills()
+            assert registry.tool_registry.has_tool("first")
 
             first_file.unlink()
 
@@ -273,6 +274,8 @@ class SecondSkill(BaseSkill):
 
             assert "first" not in registry.list_skills()
             assert "second" in registry.list_skills()
+            assert not registry.tool_registry.has_tool("first")
+            assert registry.tool_registry.has_tool("second")
             assert registry.get_skill_info("second")["source_type"] == "discovered"
 
 
@@ -389,6 +392,101 @@ class TestMCPRuntimeIntegration:
         asyncio.run(manager.remove_server("filesystem"))
 
         assert not registry.has_tool("filesystem_read_file")
+
+    @pytest.mark.asyncio
+    async def test_mcp_connector_call_tool_handles_string_content_blocks(self):
+        connector = MCPConnector(MCPServerConfig(name="filesystem"))
+        connector.state = MCPConnectionState.CONNECTED
+
+        async def send_request(method, params=None, timeout=30.0):
+            return {"content": "plain text", "isError": False}
+
+        connector._send_request = send_request
+
+        result = await connector.call_tool("read_file", {"path": "test.txt"})
+
+        assert result.success is True
+        assert result.content == "plain text"
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_mcp_connector_call_tool_joins_text_blocks_and_ignores_non_dict_entries(self):
+        connector = MCPConnector(MCPServerConfig(name="filesystem"))
+        connector.state = MCPConnectionState.CONNECTED
+
+        async def send_request(method, params=None, timeout=30.0):
+            return {
+                "content": [
+                    {"text": "alpha"},
+                    {"text": "beta"},
+                    "ignored",
+                ],
+                "isError": False,
+            }
+
+        connector._send_request = send_request
+
+        result = await connector.call_tool("read_file", {"path": "test.txt"})
+
+        assert result.success is True
+        assert result.content == "alpha\nbeta"
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_mcp_connector_call_tool_returns_error_result_when_send_request_fails(self):
+        connector = MCPConnector(MCPServerConfig(name="filesystem"))
+        connector.state = MCPConnectionState.CONNECTED
+
+        async def send_request(method, params=None, timeout=30.0):
+            raise RuntimeError("server boom")
+
+        connector._send_request = send_request
+
+        result = await connector.call_tool("read_file", {"path": "test.txt"})
+
+        assert result.success is False
+        assert result.content == ""
+        assert "server boom" in result.error
+
+    @pytest.mark.asyncio
+    async def test_mcp_connector_send_request_timeout_clears_pending_request(self):
+        connector = MCPConnector(MCPServerConfig(name="filesystem"))
+
+        class SlowTransport:
+            async def send(self, message):
+                return None
+
+        connector.transport = SlowTransport()
+
+        with pytest.raises(RuntimeError, match="Request tools/list timed out"):
+            await connector._send_request("tools/list", timeout=0.01)
+
+        assert connector._pending_requests == {}
+
+    @pytest.mark.asyncio
+    async def test_mcp_manager_add_server_returns_false_for_disabled_server_without_connect_attempt(self):
+        registry = ToolRegistry()
+        registry.clear()
+        manager = MCPManager(registry)
+
+        result = await manager.add_server(MCPServerConfig(name="filesystem", enabled=False))
+
+        assert result is False
+        assert manager.connectors == {}
+        assert registry.list_names() == []
+
+    @pytest.mark.asyncio
+    async def test_mcp_manager_add_server_failure_does_not_register_tools_or_connector(self):
+        registry = ToolRegistry()
+        registry.clear()
+        manager = MCPManager(registry)
+
+        async def fail_connect(self):
+            raise RuntimeError("connect failed")
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(MCPConnector, "connect", fail_connect)
+            result = await manager.add_server(MCPServerConfig(name="filesystem"))
 
     @pytest.mark.asyncio
     async def test_connector_disconnect_fails_pending_requests(self):

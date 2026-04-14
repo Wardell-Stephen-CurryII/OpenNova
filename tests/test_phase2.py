@@ -355,20 +355,116 @@ class TestMemoryRuntimeIntegration:
         assert session["task"] == "Remember this run"
         assert session["success"] is True
 
-    def test_agent_runtime_builds_memory_messages_from_relevant_decisions(self):
+    @pytest.mark.asyncio
+    async def test_react_loop_records_failed_working_memory_action_when_tool_returns_failure(self):
+        class FailingTool(BaseTool):
+            name = "failing_tool"
+            description = "Fail a task"
+
+            def execute(self, **kwargs) -> ToolResult:
+                return ToolResult(success=False, output="", error="read failed")
+
+        class ToolCallingProvider:
+            model = "dummy"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, messages, tools=None, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return LLMResponse(
+                        content="Run failing tool",
+                        tool_calls=[ToolCall(id="call_1", name="failing_tool", arguments={})],
+                        finish_reason=FinishReason.TOOL_CALL,
+                        usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+                    )
+                return LLMResponse(content="done", finish_reason=FinishReason.STOP)
+
+            async def stream_chat(self, messages, tools=None, **kwargs):
+                if False:
+                    yield None
+
+        registry = ToolRegistry()
+        registry.register(FailingTool())
+        working = WorkingMemory(task="Run failing tool")
+        loop = ReActLoop(
+            ToolCallingProvider(),
+            registry,
+            AgentState(),
+            stream=False,
+            context_manager=ContextManager(model="gpt-4o"),
+            working_memory=working,
+        )
+        working.start_task()
+
+        result = await loop.run("Run failing tool")
+
+        assert result == "done"
+        assert len(working.actions) == 1
+        assert working.actions[0].status == ActionStatus.FAILED
+        assert working.actions[0].error == "read failed"
+
+    @pytest.mark.asyncio
+    async def test_react_loop_records_failed_working_memory_action_when_tool_raises(self):
+        class ExplodingTool(BaseTool):
+            name = "exploding_tool"
+            description = "Raise during execution"
+
+            def execute(self, **kwargs) -> ToolResult:
+                raise RuntimeError("boom")
+
+        class ToolCallingProvider:
+            model = "dummy"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, messages, tools=None, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return LLMResponse(
+                        content="Run exploding tool",
+                        tool_calls=[ToolCall(id="call_1", name="exploding_tool", arguments={})],
+                        finish_reason=FinishReason.TOOL_CALL,
+                        usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+                    )
+                return LLMResponse(content="done", finish_reason=FinishReason.STOP)
+
+            async def stream_chat(self, messages, tools=None, **kwargs):
+                if False:
+                    yield None
+
+        registry = ToolRegistry()
+        registry.register(ExplodingTool())
+        working = WorkingMemory(task="Run exploding tool")
+        loop = ReActLoop(
+            ToolCallingProvider(),
+            registry,
+            AgentState(),
+            stream=False,
+            context_manager=ContextManager(model="gpt-4o"),
+            working_memory=working,
+        )
+        working.start_task()
+
+        result = await loop.run("Run exploding tool")
+
+        assert result == "done"
+        assert len(working.actions) == 1
+        assert working.actions[0].status == ActionStatus.FAILED
+        assert working.actions[0].error == "boom"
+
+    def test_agent_runtime_builds_memory_messages_without_relevant_decisions(self):
         runtime = AgentRuntime.__new__(AgentRuntime)
         runtime.project_memory = ProjectMemory(project_path=tempfile.mkdtemp())
-        runtime.project_memory.add_decision(
-            description="Remember this run",
-            reasoning="Use the persisted decision in future prompts",
-        )
 
-        messages = AgentRuntime._build_memory_messages(runtime, "Remember this run")
+        messages = AgentRuntime._build_memory_messages(runtime, "Unrelated task")
 
-        assert messages
+        assert len(messages) == 1
         assert messages[0].role == "system"
-        assert "Relevant prior decisions" in messages[0].content
-        assert "Use the persisted decision in future prompts" in messages[0].content
+        assert "Project:" in messages[0].content
+        assert "Relevant prior decisions" not in messages[0].content
 
 
 class TestGuardrails:

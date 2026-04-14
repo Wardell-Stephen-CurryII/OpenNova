@@ -1047,6 +1047,21 @@ async def test_repl_plan_command_executes_after_approval():
     assert {"plan", "thought", "action", "result", "stream"}.issubset(set(registered_events))
 
 
+def test_exit_plan_mode_tool_without_runtime_state_uses_safe_default_metadata():
+    """ExitPlanModeTool should expose stable fallback metadata without shared runtime state."""
+    tool = ExitPlanModeTool(config={})
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert result.metadata["mode"] == "plan"
+    assert result.metadata["current_mode"] == "plan"
+    assert result.metadata["has_plan"] is False
+    assert result.metadata["plan_file_path"] is None
+    assert result.metadata["requires_confirmation"] is True
+    assert result.metadata["plan_approval_status"] == "awaiting_approval"
+    assert result.metadata["status"] == "awaiting_approval"
+
 def test_enter_plan_mode_tool_updates_runtime_state():
     """Entering plan mode via the tool should update the shared runtime state."""
     state = AgentState()
