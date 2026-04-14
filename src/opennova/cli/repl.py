@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
@@ -122,9 +123,12 @@ class Renderer:
 - `/plan <task>` - Plan mode: generate a plan before executing
 - `/act <task>` - Act mode: execute directly (default)
 - `/tools` - List available tools
+- `/skills` - List loaded skills
+- `/reload-skills` - Reload skills from disk
 - `/model` - Show current model info
-- `/history` - Show conversation history
-- `/clear` - Clear conversation
+- `/config` - Show current configuration
+- `/history [n]` - Show recent conversation history
+- `/clear` - Clear conversation state
 - `/help` - Show this help
 - `/exit` - Exit the REPL
 """
@@ -137,6 +141,40 @@ class Renderer:
 
         for tool in tools:
             table.add_row(tool)
+
+        self.console.print(table)
+
+    def print_skills(self, skills: list[dict[str, Any]]) -> None:
+        """Display loaded skills."""
+        table = Table(title="🧩 Loaded Skills")
+        table.add_column("Name", style="cyan")
+        table.add_column("Enabled", justify="center")
+        table.add_column("Source")
+        table.add_column("Description")
+
+        for skill in skills:
+            table.add_row(
+                skill.get("name", ""),
+                "Yes" if skill.get("enabled", True) else "No",
+                str(skill.get("source_type", "")),
+                str(skill.get("description", "")),
+            )
+
+        self.console.print(table)
+
+    def print_history(self, history: list[dict[str, str]]) -> None:
+        """Display conversation history."""
+        table = Table(title="🕘 Conversation History")
+        table.add_column("Role", style="cyan")
+        table.add_column("Content")
+        table.add_column("Timestamp")
+
+        for entry in history:
+            table.add_row(
+                entry.get("role", ""),
+                entry.get("content", "")[:120],
+                entry.get("timestamp", ""),
+            )
 
         self.console.print(table)
 
@@ -280,7 +318,10 @@ class REPL:
             "/plan": self._cmd_plan,
             "/act": self._cmd_act,
             "/tools": self._cmd_tools,
+            "/skills": self._cmd_skills,
+            "/reload-skills": self._cmd_reload_skills,
             "/model": self._cmd_model,
+            "/config": self._cmd_config,
             "/clear": self._cmd_clear,
             "/exit": self._cmd_exit,
             "/quit": self._cmd_exit,
@@ -365,6 +406,32 @@ class REPL:
         tools = self.agent.get_tools()
         self.renderer.print_tools(tools)
 
+    async def _cmd_skills(self, args: str) -> None:
+        """List loaded skills."""
+        skills = []
+        skill_registry = getattr(self.agent, "skill_registry", None)
+        for name in self.agent.get_skills():
+            info = skill_registry.get_skill_info(name) if skill_registry else None
+            skills.append(
+                {
+                    "name": name,
+                    "enabled": info.get("enabled", True) if info else True,
+                    "source_type": info.get("source_type", "") if info else "",
+                    "description": info.get("description") or info.get("tool_description", "") if info else "",
+                }
+            )
+
+        if not skills:
+            self.renderer.print("No skills loaded.")
+            return
+
+        self.renderer.print_skills(skills)
+
+    async def _cmd_reload_skills(self, args: str) -> None:
+        """Reload skills from disk."""
+        count = self.agent.reload_skills()
+        self.renderer.print_success(f"Reloaded {count} skills.")
+
     async def _cmd_model(self, args: str) -> None:
         """Show model info."""
         info = self.agent.get_model_info()
@@ -377,13 +444,44 @@ class REPL:
 
         self.renderer.print(table)
 
+    async def _cmd_config(self, args: str) -> None:
+        """Show current configuration."""
+        if not self.config:
+            self.renderer.print_error("No configuration object available.")
+            return
+
+        if self.config.config_path:
+            self.renderer.print(f"[cyan]Config path:[/cyan] {self.config.config_path}")
+        self.renderer.print_code(
+            yaml.dump(self.config.data, default_flow_style=False, sort_keys=False),
+            language="yaml",
+        )
+
     async def _cmd_clear(self, args: str) -> None:
         """Clear conversation."""
+        self.agent.clear_conversation()
         self.renderer.print_success("Conversation cleared.")
 
     async def _cmd_history(self, args: str) -> None:
         """Show conversation history."""
-        self.renderer.print("Conversation history not yet implemented.")
+        history = []
+        context_manager = getattr(self.agent, "context_manager", None)
+        if context_manager:
+            history = context_manager.get_conversation_history()
+
+        if args:
+            try:
+                limit = int(args)
+                history = history[-limit:] if limit > 0 else history
+            except ValueError:
+                self.renderer.print_error("Usage: /history [n]")
+                return
+
+        if not history:
+            self.renderer.print("No conversation history.")
+            return
+
+        self.renderer.print_history(history)
 
     async def _cmd_exit(self, args: str) -> None:
         """Exit the REPL."""

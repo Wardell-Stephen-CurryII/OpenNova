@@ -420,6 +420,31 @@ class TestMCPRuntimeIntegration:
         assert "git_helper" in runtime.skill_registry.list_skills()
         assert "git_helper" not in runtime.skill_registry.list_enabled_skills()
 
+    def test_runtime_reload_skills_respects_disabled_config(self):
+        """Reloading skills should respect disabled skills configuration."""
+        config = {
+            "default_provider": "openai",
+            "providers": {
+                "openai": {
+                    "api_key": "test-key",
+                    "model": "gpt-4o-mini",
+                }
+            },
+            "skills": {
+                "enabled": False,
+            },
+            "mcp": {"enabled": False},
+        }
+
+        runtime = AgentRuntime(config=config, register_default_tools=True, enable_mcp=False, enable_skills=False)
+        runtime.skill_registry = SkillRegistry(runtime.tool_registry)
+        runtime.skill_registry.load_all(builtins=get_builtin_skill_classes())
+
+        reloaded_count = runtime.reload_skills()
+
+        assert reloaded_count == 0
+        assert len(runtime.skill_registry) == 0
+
     def test_skill_in_registry(self):
         """Test that skills can be added to tool registry."""
         from opennova.tools.base import ToolRegistry

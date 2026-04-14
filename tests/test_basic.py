@@ -16,6 +16,7 @@ from opennova.tools.task_tools import (
 )
 from opennova.utils.task_output import read_task_output
 from opennova.providers.base import Message, ToolSchema
+from opennova.memory.context import ContextManager
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.state import AgentState, PlanApprovalStatus
 from opennova.tools.plan_mode_tools import EnterPlanModeTool, ExitPlanModeTool
@@ -759,7 +760,115 @@ def test_agent_runtime_create_plan_uses_shared_planner():
     assert runtime.planner.optimize_calls == ["Unify planning"]
 
 
-def test_run_single_task_plan_mode_executes_after_confirmation():
+
+
+def test_repl_skills_command_lists_runtime_skills():
+    """REPL /skills should render loaded skills from the runtime."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.get_skills = lambda: ["code_review", "git_helper"]
+    runtime.skill_registry = type(
+        "SkillRegistryStub",
+        (),
+        {
+            "get_skill_info": lambda self, name: {
+                "name": name,
+                "enabled": name != "git_helper",
+                "source_type": "builtin",
+                "description": f"desc:{name}",
+                "tool_description": f"tool:{name}",
+            }
+        },
+    )()
+
+    repl = REPL(runtime, config=None)
+    captured = {}
+    repl.renderer.print_skills = lambda skills: captured.setdefault("skills", skills)
+
+    asyncio.run(repl._cmd_skills(""))
+
+    assert [skill["name"] for skill in captured["skills"]] == ["code_review", "git_helper"]
+    assert captured["skills"][1]["enabled"] is False
+
+
+def test_repl_reload_skills_command_reports_count():
+    """REPL /reload-skills should report the runtime reload count."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.reload_skills = lambda: 4
+
+    repl = REPL(runtime, config=None)
+    messages = []
+    repl.renderer.print_success = lambda message: messages.append(message)
+
+    asyncio.run(repl._cmd_reload_skills(""))
+
+    assert messages == ["Reloaded 4 skills."]
+
+
+def test_repl_config_command_handles_missing_config():
+    """REPL /config should show a helpful error when config is unavailable."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    repl = REPL(runtime, config=None)
+    errors = []
+    repl.renderer.print_error = lambda message: errors.append(message)
+
+    asyncio.run(repl._cmd_config(""))
+
+    assert errors == ["No configuration object available."]
+
+
+def test_repl_history_command_shows_empty_state():
+    """REPL /history should show an empty-state message when there is no history."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.context_manager = ContextManager(model="gpt-4o")
+
+    repl = REPL(runtime, config=None)
+    printed = []
+    repl.renderer.print = lambda message, **kwargs: printed.append(message)
+
+    asyncio.run(repl._cmd_history(""))
+
+    assert printed == ["No conversation history."]
+
+
+def test_repl_clear_command_calls_runtime_clear():
+    """REPL /clear should delegate to the runtime clear helper."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    cleared = []
+    runtime.clear_conversation = lambda: cleared.append(True)
+
+    repl = REPL(runtime, config=None)
+    messages = []
+    repl.renderer.print_success = lambda message: messages.append(message)
+
+    asyncio.run(repl._cmd_clear(""))
+
+    assert cleared == [True]
+    assert messages == ["Conversation cleared."]
+
+
+def test_agent_runtime_clear_conversation_resets_context_and_state():
+    """Clearing the runtime conversation should empty context and reset state."""
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.context_manager = ContextManager(model="gpt-4o")
+    runtime.state = AgentState()
+    runtime.context_manager.add_user_message("hello")
+    runtime.state.reset("Do work")
+
+    AgentRuntime.clear_conversation(runtime)
+
+    assert len(runtime.context_manager) == 0
+    assert runtime.state.current_task == ""
+
     """CLI plan mode should approve and execute on the same runtime instance."""
     from opennova.main import _run_single_task
 

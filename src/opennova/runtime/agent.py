@@ -605,6 +605,11 @@ class AgentRuntime:
             response = await self.llm.chat(messages, temperature=0.7)
             return response.content
 
+    def clear_conversation(self) -> None:
+        """Clear current conversation context and volatile runtime state."""
+        self.context_manager.clear()
+        self.state.reset("")
+
     def get_state(self) -> AgentState:
         """Get current agent state."""
         return self.state
@@ -639,10 +644,15 @@ class AgentRuntime:
         from opennova.skills.examples import get_builtin_skill_classes
         from opennova.skills.registry import SkillRegistry
 
+        skills_config = self.config.get("skills", {})
+        if not skills_config.get("enabled", True):
+            if self.skill_registry:
+                self.skill_registry.clear()
+            return 0
+
         if not self.skill_registry:
             self.skill_registry = SkillRegistry(self.tool_registry)
 
-        skills_config = self.config.get("skills", {})
         skill_dirs = skills_config.get("dirs", [])
         excluded = skills_config.get("exclude", [])
 

@@ -143,10 +143,11 @@ Inside the interactive REPL:
 | `/act <task>` | Execute directly (default mode) |
 | `/tools` | List available tools |
 | `/skills` | List loaded skills |
+| `/reload-skills` | Reload skills from disk |
 | `/model` | Show current model info |
 | `/config` | Show current configuration |
-| `/history` | Show conversation history |
-| `/clear` | Clear conversation |
+| `/history [n]` | Show recent conversation history |
+| `/clear` | Clear current conversation state |
 | `/help` | Show help message |
 | `/exit` | Exit the REPL |
 

@@ -144,10 +144,11 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/act <task>` | 直接执行（默认模式） |
 | `/tools` | 列出可用工具 |
 | `/skills` | 列出已加载的 Skills |
+| `/reload-skills` | 从磁盘重新加载 Skills |
 | `/model` | 显示当前模型信息 |
 | `/config` | 显示当前配置 |
-| `/history` | 显示会话历史 |
-| `/clear` | 清空会话 |
+| `/history [n]` | 显示最近的会话历史 |
+| `/clear` | 清空当前会话状态 |
 | `/help` | 显示帮助信息 |
 | `/exit` | 退出 REPL |
 
