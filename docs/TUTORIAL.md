@@ -261,9 +261,11 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/act <task>` | 直接执行 | `/act 读取文件` |
 | `/tools` | 列出可用工具 | `/tools` |
 | `/skills` | 列出已加载技能 | `/skills` |
+| `/reload-skills` | 从磁盘重新加载技能 | `/reload-skills` |
 | `/model` | 显示当前模型 | `/model` |
 | `/config` | 显示配置 | `/config` |
-| `/clear` | 清空对话 | `/clear` |
+| `/history [n]` | 显示最近会话历史 | `/history 5` |
+| `/clear` | 清空当前会话状态 | `/clear` |
 | `/exit` | 退出 REPL | `/exit` |
 
 ---

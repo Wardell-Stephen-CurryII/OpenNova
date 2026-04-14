@@ -12,8 +12,11 @@ cd OpenNova
 # 安装依赖
 uv sync
 
+# 安装
+uv tool install .
+
 # 初始化配置
-uv run opennova init
+opennova init
 ```
 
 ## 第二步：配置 API Key
@@ -35,10 +38,10 @@ nano ~/.opennova/config.yaml
 
 ```bash
 # 启动交互模式
-uv run opennova
+opennova
 
 # 或直接执行任务
-uv run opennova run "读取 README.md"
+opennova run "读取 README.md"
 ```
 
 ## 示例任务
