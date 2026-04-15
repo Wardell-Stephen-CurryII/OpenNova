@@ -175,22 +175,22 @@ class AgentRuntime:
         self.tool_registry.register(GitBranchTool())
 
     def _init_skills(self) -> None:
-        """Initialize skill loading."""
-        from opennova.skills.examples import get_builtin_skill_classes
+        """Initialize markdown skill loading."""
+        from opennova.skills.examples import get_builtin_skill_dirs
         from opennova.skills.registry import SkillRegistry
 
         skills_config = self.config.get("skills", {})
         if not skills_config.get("enabled", True):
             return
 
-        self.skill_registry = SkillRegistry(self.tool_registry)
+        self.skill_registry = SkillRegistry()
 
-        skill_dirs = skills_config.get("dirs", [])
+        configured_dirs = [Path(path) for path in skills_config.get("dirs", [])]
+        skill_dirs = [*get_builtin_skill_dirs(), *configured_dirs]
         excluded = skills_config.get("exclude", [])
 
         self.skill_registry.load_all(
-            directories=skill_dirs if skill_dirs else None,
-            builtins=get_builtin_skill_classes(),
+            directories=skill_dirs,
             excluded=excluded,
         )
 
@@ -550,6 +550,7 @@ class AgentRuntime:
             progress_callback=progress_callback,
             iteration_start_callback=lambda messages: self._emit("iteration_start", messages),
             interaction_callback=self._callbacks.get("interaction"),
+            skill_registry=getattr(self, "skill_registry", None),
             context_manager=self.context_manager,
             working_memory=self.working_memory,
         )
@@ -653,12 +654,12 @@ class AgentRuntime:
 
     def reload_skills(self) -> int:
         """
-        Reload all skills from disk.
+        Reload all markdown skills from disk.
 
         Returns:
             Number of skills loaded
         """
-        from opennova.skills.examples import get_builtin_skill_classes
+        from opennova.skills.examples import get_builtin_skill_dirs
         from opennova.skills.registry import SkillRegistry
 
         skills_config = self.config.get("skills", {})
@@ -668,14 +669,13 @@ class AgentRuntime:
             return 0
 
         if not self.skill_registry:
-            self.skill_registry = SkillRegistry(self.tool_registry)
+            self.skill_registry = SkillRegistry()
 
-        skill_dirs = skills_config.get("dirs", [])
+        configured_dirs = [Path(path) for path in skills_config.get("dirs", [])]
         excluded = skills_config.get("exclude", [])
 
         self.skill_registry.load_all(
-            directories=skill_dirs if skill_dirs else None,
-            builtins=get_builtin_skill_classes(),
+            directories=[*get_builtin_skill_dirs(), *configured_dirs],
             excluded=excluded,
         )
         return len(self.skill_registry)

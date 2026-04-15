@@ -858,7 +858,6 @@ def test_repl_skills_command_lists_runtime_skills():
                 "enabled": name != "git_helper",
                 "source_type": "builtin",
                 "description": f"desc:{name}",
-                "tool_description": f"tool:{name}",
             }
         },
     )()

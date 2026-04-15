@@ -26,6 +26,7 @@ from opennova.providers.base import (
     ToolSchema,
 )
 from opennova.runtime.state import AgentState, Plan
+from opennova.skills.registry import SkillRegistry
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 
 
@@ -63,6 +64,7 @@ class ReActLoop:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         iteration_start_callback: Callable[[list[Message]], None] | None = None,
         interaction_callback: Callable[[dict[str, Any]], Any] | None = None,
+        skill_registry: SkillRegistry | None = None,
         context_manager: ContextManager | None = None,
         working_memory: WorkingMemory | None = None,
     ):
@@ -84,6 +86,7 @@ class ReActLoop:
         self.progress_callback = progress_callback
         self.iteration_start_callback = iteration_start_callback
         self.interaction_callback = interaction_callback
+        self.skill_registry = skill_registry
         self.context_manager = context_manager or ContextManager(model=llm.model)
         self.working_memory = working_memory
         self.on_thought: Callable | None = None
@@ -174,7 +177,7 @@ class ReActLoop:
                     self._report_progress(activity="Completed task", mark_complete=True)
                     break
 
-                if action.tool_name and action.tool_name in self.tool_registry:
+                if action.tool_name == "__skill__" or (action.tool_name and action.tool_name in self.tool_registry):
                     if self.on_action:
                         self.on_action(action.tool_name, action.arguments)
 
@@ -194,7 +197,7 @@ class ReActLoop:
                 else:
                     observation = Message(
                         role="user",
-                        content="Please use an available tool to complete the task. "
+                        content="Please use an available tool or skill to complete the task. "
                         "Available tools: " + ", ".join(self.tool_registry.list_names()),
                     )
                     self.add_message(observation)
@@ -317,15 +320,39 @@ class ReActLoop:
 
             if self._is_dangerous_action(action.tool_name, action.arguments):
                 action.requires_confirmation = True
+        elif self.skill_registry:
+            action = self._parse_skill_invocation(action, content)
 
-        if response.finish_reason == FinishReason.STOP and not response.tool_calls:
+        if response.finish_reason == FinishReason.STOP and not response.tool_calls and not action.tool_name:
             action.is_final = True
 
         return action
 
+    def _parse_skill_invocation(self, action: ParsedAction, content: str) -> ParsedAction:
+        """Detect a markdown skill invocation from assistant text."""
+        if not self.skill_registry:
+            return action
+
+        stripped = content.strip()
+        if not stripped.lower().startswith("/skill"):
+            return action
+
+        parts = stripped.split(maxsplit=2)
+        if len(parts) < 2:
+            return action
+
+        skill_name = parts[1].strip()
+        skill_args = parts[2].strip() if len(parts) > 2 else ""
+        if skill_name not in self.skill_registry:
+            return action
+
+        action.tool_name = "__skill__"
+        action.arguments = {"skill": skill_name, "args": skill_args}
+        return action
+
     def _record_file_observation(self, action: ParsedAction, result: ToolResult) -> None:
-        """Record file-tool observations in working memory when metadata is available."""
-        if not self.working_memory:
+        """Record file observations from file-oriented tool executions."""
+        if not self.working_memory or not result.success:
             return
 
         file_path = None
@@ -359,13 +386,15 @@ class ReActLoop:
         Returns:
             Tool execution result
         """
-        tool = self.tool_registry.get(action.tool_name)
+        tool = self.tool_registry.get(action.tool_name) if action.tool_name != "__skill__" else None
         action_record = None
         if self.working_memory:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
 
         try:
-            if hasattr(tool, "async_execute"):
+            if action.tool_name == "__skill__":
+                result = await self._invoke_skill(action.arguments)
+            elif hasattr(tool, "async_execute"):
                 result = await tool.async_execute(**action.arguments)
             else:
                 result = tool.execute(**action.arguments)
@@ -395,6 +424,24 @@ class ReActLoop:
                 error=f"Tool execution failed: {e}",
             )
 
+
+    async def _invoke_skill(self, arguments: dict[str, Any]) -> ToolResult:
+        """Materialize a markdown skill prompt into the current conversation."""
+        if not self.skill_registry:
+            return ToolResult(success=False, output="", error="Skill registry is not available")
+
+        skill_name = str(arguments.get("skill", "")).strip()
+        skill_args = str(arguments.get("args", "")).strip()
+        prompt = self.skill_registry.materialize_skill_prompt(skill_name, skill_args)
+        if prompt is None:
+            return ToolResult(success=False, output="", error=f"Skill '{skill_name}' is unavailable")
+
+        self.add_message(Message(role="user", content=f"Invoked skill '{skill_name}':\n\n{prompt}"))
+        return ToolResult(
+            success=True,
+            output=f"Invoked skill: {skill_name}",
+            metadata={"skill": skill_name, "args": skill_args, "skill_prompt": prompt},
+        )
 
     async def _resolve_interaction(self, result: ToolResult) -> ToolResult:
         """Resolve an interactive tool result through the registered runtime callback."""
@@ -477,20 +524,43 @@ class ReActLoop:
             params_str = "\n".join(params_desc) if params_desc else "    No parameters"
             tools_description.append(f"- {schema.name}: {schema.description}\n{params_str}")
 
-        return f"""You are an AI coding assistant that helps users with software engineering tasks.
+        skills_description = []
+        if self.skill_registry:
+            for name in self.skill_registry.list_enabled_skills():
+                info = self.skill_registry.get_skill_info(name) or {}
+                skill_line = f"- {name}: {info.get('description', '')}"
+                if info.get("when_to_use"):
+                    skill_line += f"\n  when_to_use: {info.get('when_to_use')}"
+                skills_description.append(skill_line)
+
+        prompt = f"""You are an AI coding assistant that helps users with software engineering tasks.
 
 You have access to the following tools:
 {chr(10).join(tools_description)}
+"""
 
-Use these tools to complete the user's task. When you have completed the task,
+        if skills_description:
+            prompt += f"""
+
+You also have access to the following reusable skills:
+{chr(10).join(skills_description)}
+
+To invoke a skill, respond with a single line in this exact format:
+/skill <skill-name> [arguments]
+"""
+
+        prompt += """
+
+Use these tools and skills to complete the user's task. When you have completed the task,
 provide a summary of what was done.
 
 Rules:
-1. Always explain what you are doing before executing a tool
+1. Always explain what you are doing before executing a tool or skill
 2. If a tool fails, try to understand the error and attempt a different approach
 3. Be careful with file operations - read before write when modifying existing files
 4. When the task is complete, provide a clear summary
 """
+        return prompt
 
     def _is_dangerous_action(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Check if an action is potentially dangerous."""

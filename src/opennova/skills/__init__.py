@@ -1,19 +1,19 @@
 """
 Skills Plugin System for OpenNova.
 
-Skills are custom tools that users can create and load from:
-- ~/.opennova/skills/ directory
-- Project-level .opennova/skills/ directory
-- Configure in config.yaml
+Skills follow the Claude Code-style markdown format:
+- ~/.opennova/skills/<skill-name>/SKILL.md
+- .opennova/skills/<skill-name>/SKILL.md
+- configured skill directories with the same layout
 
-Each skill is a Python file with a Skill class that inherits from BaseSkill.
+Each skill is a markdown prompt with YAML frontmatter, not a Python class.
 """
 
-from opennova.skills.base import BaseSkill, SkillMetadata, SkillLoader
+from opennova.skills.base import LoadedSkill, SkillLoader, SkillMetadata
 from opennova.skills.registry import SkillRegistry
 
 __all__ = [
-    "BaseSkill",
+    "LoadedSkill",
     "SkillMetadata",
     "SkillLoader",
     "SkillRegistry",
