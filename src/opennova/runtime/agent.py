@@ -549,6 +549,7 @@ class AgentRuntime:
             stream=stream,
             progress_callback=progress_callback,
             iteration_start_callback=lambda messages: self._emit("iteration_start", messages),
+            interaction_callback=self._callbacks.get("interaction"),
             context_manager=self.context_manager,
             working_memory=self.working_memory,
         )

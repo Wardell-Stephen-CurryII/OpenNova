@@ -8,6 +8,7 @@ Implements the core Reason-Act-Observe cycle:
 4. Repeat until complete or max iterations reached
 """
 
+import asyncio
 import json
 import traceback
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ class ReActLoop:
         stream: bool = True,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         iteration_start_callback: Callable[[list[Message]], None] | None = None,
+        interaction_callback: Callable[[dict[str, Any]], Any] | None = None,
         context_manager: ContextManager | None = None,
         working_memory: WorkingMemory | None = None,
     ):
@@ -81,6 +83,7 @@ class ReActLoop:
         self.stream = stream
         self.progress_callback = progress_callback
         self.iteration_start_callback = iteration_start_callback
+        self.interaction_callback = interaction_callback
         self.context_manager = context_manager or ContextManager(model=llm.model)
         self.working_memory = working_memory
         self.on_thought: Callable | None = None
@@ -366,6 +369,9 @@ class ReActLoop:
                 result = await tool.async_execute(**action.arguments)
             else:
                 result = tool.execute(**action.arguments)
+
+            if result.success and result.metadata.get("interaction_required"):
+                result = await self._resolve_interaction(result)
             if self.working_memory and action_record:
                 status = ActionStatus.SUCCESS if result.success else ActionStatus.FAILED
                 self.working_memory.update_action(
@@ -388,6 +394,35 @@ class ReActLoop:
                 output="",
                 error=f"Tool execution failed: {e}",
             )
+
+
+    async def _resolve_interaction(self, result: ToolResult) -> ToolResult:
+        """Resolve an interactive tool result through the registered runtime callback."""
+        if not self.interaction_callback:
+            return ToolResult(
+                success=False,
+                output=result.output,
+                error="Interactive response required but no interaction handler is available.",
+                metadata={**result.metadata, "interaction_unresolved": True},
+            )
+
+        interaction_result = self.interaction_callback(result.metadata)
+        if asyncio.iscoroutine(interaction_result):
+            interaction_result = await interaction_result
+
+        prompt_payload = result.metadata.get("prompt_payload", {})
+        question = prompt_payload.get("question", "")
+        return ToolResult(
+            success=True,
+            output=f"Answer to: {question}\n{interaction_result.get('display', '')}".strip(),
+            metadata={
+                **result.metadata,
+                "interaction_required": False,
+                "answers": interaction_result.get("answers", {}),
+                "answer": interaction_result.get("answer"),
+                "selected_options": interaction_result.get("selected_options", []),
+            },
+        )
 
     def _observe(self, action: ParsedAction, result: ToolResult) -> None:
         """

@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import pytest
 
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
@@ -1167,8 +1167,8 @@ def test_ask_user_question_formats_single_select_header_and_preview():
     assert 'Preview: ' + ('x' * 100) + '...' in result.output
     assert result.metadata['questions'][0]['header'] == 'Approach'
     assert result.metadata['questions'][0]['multiSelect'] is False
-    assert result.metadata['answers'] == {}
-    assert 'CLI mode' in result.metadata['note']
+    assert result.metadata['interaction_required'] is True
+    assert result.metadata['prompt_payload']['header'] == 'Approach'
 
 
 def test_ask_user_question_formats_multi_select_prompt():
@@ -1188,18 +1188,15 @@ def test_ask_user_question_formats_multi_select_prompt():
     assert result.metadata['questions'][0]['multiSelect'] is True
 
 
-def test_web_search_caps_results_and_includes_sources():
-    tool = WebSearchTool()
+def test_web_search_returns_explicit_unconfigured_error_with_metadata():
+    result = WebSearchTool().execute(query='latest docs', num_results=10)
 
-    result = tool.execute(query='latest docs', num_results=10)
-
-    assert result.success is True
+    assert result.success is False
+    assert result.error == 'Web search is not configured in this runtime.'
     assert result.metadata['query'] == 'latest docs'
-    assert result.metadata['count'] == 3
-    assert len(result.metadata['results']) == 3
+    assert result.metadata['count'] == 0
+    assert result.metadata['requested_count'] == 10
     assert result.metadata['current_year'] >= 2026
-    assert 'Sources:' in result.output
-    assert result.output.count('Search Result') >= 3
 
 
 def test_web_fetch_rejects_invalid_url():
@@ -1209,13 +1206,13 @@ def test_web_fetch_rejects_invalid_url():
     assert result.error == 'Invalid URL: not-a-url'
 
 
-def test_web_fetch_returns_metadata_for_valid_url():
-    result = WebFetchTool().execute(url='https://example.com/docs')
+def test_web_fetch_extracts_plain_text_from_html():
+    tool = WebFetchTool()
 
-    assert result.success is True
-    assert 'Simulated content from https://example.com/docs' in result.output
-    assert result.metadata['url'] == 'https://example.com/docs'
-    assert 'fetched_at' in result.metadata
+    result = tool._extract_content('<html><body><h1>Docs</h1><p>Hello <b>world</b></p></body></html>', 'text/html')
+
+    assert 'Docs' in result
+    assert 'Hello world' in result
 
 
 def test_web_fetch_handles_urlparse_failure():
@@ -1404,3 +1401,178 @@ def test_git_branch_reports_current_branch_and_empty_state():
         failed = tool.execute()
     assert failed.success is False
     assert failed.error == 'branch failed'
+
+
+@pytest.mark.asyncio
+async def test_react_loop_resolves_interactive_tool_results_via_callback():
+    class InteractiveTool(BaseTool):
+        name = 'interactive_tool'
+        description = 'Interactive test tool'
+
+        def execute(self, **kwargs):
+            return ToolResult(
+                success=True,
+                output='Question: Choose one',
+                metadata={
+                    'interaction_required': True,
+                    'prompt_payload': {
+                        'question': 'Choose one',
+                        'options': [
+                            {'index': 1, 'label': 'Alpha', 'description': 'A'},
+                            {'index': 2, 'label': 'Beta', 'description': 'B'},
+                        ],
+                        'multi_select': False,
+                    },
+                },
+            )
+
+    class Provider(DummyProvider):
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, tools=None, **kwargs):
+            from opennova.providers.base import FinishReason, LLMResponse, ToolCall
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResponse(
+                    content='ask user',
+                    tool_calls=[ToolCall(id='call_1', name='interactive_tool', arguments={})],
+                    finish_reason=FinishReason.TOOL_CALL,
+                )
+            return LLMResponse(content='done', finish_reason=FinishReason.STOP)
+
+    registry = ToolRegistry()
+    registry.clear()
+    registry.register(InteractiveTool())
+    loop = ReActLoop(
+        llm=Provider(),
+        tool_registry=registry,
+        state=AgentState(),
+        stream=False,
+        interaction_callback=lambda metadata: {
+            'answer': 'Alpha',
+            'answers': {'Choose one': 'Alpha'},
+            'selected_options': [{'index': 1, 'label': 'Alpha'}],
+            'display': 'Alpha',
+        },
+    )
+
+    result = await loop.run('choose')
+
+    assert result == 'done'
+    assert any(message.role == 'tool' and message.content == 'Answer to: Choose one\nAlpha' for message in loop.messages)
+
+
+def test_ask_user_question_exposes_interaction_metadata_contract():
+    tool = AskUserQuestionTool()
+
+    result = tool.execute(
+        question='Which approach should we use?',
+        header='Approach',
+        options=[
+            {'label': 'Option A', 'description': 'Safer path'},
+            {'label': 'Option B', 'description': 'Faster path'},
+        ],
+    )
+
+    assert result.success is True
+    assert result.metadata['interaction_required'] is True
+    assert result.metadata['interaction_type'] == 'ask_user_question'
+    assert result.metadata['prompt_payload']['question'] == 'Which approach should we use?'
+    assert result.metadata['prompt_payload']['options'][0]['index'] == 1
+    assert result.metadata['questions'][0]['multiSelect'] is False
+
+
+def test_react_loop_marks_unresolved_interaction_without_callback():
+    loop = ReActLoop(
+        llm=DummyProvider(),
+        tool_registry=ToolRegistry(),
+        state=AgentState(),
+        stream=False,
+    )
+
+    result = asyncio.run(loop._resolve_interaction(ToolResult(
+        success=True,
+        output='Question: choose',
+        metadata={'interaction_required': True, 'prompt_payload': {'question': 'choose'}},
+    )))
+
+    assert result.success is False
+    assert result.metadata['interaction_unresolved'] is True
+    assert 'Interactive response required' in result.error
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_async_execute_returns_real_metadata_and_extracted_text():
+    tool = WebFetchTool()
+
+    response = type('Response', (), {})()
+    response.text = '<html><body><h1>Title</h1><p>Hello <b>world</b></p></body></html>'
+    response.status_code = 200
+    response.headers = {'content-type': 'text/html; charset=utf-8'}
+    response.url = 'https://example.com/final'
+    response.raise_for_status = lambda: None
+
+    client = AsyncMock()
+    client.get.return_value = response
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with patch('opennova.tools.web_tools.httpx.AsyncClient', return_value=client):
+        result = await tool.async_execute(url='https://example.com/start')
+
+    assert result.success is True
+    assert 'Title' in result.output
+    assert 'Hello world' in result.output
+    assert result.metadata['url'] == 'https://example.com/start'
+    assert result.metadata['final_url'] == 'https://example.com/final'
+    assert result.metadata['status_code'] == 200
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_async_execute_truncates_and_handles_failures():
+    tool = WebFetchTool()
+    tool._max_output_chars = 10
+
+    response = type('Response', (), {})()
+    response.text = 'x' * 20
+    response.status_code = 200
+    response.headers = {'content-type': 'text/plain'}
+    response.url = 'https://example.com/final'
+    response.raise_for_status = lambda: None
+
+    client = AsyncMock()
+    client.get.return_value = response
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    with patch('opennova.tools.web_tools.httpx.AsyncClient', return_value=client):
+        truncated = await tool.async_execute(url='https://example.com/start')
+    assert truncated.success is True
+    assert truncated.output.endswith('... [truncated]')
+
+    failing_client = AsyncMock()
+    failing_client.get.side_effect = RuntimeError('network failed')
+    failing_client.__aenter__.return_value = failing_client
+    failing_client.__aexit__.return_value = None
+
+    with patch('opennova.tools.web_tools.httpx.AsyncClient', return_value=failing_client):
+        failed = await tool.async_execute(url='https://example.com/start')
+    assert failed.success is False
+    assert failed.error == 'network failed'
+
+
+def test_web_search_returns_explicit_unconfigured_error():
+    result = WebSearchTool().execute(
+        query='latest docs',
+        allowed_domains=['docs.python.org'],
+        blocked_domains=['example.com'],
+        num_results=5,
+    )
+
+    assert result.success is False
+    assert result.error == 'Web search is not configured in this runtime.'
+    assert result.metadata['query'] == 'latest docs'
+    assert result.metadata['allowed_domains'] == ['docs.python.org']
+    assert result.metadata['blocked_domains'] == ['example.com']
+    assert result.metadata['count'] == 0

@@ -27,27 +27,8 @@ class AskUserQuestionTool(BaseTool):
         multi_select: bool = False,
         **kwargs: Any,
     ) -> ToolResult:
-        """
-        Ask the user a multiple choice question.
-
-        Args:
-            question: The complete question to ask the user. Should be clear, specific,
-                      and end with a question mark. Example:
-                      "Which library should we use for date formatting?"
-            options: The available choices for this question (2-4 options). Each option is a
-                     dict with 'label', 'description', and optional 'preview' keys.
-                     Example: [{"label": "moment.js", "description": "Lightweight library with good i18n"}]
-            header: Very short label displayed as a chip/tag (max 12 chars).
-                     Examples: "Auth method", "Library", "Approach".
-            multi_select: Set to true to allow multiple selections instead of just one.
-
-        Returns:
-            ToolResult with user's answer
-        """
+        """Ask the user a multiple choice question."""
         try:
-            # In a real implementation with UI, this would show an interactive prompt.
-            # For now, we simulate the interaction with a default behavior.
-
             if len(options) < 2 or len(options) > 4:
                 return ToolResult(
                     success=False,
@@ -55,7 +36,6 @@ class AskUserQuestionTool(BaseTool):
                     error="Questions must have 2-4 options.",
                 )
 
-            # Format the question for display
             output_lines = [f"Question: {question}"]
 
             if header:
@@ -68,27 +48,37 @@ class AskUserQuestionTool(BaseTool):
 
             output_lines.append("")
 
-            # Display options
+            normalized_options = []
             for i, option in enumerate(options, 1):
                 label = option.get("label", f"Option {i}")
                 description = option.get("description", "")
+                preview = option.get("preview")
+
+                normalized_option = {
+                    "index": i,
+                    "label": label,
+                    "description": description,
+                }
+                if preview:
+                    normalized_option["preview"] = preview
+                normalized_options.append(normalized_option)
 
                 output_lines.append(f"  [{i}] {label}")
-
                 if description:
                     output_lines.append(f"      {description}")
-
-                preview = option.get("preview")
                 if preview:
-                    output_lines.append(f"      Preview: {preview[:100]}{'...' if len(preview) > 100 else ''}")
+                    output_lines.append(
+                        f"      Preview: {preview[:100]}{'...' if len(preview) > 100 else ''}"
+                    )
                     output_lines.append("")
 
-            # For CLI/non-interactive mode, return a default response
-            # In production, this would wait for actual user input
             return ToolResult(
                 success=True,
                 output="\n".join(output_lines),
                 metadata={
+                    "interaction_required": True,
+                    "interaction_type": "ask_user_question",
+                    "question": question,
                     "questions": [
                         {
                             "question": question,
@@ -97,8 +87,12 @@ class AskUserQuestionTool(BaseTool):
                             "multiSelect": multi_select,
                         }
                     ],
-                    "answers": {},  # Would be populated by user input
-                    "note": "This tool requires interactive UI for actual user responses. In CLI mode, please respond with your choice.",
+                    "prompt_payload": {
+                        "question": question,
+                        "header": header,
+                        "options": normalized_options,
+                        "multi_select": multi_select,
+                    },
                 },
             )
         except Exception as e:

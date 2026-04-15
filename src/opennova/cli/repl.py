@@ -382,6 +382,7 @@ class REPL:
 
         self.agent.state.mark_plan_approved()
         self._register_act_callbacks()
+        self.agent.register_callback("interaction", self._handle_interaction)
         self.renderer.print("[cyan]Executing approved plan...[/cyan]")
         execution_result = await self.agent.execute_approved_plan()
         self.renderer.print_markdown(execution_result)
@@ -483,15 +484,64 @@ class REPL:
 
         self.renderer.print_history(history)
 
+
     async def _cmd_exit(self, args: str) -> None:
         """Exit the REPL."""
         self.running = False
+
+    async def _handle_interaction(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Handle interactive tool prompts during REPL runs."""
+        payload = metadata.get("prompt_payload", {})
+        question = payload.get("question", "")
+        options = payload.get("options", [])
+        multi_select = payload.get("multi_select", False)
+        header = payload.get("header")
+
+        if header:
+            self.renderer.print(f"[cyan][{header}][/cyan]")
+        self.renderer.print(question)
+        for option in options:
+            self.renderer.print(f"  [{option['index']}] {option['label']}")
+            if option.get("description"):
+                self.renderer.print(f"      {option['description']}")
+
+        prompt = "Select option(s): " if multi_select else "Select option: "
+        while True:
+            response = await self.session.prompt_async(prompt)
+            selected = [part.strip() for part in response.split(",") if part.strip()]
+            if not selected:
+                self.renderer.print_error("Please choose at least one option.")
+                continue
+            if not multi_select and len(selected) != 1:
+                self.renderer.print_error("Please choose exactly one option.")
+                continue
+
+            try:
+                indexes = [int(value) for value in selected]
+            except ValueError:
+                self.renderer.print_error("Please enter numeric option values.")
+                continue
+
+            option_map = {option["index"]: option for option in options}
+            if any(index not in option_map for index in indexes):
+                self.renderer.print_error("Selection out of range.")
+                continue
+
+            chosen = [option_map[index] for index in indexes]
+            labels = [item["label"] for item in chosen]
+            return {
+                "answer": labels if multi_select else labels[0],
+                "answers": {question: labels if multi_select else labels[0]},
+                "selected_options": chosen,
+                "display": ", ".join(labels),
+            }
 
     async def _execute_task(self, task: str) -> None:
         """Execute a task with streaming output."""
         import traceback
 
         self._register_act_callbacks()
+        self.agent.register_callback("interaction", self._handle_interaction)
 
         print()
         try:
