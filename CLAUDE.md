@@ -111,10 +111,10 @@ uv run mypy src/opennova
    - `types.py`: MCP data types
    - `connector.py`: MCP server connections (stdio/SSE)
 
-9. **Skills System** (`src/opennova/skills/`): Plugin architecture
-   - `base.py`: BaseSkill and loader
-   - `registry.py`: Skill management
-   - `examples.py`: Built-in example skills
+9. **Skills System** (`src/opennova/skills/`): Markdown skill loading
+   - `base.py`: `SKILL.md` discovery and frontmatter parsing
+   - `registry.py`: Skill metadata and prompt management
+   - `examples.py`: Bundled skill directory discovery
 
 10. **CLI Interface** (`src/opennova/cli/`)
     - `repl.py`: Interactive REPL with command history
@@ -163,10 +163,11 @@ Key configuration sections:
 5. Register the tool in `AgentRuntime._register_builtin_tools()` if it should be always available
 
 ### Adding New Skills
-1. Create a skill file in `~/.opennova/skills/` or configured directory
-2. Inherit from `BaseSkill` and implement `execute()` method
-3. Define `name`, `description`, and `metadata` attributes
-4. Skills are auto-discovered at runtime
+1. Create a skill directory in `~/.opennova/skills/`, `.opennova/skills/`, or another configured skills directory
+2. Add a `SKILL.md` file inside `/<skill-name>/SKILL.md`
+3. Define YAML frontmatter such as `name`, `description`, `when_to_use`, `allowed-tools`, `arguments`, and `argument-hint`
+4. Write the markdown body that should be injected when the skill is invoked
+5. Skills are auto-discovered at runtime from the directory-based markdown layout
 
 ### Adding New LLM Providers
 1. Create a new provider class inheriting from `BaseLLMProvider`
@@ -206,27 +207,24 @@ python -c "from opennova.config import load_config, validate_config; config = lo
 ```
 
 ### Creating a New Skill
-```python
-# Save to ~/.opennova/skills/my_skill.py
-from opennova.skills.base import BaseSkill, SkillMetadata
-from opennova.tools.base import ToolResult
+```markdown
+# Save to ~/.opennova/skills/my_skill/SKILL.md
+---
+name: my_skill
+description: A reusable project-specific prompt.
+when_to_use: Use when the user wants this analysis pattern repeated.
+allowed-tools: read_file, list_directory
+arguments: [target]
+argument-hint: <file-or-area>
+---
+Analyze the requested target.
 
-class MySkill(BaseSkill):
-    """My custom skill."""
-    
-    name = "my_skill"
-    description = "Does something useful"
-    
-    metadata = SkillMetadata(
-        name="my_skill",
-        version="1.0.0",
-        description="A custom skill",
-        author="Your Name",
-    )
-    
-    def execute(self, **kwargs) -> ToolResult:
-        # Your skill logic here
-        return ToolResult(success=True, output="Done!")
+Target: $ARGUMENTS
+
+Summarize:
+- what it does
+- key dependencies
+- likely risks
 ```
 
 ### Adding a New Built-in Tool

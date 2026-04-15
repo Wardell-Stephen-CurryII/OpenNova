@@ -304,33 +304,28 @@ opennova> 使用 code_review 技能审查 main.py
 
 ### 5.4 创建自定义 Skill
 
-创建文件 `~/.opennova/skills/my_skill.py`：
+创建目录 `~/.opennova/skills/my_skill/`，然后新增文件 `SKILL.md`：
 
-```python
-from opennova.skills.base import BaseSkill, SkillMetadata
-from opennova.tools.base import ToolResult
+```markdown
+---
+name: my_skill
+description: 对指定目标做分析总结。
+when_to_use: 当你希望把一段常用提示词固化成可复用技能时使用。
+allowed-tools: read_file, list_directory
+arguments: [target]
+argument-hint: <file-or-area>
+---
+分析目标内容。
 
+Target: $ARGUMENTS
 
-class MySkill(BaseSkill):
-    """我的自定义技能。"""
-
-    name = "my_skill"
-    description = "一个自定义技能示例"
-
-    metadata = SkillMetadata(
-        name="my_skill",
-        version="1.0.0",
-        description="自定义技能",
-        author="Your Name",
-        tags=["custom"],
-    )
-
-    def execute(self, input_text: str = "") -> ToolResult:
-        result = f"处理完成：{input_text}"
-        return ToolResult(success=True, output=result)
+输出：
+- 功能概述
+- 关键依赖
+- 风险点
 ```
 
-重启 OpenNova 后自动加载新技能。
+重启 OpenNova 后会按 `~/.opennova/skills/<skill-name>/SKILL.md` 结构自动加载新技能。
 
 ### 5.5 MCP 服务器集成
 

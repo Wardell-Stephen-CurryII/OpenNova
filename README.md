@@ -168,34 +168,31 @@ OpenNova includes several example skills:
 
 ## Creating custom skills
 
-Create a skill file in `~/.opennova/skills/my_skill.py`:
+Custom skills now use the Claude Code-style markdown package format. Create a directory such as `~/.opennova/skills/my_skill/` and put a `SKILL.md` file inside it:
 
-```python
-from opennova.skills.base import BaseSkill, SkillMetadata
-from opennova.tools.base import ToolResult
+```markdown
+---
+name: my_skill
+description: Summarize a target file or feature area.
+when_to_use: Use when the user wants a reusable project-specific analysis prompt.
+allowed-tools: read_file, list_directory
+arguments: [target]
+argument-hint: <file-or-area>
+---
+Analyze the requested target carefully.
 
+Target: $ARGUMENTS
 
-class MySkill(BaseSkill):
-    """My custom skill."""
-
-    name = "my_skill"
-    description = "Does something useful"
-
-    metadata = SkillMetadata(
-        name="my_skill",
-        version="1.0.0",
-        description="A custom skill",
-        author="Your Name",
-    )
-
-    def execute(self, **kwargs) -> ToolResult:
-        return ToolResult(success=True, output="Done!")
+Summarize:
+- what it does
+- key risks
+- likely extension points
 ```
 
-Skills are auto-discovered from:
-- `~/.opennova/skills/`
-- `.opennova/skills/`
-- configured directories
+Skills are markdown prompts loaded from these directory layouts:
+- `~/.opennova/skills/<skill-name>/SKILL.md`
+- `.opennova/skills/<skill-name>/SKILL.md`
+- configured skill directories with the same `<skill-name>/SKILL.md` structure
 
 ## MCP integration
 

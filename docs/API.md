@@ -138,42 +138,36 @@ ProviderFactory.register_provider("my_provider", MyProvider)
 
 ## Skills API
 
-### BaseSkill
+### SkillLoader
 
-自定义技能基类。
+发现并解析目录形式的 markdown skills。
 
 ```python
-from opennova.skills.base import BaseSkill, SkillMetadata
-from opennova.tools.base import ToolResult
+from opennova.skills.base import SkillLoader
 
-class MySkill(BaseSkill):
-    name = "my_skill"
-    description = "技能描述"
-
-    metadata = SkillMetadata(
-        name="my_skill",
-        version="1.0.0",
-        description="技能描述",
-        author="你的名字",
-        tags=["tag1", "tag2"],
-    )
-
-    def execute(self, **kwargs) -> ToolResult:
-        return ToolResult(success=True, output="完成")
+skill_files = SkillLoader.discover_skills(["/path/to/skills"])
+loaded = SkillLoader.load_skill_file("/path/to/skills/my_skill/SKILL.md")
+all_skills = SkillLoader.load_all_skills(["/path/to/skills"])
 ```
+
+Skills 目录结构为：
+- `~/.opennova/skills/<skill-name>/SKILL.md`
+- `.opennova/skills/<skill-name>/SKILL.md`
+- 其他配置目录下相同的 `<skill-name>/SKILL.md` 结构
 
 ### SkillRegistry
 
-技能注册与发现入口。
+markdown skill 的加载、启停与提示词物化入口。
 
 ```python
 from opennova.skills.registry import SkillRegistry
 
 registry = SkillRegistry()
-registry.load_from_dirs(["/path/to/skills"])
-registry.register(my_skill)
+registry.load_all(directories=["/path/to/skills"], excluded=["disabled_skill"])
 registry.enable_skill("my_skill")
 registry.disable_skill("my_skill")
+prompt = registry.materialize_skill_prompt("my_skill", "src/main.py")
+info = registry.get_skill_info("my_skill")
 ```
 
 ## MCP API
@@ -319,7 +313,7 @@ changeset = ChangeSet(task="重构")
 
 如果你要为 OpenNova 增加新能力，通常路径如下：
 1. 新工具：继承 `BaseTool`，返回 `ToolResult`
-2. 新 Skill：继承 `BaseSkill`，通过注册表自动发现
+2. 新 Skill：新增 `~/.opennova/skills/<skill-name>/SKILL.md` 或项目级 `<skill-name>/SKILL.md`
 3. 新 Provider：实现 `BaseLLMProvider`，接入 `ProviderFactory`
 4. 新 MCP 集成：通过 `MCPServerConfig` 与 connector 接入
 

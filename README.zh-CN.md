@@ -168,34 +168,31 @@ OpenNova 内置了几个示例 Skill：
 
 ## 创建自定义 Skill
 
-在 `~/.opennova/skills/my_skill.py` 中创建 Skill 文件：
+现在的自定义 Skill 使用 Claude Code 风格的 markdown 技能包格式。创建目录 `~/.opennova/skills/my_skill/`，并在其中放入 `SKILL.md`：
 
-```python
-from opennova.skills.base import BaseSkill, SkillMetadata
-from opennova.tools.base import ToolResult
+```markdown
+---
+name: my_skill
+description: 对目标文件或功能区域做总结。
+when_to_use: 当用户需要可复用的项目分析提示词时使用。
+allowed-tools: read_file, list_directory
+arguments: [target]
+argument-hint: <file-or-area>
+---
+仔细分析目标内容。
 
+Target: $ARGUMENTS
 
-class MySkill(BaseSkill):
-    """My custom skill."""
-
-    name = "my_skill"
-    description = "Does something useful"
-
-    metadata = SkillMetadata(
-        name="my_skill",
-        version="1.0.0",
-        description="A custom skill",
-        author="Your Name",
-    )
-
-    def execute(self, **kwargs) -> ToolResult:
-        return ToolResult(success=True, output="Done!")
+请总结：
+- 它的作用
+- 关键风险
+- 可能的扩展点
 ```
 
-Skills 会从以下位置自动发现：
-- `~/.opennova/skills/`
-- `.opennova/skills/`
-- 配置中指定的目录
+Skills 会按以下目录结构自动发现：
+- `~/.opennova/skills/<skill-name>/SKILL.md`
+- `.opennova/skills/<skill-name>/SKILL.md`
+- 配置目录中同样的 `<skill-name>/SKILL.md` 结构
 
 ## MCP 集成
 
