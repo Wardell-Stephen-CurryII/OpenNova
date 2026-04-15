@@ -894,6 +894,80 @@ def test_repl_reload_skills_command_reports_count():
     assert messages == ["Reloaded 4 skills."]
 
 
+def test_repl_handle_command_normalizes_underscores():
+    """REPL slash commands should accept underscore aliases."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.reload_skills = lambda: 3
+
+    repl = REPL(runtime, config=None)
+    messages = []
+    repl.renderer.print_success = lambda message: messages.append(message)
+
+    asyncio.run(repl._handle_command("/reload_skills"))
+
+    assert messages == ["Reloaded 3 skills."]
+
+
+def _completion_texts(repl, text: str) -> list[str]:
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    return [
+        completion.text
+        for completion in repl._get_completer().get_completions(
+            Document(text=text, cursor_position=len(text)),
+            CompleteEvent(),
+        )
+    ]
+
+
+def test_repl_command_completer_suggests_slash_commands():
+    """REPL completer should suggest slash commands by prefix."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    repl = REPL(runtime, config=None)
+
+    assert _completion_texts(repl, "/pl") == ["/plan"]
+    assert "/skills" in _completion_texts(repl, "/")
+
+
+def test_repl_command_completer_normalizes_underscore_prefix():
+    """REPL completer should map underscore prefixes to canonical hyphenated commands."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    repl = REPL(runtime, config=None)
+
+    assert _completion_texts(repl, "/reload_") == ["/reload-skills"]
+
+
+def test_repl_command_completer_ignores_normal_task_input():
+    """REPL completer should not suggest slash commands in normal task text."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    repl = REPL(runtime, config=None)
+
+    assert _completion_texts(repl, "write tests") == []
+    assert _completion_texts(repl, "hello /pl") == []
+
+
+def test_repl_skill_completer_lists_user_invocable_skill_names():
+    """REPL completer should suggest user-invocable skills after /skill."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.get_skills = lambda: ["code_review", "commit_helper"]
+    repl = REPL(runtime, config=None)
+
+    assert _completion_texts(repl, "/skill ") == ["code_review", "commit_helper"]
+    assert _completion_texts(repl, "/skill co") == ["code_review", "commit_helper"]
+    assert _completion_texts(repl, "/skill code_") == ["code_review"]
+
+
 def test_repl_config_command_handles_missing_config():
     """REPL /config should show a helpful error when config is unavailable."""
     from opennova.cli.repl import REPL

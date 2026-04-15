@@ -17,6 +17,8 @@ from typing import Any, Callable
 import yaml
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -31,6 +33,47 @@ from opennova.providers.base import StreamChunk
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.state import Plan, PlanStep
 from opennova.tools.base import ToolResult
+
+
+class SlashCommandCompleter(Completer):
+    """Tab completion for REPL slash commands and skill names."""
+
+    def __init__(self, repl: "REPL"):
+        self.repl = repl
+
+    def get_completions(self, document: Document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+
+        parts = text.split()
+        ends_with_space = text.endswith(" ")
+
+        if len(parts) <= 1 and not ends_with_space:
+            token = parts[0] if parts else ""
+            normalized = token.replace("_", "-")
+            for command in self.repl._get_slash_commands():
+                if command.startswith(normalized):
+                    yield Completion(command, start_position=-len(token))
+            return
+
+        if not parts:
+            return
+
+        command = parts[0].lower().replace("_", "-")
+        if command != "/skill":
+            return
+
+        skills = self.repl.agent.get_skills() if hasattr(self.repl.agent, "get_skills") else []
+        skill_token = ""
+        if len(parts) >= 2:
+            skill_token = parts[1]
+        elif not ends_with_space:
+            return
+
+        for skill in skills:
+            if skill.startswith(skill_token):
+                yield Completion(skill, start_position=-len(skill_token))
 
 
 class Renderer:
@@ -132,6 +175,11 @@ class Renderer:
 - `/clear` - Clear conversation state
 - `/help` - Show this help
 - `/exit` - Exit the REPL
+
+## Tips
+
+- Press `Tab` to complete slash commands
+- History suggestions remain available from prompt history
 """
         self.console.print(Markdown(help_text))
 
@@ -238,6 +286,32 @@ class REPL:
         self.running = True
         self.current_task: str = ""
 
+    def _get_command_handlers(self) -> dict[str, Callable[[str], Any]]:
+        """Return canonical slash command handlers."""
+        return {
+            "/help": self._cmd_help,
+            "/plan": self._cmd_plan,
+            "/act": self._cmd_act,
+            "/tools": self._cmd_tools,
+            "/skills": self._cmd_skills,
+            "/skill": self._cmd_skill,
+            "/reload-skills": self._cmd_reload_skills,
+            "/model": self._cmd_model,
+            "/config": self._cmd_config,
+            "/clear": self._cmd_clear,
+            "/exit": self._cmd_exit,
+            "/quit": self._cmd_exit,
+            "/history": self._cmd_history,
+        }
+
+    def _get_slash_commands(self) -> list[str]:
+        """Return slash commands available for completion."""
+        return list(self._get_command_handlers().keys())
+
+    def _get_completer(self) -> SlashCommandCompleter:
+        """Return the prompt completer for slash commands."""
+        return SlashCommandCompleter(self)
+
     def _setup_key_bindings(self) -> KeyBindings:
         """Set up key bindings."""
         kb = KeyBindings()
@@ -268,6 +342,7 @@ class REPL:
         self.session = PromptSession(
             history=FileHistory(str(self.history_path)),
             auto_suggest=AutoSuggestFromHistory(),
+            completer=self._get_completer(),
             multiline=False,
             mouse_support=False,  # Disable mouse support to allow terminal scrolling
             key_bindings=self._setup_key_bindings(),
@@ -315,24 +390,10 @@ class REPL:
     async def _handle_command(self, command: str) -> None:
         """Handle slash command."""
         parts = command.split(maxsplit=1)
-        cmd = parts[0].lower()
+        cmd = parts[0].lower().replace("_", "-")
         args = parts[1] if len(parts) > 1 else ""
 
-        commands = {
-            "/help": self._cmd_help,
-            "/plan": self._cmd_plan,
-            "/act": self._cmd_act,
-            "/tools": self._cmd_tools,
-            "/skills": self._cmd_skills,
-            "/skill": self._cmd_skill,
-            "/reload-skills": self._cmd_reload_skills,
-            "/model": self._cmd_model,
-            "/config": self._cmd_config,
-            "/clear": self._cmd_clear,
-            "/exit": self._cmd_exit,
-            "/quit": self._cmd_exit,
-            "/history": self._cmd_history,
-        }
+        commands = self._get_command_handlers()
 
         handler = commands.get(cmd)
         if handler:
