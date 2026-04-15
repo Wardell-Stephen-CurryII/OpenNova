@@ -110,8 +110,10 @@ class SkillLoader:
     """Discover and parse directory-based Claude Code-style SKILL.md files."""
 
     DEFAULT_SKILL_DIRS = [
-        Path.home() / ".opennova" / "skills",
+        # Path(".claude") / "skills",
         Path(".opennova") / "skills",
+        # Path.home() / ".claude" / "skills",
+        Path.home() / ".opennova" / "skills",
     ]
 
     @classmethod
@@ -127,6 +129,9 @@ class SkillLoader:
         seen: set[Path] = set()
 
         for base_dir in skill_dirs:
+            base_dir = base_dir.expanduser()
+            if not base_dir.is_absolute():
+                base_dir = Path.cwd() / base_dir
             if not base_dir.exists() or not base_dir.is_dir():
                 continue
 

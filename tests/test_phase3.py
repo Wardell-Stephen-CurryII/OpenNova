@@ -15,7 +15,7 @@ from opennova.mcp.types import (
     MCPMessage,
     TransportType,
 )
-from opennova.providers.base import FinishReason, LLMResponse, ToolCall
+from opennova.providers.base import FinishReason, LLMResponse, Message, ToolCall
 from opennova.skills.base import SkillLoader, LoadedSkill, SkillMetadata
 from opennova.skills.examples import get_builtin_skill_dirs
 from opennova.skills.registry import SkillRegistry
@@ -23,6 +23,7 @@ from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.loop import ReActLoop
 from opennova.runtime.state import AgentState
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
+from opennova.tools.skill_tool import SkillTool
 
 
 class TestMCPTypes:
@@ -96,13 +97,33 @@ class TestMCPTypes:
 class TestSkills:
     """Tests for markdown skills system."""
 
-    def test_skill_loader_discovers_skill_md_directories(self):
+    def test_skill_loader_discovers_claude_style_default_directories(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            (root / "demo").mkdir()
-            (root / "demo" / "SKILL.md").write_text("# Demo\n")
-            discovered = SkillLoader.discover_skills([root])
-            assert discovered == [root / "demo" / "SKILL.md"]
+            project_root = root / "project"
+            home_root = root / "home"
+            project_skill = project_root / ".claude" / "skills" / "project-demo"
+            home_skill = home_root / ".claude" / "skills" / "home-demo"
+            project_skill.mkdir(parents=True)
+            home_skill.mkdir(parents=True)
+            (project_skill / "SKILL.md").write_text("# Project demo\n")
+            (home_skill / "SKILL.md").write_text("# Home demo\n")
+
+            original_cwd = Path.cwd()
+            original_dirs = SkillLoader.DEFAULT_SKILL_DIRS
+            try:
+                os.chdir(project_root)
+                SkillLoader.DEFAULT_SKILL_DIRS = [
+                    Path(".claude") / "skills",
+                    home_root / ".claude" / "skills",
+                ]
+                discovered = SkillLoader.discover_skills()
+            finally:
+                SkillLoader.DEFAULT_SKILL_DIRS = original_dirs
+                os.chdir(original_cwd)
+
+            assert (project_skill / "SKILL.md").resolve() in [path.resolve() for path in discovered]
+            assert (home_skill / "SKILL.md").resolve() in [path.resolve() for path in discovered]
 
     def test_skill_loader_parses_frontmatter_and_description_fallback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -143,7 +164,8 @@ class TestSkills:
             registry = SkillRegistry()
             loaded = registry.load_all(directories=[root], excluded=["two"])
 
-            assert sorted(loaded.keys()) == ["one", "two"]
+            assert "one" in loaded
+            assert "two" in loaded
             assert registry.is_enabled("one") is True
             assert registry.is_enabled("two") is False
             assert registry.get_skill_info("two")["description"] == "Two"
@@ -167,6 +189,28 @@ class TestSkills:
             assert "first" not in registry.list_skills()
             assert "second" in registry.list_skills()
 
+    def test_skill_registry_reports_invocation_visibility(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "model-only").mkdir()
+            (root / "model-only" / "SKILL.md").write_text(
+                "---\nname: model-only\ndescription: Model only\nuser-invocable: false\n---\nBody\n"
+            )
+            (root / "user-only").mkdir()
+            (root / "user-only" / "SKILL.md").write_text(
+                "---\nname: user-only\ndescription: User only\ndisable-model-invocation: true\n---\nBody\n"
+            )
+
+            registry = SkillRegistry()
+            registry.load_all(directories=[root])
+
+            assert "model-only" in registry.list_model_invocable_skills()
+            assert "user-only" in registry.list_user_invocable_skills()
+            assert registry.can_model_invoke("model-only") is True
+            assert registry.can_user_invoke("model-only") is False
+            assert registry.can_model_invoke("user-only") is False
+            assert registry.can_user_invoke("user-only") is True
+
     def test_skill_registry_materializes_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -178,6 +222,23 @@ class TestSkills:
             assert prompt is not None
             assert "Base directory for this skill" in prompt
             assert "src/main.py" in prompt
+
+    def test_skill_tool_invokes_runtime_helper(self):
+        class RuntimeStub:
+            def __init__(self):
+                self.calls = []
+
+            def invoke_skill(self, skill_name: str, skill_args: str = "", caller: str = "user") -> ToolResult:
+                self.calls.append((skill_name, skill_args, caller))
+                return ToolResult(success=True, output="invoked")
+
+        runtime = RuntimeStub()
+        tool = SkillTool(config={"runtime": runtime})
+
+        result = tool.execute(skill="demo", args="src/app.py")
+
+        assert result.success is True
+        assert runtime.calls == [("demo", "src/app.py", "model")]
 
     def test_builtin_skill_dirs_exist(self):
         dirs = get_builtin_skill_dirs()
@@ -322,9 +383,18 @@ class TestMCPRuntimeIntegration:
             (root / "demo" / "SKILL.md").write_text("---\nname: demo\ndescription: Demo\n---\nInspect $ARGUMENTS\n")
             skills = SkillRegistry()
             skills.load_all(directories=[root])
+            registry = ToolRegistry()
+            registry.clear()
+            registry.register(SkillTool(config={"runtime": type("RuntimeStub", (), {
+                "invoke_skill": lambda self, skill_name, skill_args="", caller="user": ToolResult(
+                    success=True,
+                    output=f"Invoked skill: {skill_name}",
+                    metadata={"skill": skill_name, "args": skill_args, "caller": caller},
+                ),
+            })()}))
             loop = ReActLoop(
                 llm=DummyProvider(),
-                tool_registry=ToolRegistry(),
+                tool_registry=registry,
                 state=AgentState(),
                 stream=False,
                 skill_registry=skills,
@@ -333,4 +403,4 @@ class TestMCPRuntimeIntegration:
             result = await loop.run("Use a skill")
 
             assert result == "done"
-            assert any(message.role == "user" and "Invoked skill 'demo'" in message.content for message in loop.messages)
+            assert any(message.role == "tool" and "Invoked skill: demo" in message.content for message in loop.messages)

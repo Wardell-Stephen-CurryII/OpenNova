@@ -848,15 +848,18 @@ def test_repl_skills_command_lists_runtime_skills():
     from opennova.cli.repl import REPL
 
     runtime = AgentRuntime.__new__(AgentRuntime)
-    runtime.get_skills = lambda: ["code_review", "git_helper"]
     runtime.skill_registry = type(
         "SkillRegistryStub",
         (),
         {
+            "list_skills": lambda self: ["code_review", "git_helper"],
             "get_skill_info": lambda self, name: {
                 "name": name,
                 "enabled": name != "git_helper",
                 "source_type": "builtin",
+                "source": f"/tmp/{name}/SKILL.md",
+                "model_invocable": name == "code_review",
+                "user_invocable": True,
                 "description": f"desc:{name}",
             }
         },
@@ -870,6 +873,9 @@ def test_repl_skills_command_lists_runtime_skills():
 
     assert [skill["name"] for skill in captured["skills"]] == ["code_review", "git_helper"]
     assert captured["skills"][1]["enabled"] is False
+    assert captured["skills"][0]["model_invocable"] is True
+    assert captured["skills"][0]["user_invocable"] is True
+    assert captured["skills"][0]["source_type"] == "builtin: /tmp/code_review/SKILL.md"
 
 
 def test_repl_reload_skills_command_reports_count():

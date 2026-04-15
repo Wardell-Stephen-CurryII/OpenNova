@@ -102,6 +102,28 @@ class SkillRegistry:
     def list_enabled_skills(self) -> list[str]:
         return [name for name, skill in self.skills.items() if skill.metadata.enabled and not skill.load_error]
 
+    def list_model_invocable_skills(self) -> list[str]:
+        return [
+            name
+            for name, skill in self.skills.items()
+            if skill.metadata.enabled and not skill.load_error and not skill.metadata.disable_model_invocation
+        ]
+
+    def list_user_invocable_skills(self) -> list[str]:
+        return [
+            name
+            for name, skill in self.skills.items()
+            if skill.metadata.enabled and not skill.load_error and skill.metadata.user_invocable
+        ]
+
+    def can_model_invoke(self, name: str) -> bool:
+        skill = self.skills.get(name)
+        return bool(skill and skill.metadata.enabled and not skill.load_error and not skill.metadata.disable_model_invocation)
+
+    def can_user_invoke(self, name: str) -> bool:
+        skill = self.skills.get(name)
+        return bool(skill and skill.metadata.enabled and not skill.load_error and skill.metadata.user_invocable)
+
     def get_skill_info(self, name: str) -> dict[str, Any] | None:
         skill = self.skills.get(name)
         if not skill:
@@ -113,6 +135,8 @@ class SkillRegistry:
             "source_type": skill.source_type,
             "error": skill.load_error,
             "skill_dir": skill.skill_dir,
+            "model_invocable": self.can_model_invoke(name),
+            "user_invocable": self.can_user_invoke(name),
         }
         info.update(skill.metadata.to_dict())
         return info

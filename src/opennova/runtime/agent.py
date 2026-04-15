@@ -123,6 +123,7 @@ class AgentRuntime:
         )
         from opennova.tools.agent_tools import AgentTool, SendMessageTool
         from opennova.tools.ask_question_tool import AskUserQuestionTool
+        from opennova.tools.skill_tool import SkillTool
         from opennova.tools.plan_mode_tools import (
             EnterPlanModeTool,
             ExitPlanModeTool,
@@ -158,6 +159,7 @@ class AgentRuntime:
 
         # User interaction tools
         self.tool_registry.register(AskUserQuestionTool())
+        self.tool_registry.register(SkillTool(config={"runtime": self}))
 
         # Plan mode tools
         self.tool_registry.register(EnterPlanModeTool(config={"state": self.state}))
@@ -643,8 +645,44 @@ class AgentRuntime:
     def get_skills(self) -> list[str]:
         """Get list of loaded skills."""
         if self.skill_registry:
-            return self.skill_registry.list_skills()
+            return self.skill_registry.list_user_invocable_skills()
         return []
+
+    def invoke_skill(self, skill_name: str, skill_args: str = "", caller: str = "user") -> ToolResult:
+        """Invoke a loaded skill for either the user or the model."""
+        if not self.skill_registry:
+            return ToolResult(success=False, output="", error="Skill registry is not available")
+
+        normalized_name = str(skill_name).strip().lstrip("/")
+        normalized_args = str(skill_args).strip()
+        skill = self.skill_registry.get_skill(normalized_name)
+        if not skill:
+            return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' is unavailable")
+
+        if caller == "model":
+            if not self.skill_registry.can_model_invoke(normalized_name):
+                return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' cannot be invoked by the model")
+        else:
+            if not self.skill_registry.can_user_invoke(normalized_name):
+                return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' cannot be invoked directly by the user")
+
+        prompt = self.skill_registry.materialize_skill_prompt(normalized_name, normalized_args)
+        if prompt is None:
+            return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' is unavailable")
+
+        self.context_manager.add_message(
+            Message(role="user", content=f"Invoked skill '{normalized_name}':\n\n{prompt}")
+        )
+        return ToolResult(
+            success=True,
+            output=f"Invoked skill: {normalized_name}",
+            metadata={
+                "skill": normalized_name,
+                "args": normalized_args,
+                "skill_prompt": prompt,
+                "caller": caller,
+            },
+        )
 
     def get_mcp_servers(self) -> list[str]:
         """Get list of connected MCP servers."""

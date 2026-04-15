@@ -123,7 +123,8 @@ class Renderer:
 - `/plan <task>` - Plan mode: generate a plan before executing
 - `/act <task>` - Act mode: execute directly (default)
 - `/tools` - List available tools
-- `/skills` - List loaded skills
+- `/skills` - List loaded skills and invocation status
+- `/skill <name> [args]` - Invoke a loaded skill directly
 - `/reload-skills` - Reload skills from disk
 - `/model` - Show current model info
 - `/config` - Show current configuration
@@ -150,6 +151,8 @@ class Renderer:
         table.add_column("Name", style="cyan")
         table.add_column("Enabled", justify="center")
         table.add_column("Source")
+        table.add_column("Model", justify="center")
+        table.add_column("User", justify="center")
         table.add_column("Description")
 
         for skill in skills:
@@ -157,6 +160,8 @@ class Renderer:
                 skill.get("name", ""),
                 "Yes" if skill.get("enabled", True) else "No",
                 str(skill.get("source_type", "")),
+                "Yes" if skill.get("model_invocable", False) else "No",
+                "Yes" if skill.get("user_invocable", False) else "No",
                 str(skill.get("description", "")),
             )
 
@@ -319,6 +324,7 @@ class REPL:
             "/act": self._cmd_act,
             "/tools": self._cmd_tools,
             "/skills": self._cmd_skills,
+            "/skill": self._cmd_skill,
             "/reload-skills": self._cmd_reload_skills,
             "/model": self._cmd_model,
             "/config": self._cmd_config,
@@ -411,22 +417,42 @@ class REPL:
         """List loaded skills."""
         skills = []
         skill_registry = getattr(self.agent, "skill_registry", None)
-        for name in self.agent.get_skills():
-            info = skill_registry.get_skill_info(name) if skill_registry else None
-            skills.append(
-                {
-                    "name": name,
-                    "enabled": info.get("enabled", True) if info else True,
-                    "source_type": info.get("source_type", "") if info else "",
-                    "description": info.get("description") or info.get("tool_description", "") if info else "",
-                }
-            )
+        if skill_registry:
+            for name in skill_registry.list_skills():
+                info = skill_registry.get_skill_info(name) or {}
+                source_path = info.get("source")
+                source_type = info.get("source_type", "")
+                source_label = source_type
+                if source_path:
+                    source_label = f"{source_type}: {source_path}"
+                skills.append(
+                    {
+                        "name": name,
+                        "enabled": info.get("enabled", True),
+                        "source_type": source_label,
+                        "model_invocable": info.get("model_invocable", False),
+                        "user_invocable": info.get("user_invocable", False),
+                        "description": info.get("description") or info.get("tool_description", ""),
+                    }
+                )
 
         if not skills:
             self.renderer.print("No skills loaded.")
             return
 
         self.renderer.print_skills(skills)
+
+    async def _cmd_skill(self, args: str) -> None:
+        """Invoke a loaded skill directly."""
+        if not args:
+            self.renderer.print_error("Usage: /skill <name> [args]")
+            return
+
+        parts = args.split(maxsplit=1)
+        skill_name = parts[0]
+        skill_args = parts[1] if len(parts) > 1 else ""
+        result = self.agent.invoke_skill(skill_name=skill_name, skill_args=skill_args, caller="user")
+        self.renderer.print_result(result)
 
     async def _cmd_reload_skills(self, args: str) -> None:
         """Reload skills from disk."""

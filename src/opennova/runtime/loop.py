@@ -177,7 +177,7 @@ class ReActLoop:
                     self._report_progress(activity="Completed task", mark_complete=True)
                     break
 
-                if action.tool_name == "__skill__" or (action.tool_name and action.tool_name in self.tool_registry):
+                if action.tool_name and action.tool_name in self.tool_registry:
                     if self.on_action:
                         self.on_action(action.tool_name, action.arguments)
 
@@ -343,10 +343,10 @@ class ReActLoop:
 
         skill_name = parts[1].strip()
         skill_args = parts[2].strip() if len(parts) > 2 else ""
-        if skill_name not in self.skill_registry:
+        if not self.skill_registry.can_model_invoke(skill_name):
             return action
 
-        action.tool_name = "__skill__"
+        action.tool_name = "skill"
         action.arguments = {"skill": skill_name, "args": skill_args}
         return action
 
@@ -386,15 +386,13 @@ class ReActLoop:
         Returns:
             Tool execution result
         """
-        tool = self.tool_registry.get(action.tool_name) if action.tool_name != "__skill__" else None
+        tool = self.tool_registry.get(action.tool_name)
         action_record = None
         if self.working_memory:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
 
         try:
-            if action.tool_name == "__skill__":
-                result = await self._invoke_skill(action.arguments)
-            elif hasattr(tool, "async_execute"):
+            if hasattr(tool, "async_execute"):
                 result = await tool.async_execute(**action.arguments)
             else:
                 result = tool.execute(**action.arguments)
@@ -423,26 +421,6 @@ class ReActLoop:
                 output="",
                 error=f"Tool execution failed: {e}",
             )
-
-
-    async def _invoke_skill(self, arguments: dict[str, Any]) -> ToolResult:
-        """Materialize a markdown skill prompt into the current conversation."""
-        if not self.skill_registry:
-            return ToolResult(success=False, output="", error="Skill registry is not available")
-
-        skill_name = str(arguments.get("skill", "")).strip()
-        skill_args = str(arguments.get("args", "")).strip()
-        prompt = self.skill_registry.materialize_skill_prompt(skill_name, skill_args)
-        if prompt is None:
-            return ToolResult(success=False, output="", error=f"Skill '{skill_name}' is unavailable")
-
-        self.add_message(Message(role="user", content=f"Invoked skill '{skill_name}':\n\n{prompt}"))
-        return ToolResult(
-            success=True,
-            output=f"Invoked skill: {skill_name}",
-            metadata={"skill": skill_name, "args": skill_args, "skill_prompt": prompt},
-        )
-
     async def _resolve_interaction(self, result: ToolResult) -> ToolResult:
         """Resolve an interactive tool result through the registered runtime callback."""
         if not self.interaction_callback:
@@ -526,11 +504,11 @@ class ReActLoop:
 
         skills_description = []
         if self.skill_registry:
-            for name in self.skill_registry.list_enabled_skills():
+            for name in self.skill_registry.list_model_invocable_skills():
                 info = self.skill_registry.get_skill_info(name) or {}
                 skill_line = f"- {name}: {info.get('description', '')}"
                 if info.get("when_to_use"):
-                    skill_line += f"\n  when_to_use: {info.get('when_to_use')}"
+                    skill_line += f" - {info.get('when_to_use')}"
                 skills_description.append(skill_line)
 
         prompt = f"""You are an AI coding assistant that helps users with software engineering tasks.
@@ -542,11 +520,11 @@ You have access to the following tools:
         if skills_description:
             prompt += f"""
 
-You also have access to the following reusable skills:
+You also have access to reusable skills through the skill tool:
 {chr(10).join(skills_description)}
 
-To invoke a skill, respond with a single line in this exact format:
-/skill <skill-name> [arguments]
+When one of these skills clearly matches the user's request, invoke the skill tool before continuing.
+Do not rely on emitting literal /skill text when the skill tool is available.
 """
 
         prompt += """
