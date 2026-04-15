@@ -1,6 +1,6 @@
 # OpenNova 用户安装和使用指南
 
-本教程将帮助你快速上手 OpenNova CLI AI Coding Agent。
+本教程将帮助你快速上手 OpenNova CLI AI Coding Agent（v0.2.0）。
 
 ---
 
@@ -22,7 +22,6 @@
 OpenNova 需要 Python 3.11 或更高版本：
 
 ```bash
-# 检查 Python 版本
 python3 --version
 ```
 
@@ -78,13 +77,14 @@ cd OpenNova
 uv sync
 ```
 
-这将自动安装所有依赖，包括：
-- `openai` - OpenAI SDK
-- `anthropic` - Anthropic SDK
-- `rich` - 终端美化
-- `prompt-toolkit` - 交互式输入
-- `click` - CLI 框架
-- 以及其他依赖...
+这会自动安装项目依赖，包括：
+- `openai`
+- `anthropic`
+- `rich`
+- `prompt-toolkit`
+- `click`
+- `httpx`
+- 以及其他运行时依赖
 
 ### 2.3 初始化配置
 
@@ -92,17 +92,13 @@ uv sync
 uv run opennova init
 ```
 
-输出：
-```
-Created configuration file: /Users/你的用户名/.opennova/config.yaml
+如果你希望把它安装成全局命令，也可以额外执行：
 
-Please edit the configuration file and add your API keys.
-
-You can also set environment variables:
-  - OPENAI_API_KEY
-  - ANTHROPIC_API_KEY
-  - DEEPSEEK_API_KEY
+```bash
+uv tool install .
 ```
+
+这样之后可直接使用 `opennova`。本文档默认仍使用 `uv run opennova ...`，确保命令对应当前源码目录。
 
 ---
 
@@ -124,20 +120,9 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
 source ~/.zshrc  # 或 source ~/.bashrc
 ```
 
-或者使用 `.env` 文件：
-```bash
-# 创建 .env 文件
-cat > .env << 'EOF'
-OPENAI_API_KEY=sk-your-openai-api-key
-ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key
-DEEPSEEK_API_KEY=sk-your-deepseek-api-key
-EOF
-```
-
 ### 方式二：编辑配置文件
 
 ```bash
-# 编辑配置文件
 nano ~/.opennova/config.yaml
 ```
 
@@ -150,7 +135,7 @@ providers:
   openai:
     api_key: "sk-your-actual-openai-api-key"
     default_model: gpt-4o
-  
+
   anthropic:
     api_key: "sk-ant-your-actual-anthropic-api-key"
     default_model: claude-sonnet-4
@@ -175,8 +160,8 @@ uv run opennova --version
 ```
 
 输出：
-```
-OpenNova v0.1.0
+```text
+OpenNova v0.2.0
 ```
 
 ### 4.2 交互式 REPL 模式
@@ -188,12 +173,9 @@ uv run opennova
 ```
 
 你会看到欢迎界面：
-```
+```text
 ╭────────────────────────────────────────╮
-│     OpenNova - AI Coding Agent         │
-│                                        │
-│ A lightweight CLI AI Coding Agent      │
-│                                        │
+│ OpenNova - AI Coding Agent            │
 │ Type /help for commands, Ctrl+D to exit│
 ╰────────────────────────────────────────╯
 
@@ -203,34 +185,34 @@ opennova>
 ### 4.3 你的第一个任务
 
 在 REPL 中输入：
-```
+```text
 opennova> 读取 README.md 文件
 ```
 
 OpenNova 会：
 1. 思考如何完成任务
-2. 调用 `read_file` 工具
-3. 显示文件内容
+2. 在需要时调用工具
+3. 输出结果或继续追问
 
 ### 4.4 常用任务示例
 
 **读取文件：**
-```
+```text
 opennova> 读取 src/main.py 的前 50 行
 ```
 
 **创建文件：**
-```
+```text
 opennova> 创建一个 hello.py 文件，内容是打印 Hello World
 ```
 
 **执行命令：**
-```
+```text
 opennova> 运行 python hello.py
 ```
 
 **列出目录：**
-```
+```text
 opennova> 列出当前目录结构
 ```
 
@@ -257,7 +239,7 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | 命令 | 说明 | 示例 |
 |------|------|------|
 | `/help` | 显示帮助 | `/help` |
-| `/plan <task>` | 计划模式执行 | `/plan 重构代码` |
+| `/plan <task>` | 先生成计划，再确认是否执行 | `/plan 重构代码` |
 | `/act <task>` | 直接执行 | `/act 读取文件` |
 | `/tools` | 列出可用工具 | `/tools` |
 | `/skills` | 列出已加载技能 | `/skills` |
@@ -281,21 +263,11 @@ uv run opennova run --plan "为用户管理模块添加单元测试"
 ```
 
 或在 REPL 中：
-```
+```text
 opennova> /plan 为用户管理模块添加单元测试
 ```
 
-AI 会生成计划：
-```
-📋 Plan: 为用户管理模块添加单元测试
-
-  ⏳ step_1: 分析现有代码结构
-  ⏳ step_2: 识别需要测试的函数
-  ⏳ step_3: 编写测试用例
-  ⏳ step_4: 运行测试验证
-
-Progress: 0/4 steps completed
-```
+生成计划后，REPL 会展示计划内容并询问是否立即执行。这让复杂任务在落地前先经过一次人工确认。
 
 ### 5.2 多模型切换
 
@@ -320,7 +292,7 @@ default_model: claude-sonnet-4
 
 加载的技能可以直接调用：
 
-```
+```text
 opennova> 使用 code_review 技能审查 main.py
 ```
 
@@ -354,22 +326,8 @@ class MySkill(BaseSkill):
     )
 
     def execute(self, input_text: str = "") -> ToolResult:
-        """
-        执行技能。
-
-        Args:
-            input_text: 输入文本
-
-        Returns:
-            处理结果
-        """
-        # 在这里实现你的逻辑
         result = f"处理完成：{input_text}"
-        
-        return ToolResult(
-            success=True,
-            output=result,
-        )
+        return ToolResult(success=True, output=result)
 ```
 
 重启 OpenNova 后自动加载新技能。
@@ -384,13 +342,11 @@ class MySkill(BaseSkill):
 mcp:
   enabled: true
   servers:
-    # 文件系统 MCP
     - name: filesystem
       transport: stdio
       command: npx
       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/your/project"]
-    
-    # GitHub MCP
+
     - name: github
       transport: stdio
       command: npx
@@ -399,17 +355,21 @@ mcp:
         GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
 ```
 
-### 5.6 安全配置
+OpenNova 当前支持：
+- `stdio`：启动子进程，通过 stdin/stdout 通信
+- `sse`：连接 HTTP SSE endpoint
+
+### 5.6 Web 工具说明
+
+- `web_fetch` 会对真实 HTTP/HTTPS 页面发起请求，并返回提取后的内容。
+- `web_search` 当前保留为统一工具接口；如果没有配置搜索后端，会明确返回未配置，而不是伪造结果。
+
+### 5.7 安全配置
 
 ```yaml
 security:
-  # 启用沙盒模式
   sandbox_mode: true
-  
-  # 命令超时（秒）
   command_timeout: 30
-  
-  # 允许的路径
   allowed_paths:
     - "./src"
     - "./tests"
@@ -422,7 +382,7 @@ security:
 ### Q1: 提示 API Key 未配置
 
 **问题：**
-```
+```text
 Configuration errors:
   • API key not configured for provider 'openai'
 ```
@@ -439,13 +399,12 @@ nano ~/.opennova/config.yaml
 ### Q2: Python 版本不对
 
 **问题：**
-```
+```text
 Requires-Python >=3.11
 ```
 
 **解决：**
 ```bash
-# 使用 uv 指定 Python 版本
 uv venv --python 3.11
 source .venv/bin/activate
 uv sync
@@ -454,7 +413,7 @@ uv sync
 ### Q3: 工具执行失败
 
 **问题：**
-```
+```text
 Error: Permission denied
 ```
 
@@ -485,13 +444,7 @@ uv sync
 
 ### Q6: 如何查看日志
 
-```bash
-# 日志位置
-cat .opennova/logs/opennova.log
-
-# 或查看项目记忆
-cat .opennova/memory.json
-```
+查看当前配置和历史比依赖内部文件路径更稳妥；如果需要调试，请先确认项目是否启用了对应日志输出配置。
 
 ---
 
@@ -501,18 +454,15 @@ cat .opennova/memory.json
 |--------|------|
 | `Tab` | 自动补全建议 |
 | `↑` / `↓` | 浏览历史命令 |
-| `Ctrl+C` | 中断当前操作 |
+| `Ctrl+C` | 清空当前输入 |
 | `Ctrl+D` | 退出 REPL |
 | `Enter` | 执行命令 |
-| `Shift+Enter` | 多行输入 |
 
 ---
 
 ## 下一步
 
-1. 尝试在真实项目中使用 OpenNova
+1. 在真实项目中运行几个文件读取、命令执行和计划模式任务
 2. 创建自己的 Skills 扩展功能
 3. 配置 MCP 服务器连接更多工具
-4. 参与 [GitHub Issues](https://github.com/Wardell-Stephen-CurryII/OpenNova/issues) 反馈问题
-
-祝你使用愉快！🎉
+4. 通过 [GitHub Issues](https://github.com/Wardell-Stephen-CurryII/OpenNova/issues) 反馈问题

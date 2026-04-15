@@ -1,56 +1,58 @@
 # OpenNova API 参考
 
-本文档描述 OpenNova 的核心 API 和扩展点。
+本文档描述 OpenNova v0.2.0 的核心 API 和主要扩展点。
+
+> 说明：OpenNova 仍处于 Alpha 阶段，部分 API 仍可能演进；本文更适合作为当前代码结构与扩展入口的实用参考。
 
 ## 核心 API
 
 ### AgentRuntime
 
-主运行时类，管理 agent 的生命周期。
+主运行时类，负责组装 LLM、工具、技能、上下文、记忆和执行循环。
 
 ```python
 from opennova.runtime.agent import AgentRuntime
 from opennova.config import load_config
 
-# 加载配置
 config = load_config()
-
-# 创建 agent
 agent = AgentRuntime(config)
 
-# 运行任务
 result = await agent.run("读取 README.md", mode="act")
-
-# 获取工具列表
 tools = agent.get_tools()
-
-# 获取技能列表
 skills = agent.get_skills()
 ```
+
+常见职责：
+- 注册内置工具和已加载技能
+- 管理回调（stream、plan、interaction 等）
+- 在 act / plan 模式下驱动运行时
+- 暴露当前工具、技能和模型信息
+
+### ReActLoop
+
+`opennova.runtime.loop.ReActLoop` 是实际执行推理-行动-观察循环的核心。它负责：
+- 构造发送给模型的消息
+- 执行工具调用
+- 处理流式输出
+- 在工具请求用户交互时走 interaction callback
+- 更新运行状态与消息历史
 
 ### ToolRegistry
 
 工具注册表，管理所有可用工具。
 
 ```python
-from opennova.tools.base import ToolRegistry, BaseTool, ToolResult
+from opennova.tools.base import ToolRegistry
 
-# 获取单例
 registry = ToolRegistry()
-
-# 注册工具
 registry.register(my_tool)
-
-# 获取工具
 tool = registry.get("read_file")
-
-# 列出所有工具
 tools = registry.list_tools()
 ```
 
-### BaseTool
+### BaseTool / ToolResult
 
-自定义工具基类。
+自定义工具的基础抽象。
 
 ```python
 from opennova.tools.base import BaseTool, ToolResult
@@ -58,22 +60,43 @@ from opennova.tools.base import BaseTool, ToolResult
 class MyTool(BaseTool):
     name = "my_tool"
     description = "工具描述"
-    
+
     def execute(self, arg1: str, arg2: int = 10) -> ToolResult:
         try:
-            # 工具逻辑
             result = do_something(arg1, arg2)
-            return ToolResult(
-                success=True,
-                output=result,
-            )
+            return ToolResult(success=True, output=result)
         except Exception as e:
-            return ToolResult(
-                success=False,
-                output="",
-                error=str(e),
-            )
+            return ToolResult(success=False, output="", error=str(e))
 ```
+
+`ToolResult` 通常包含：
+- `success`
+- `output`
+- `error`
+- `metadata`
+
+其中 `metadata` 既可用于结构化结果，也可用于像 `ask_user_question` 这样的交互契约。
+
+## 内置工具概览
+
+当前内置工具主要分布在这些模块：
+- `opennova.tools.file_tools`
+- `opennova.tools.shell_tools`
+- `opennova.tools.web_tools`
+- `opennova.tools.ask_question_tool`
+
+典型工具面包括：
+- `read_file` / `write_file` / `create_file` / `delete_file`
+- `list_directory`
+- `execute_command`
+- `ask_user_question`
+- `web_fetch`
+- `web_search`
+
+说明：
+- `web_fetch` 会发起真实 HTTP 请求。
+- `web_search` 如果没有配置后端，会明确返回未配置错误。
+- `ask_user_question` 在 REPL 环境下可通过 interaction callback 收集用户选择。
 
 ## Provider API
 
@@ -89,18 +112,16 @@ class MyProvider(BaseLLMProvider):
         self,
         messages: list[Message],
         tools: list[ToolSchema] | None = None,
-        **kwargs
+        **kwargs,
     ) -> LLMResponse:
-        # 实现聊天逻辑
         pass
-    
+
     async def stream_chat(
         self,
         messages: list[Message],
         tools: list[ToolSchema] | None = None,
-        **kwargs
+        **kwargs,
     ) -> AsyncIterator[StreamChunk]:
-        # 实现流式输出
         pass
 ```
 
@@ -111,10 +132,7 @@ class MyProvider(BaseLLMProvider):
 ```python
 from opennova.providers.factory import ProviderFactory
 
-# 创建 provider
 provider = ProviderFactory.create_provider(config)
-
-# 注册自定义 provider
 ProviderFactory.register_provider("my_provider", MyProvider)
 ```
 
@@ -131,7 +149,7 @@ from opennova.tools.base import ToolResult
 class MySkill(BaseSkill):
     name = "my_skill"
     description = "技能描述"
-    
+
     metadata = SkillMetadata(
         name="my_skill",
         version="1.0.0",
@@ -139,28 +157,21 @@ class MySkill(BaseSkill):
         author="你的名字",
         tags=["tag1", "tag2"],
     )
-    
+
     def execute(self, **kwargs) -> ToolResult:
-        # 实现技能逻辑
         return ToolResult(success=True, output="完成")
 ```
 
 ### SkillRegistry
 
-技能注册表。
+技能注册与发现入口。
 
 ```python
 from opennova.skills.registry import SkillRegistry
 
 registry = SkillRegistry()
-
-# 从目录加载
 registry.load_from_dirs(["/path/to/skills"])
-
-# 注册技能
 registry.register(my_skill)
-
-# 启用/禁用
 registry.enable_skill("my_skill")
 registry.disable_skill("my_skill")
 ```
@@ -183,24 +194,24 @@ config = MCPServerConfig(
 )
 ```
 
-### MCPManager
+### MCPManager / MCPConnector
 
-MCP 连接管理器。
+MCP 连接管理和单连接封装。
 
 ```python
 from opennova.mcp.connector import MCPManager
 
 manager = MCPManager(tool_registry)
-
-# 添加服务器
 await manager.add_server(config)
-
-# 连接所有服务器
 results = await manager.connect_all([config1, config2])
-
-# 断开连接
 await manager.disconnect_all()
 ```
+
+MCP 相关模块负责：
+- 建立 stdio / SSE 连接
+- 初始化 MCP 会话
+- 发现服务器工具
+- 将 MCP 工具包装成 OpenNova 工具
 
 ## Memory API
 
@@ -212,38 +223,38 @@ await manager.disconnect_all()
 from opennova.memory.context import ContextManager
 
 ctx = ContextManager(model="gpt-4o")
-
-# 添加消息
 ctx.add_user_message("Hello")
 ctx.add_assistant_message("Hi there!")
-
-# 获取统计
 stats = ctx.get_stats()
-print(f"Tokens: {stats.total_tokens}/{ctx.context_window}")
-
-# 获取 LLM 格式消息
 messages = ctx.get_messages_for_llm()
 ```
 
 ### WorkingMemory
 
-工作记忆。
+工作记忆，用于记录任务过程中的操作与观察。
 
 ```python
 from opennova.memory.working import WorkingMemory
 
 memory = WorkingMemory(task="任务描述")
-
-# 记录操作
 action = memory.record_action("read_file", {"path": "test.py"})
 memory.update_action(action.id, ActionStatus.SUCCESS, "内容")
-
-# 观察文件
 memory.observe_file("test.py", "read", "预览内容")
-
-# 获取摘要
 summary = memory.get_summary()
 ```
+
+## Planning API
+
+计划相关结构主要位于：
+- `opennova.runtime.state`
+- `opennova.planning.models`
+- `opennova.planning.planner`
+
+运行时中的计划能力通常包括：
+- 生成结构化步骤
+- 跟踪步骤状态
+- 在 REPL 中展示计划
+- 等待用户确认后继续执行
 
 ## Security API
 
@@ -255,15 +266,9 @@ summary = memory.get_summary()
 from opennova.security.guardrails import Guardrails
 
 guard = Guardrails(sandbox_mode=True)
-
-# 检查命令
 result = guard.check_command("rm -rf /")
-print(result.allowed)  # False
-print(result.risk_level)  # RiskLevel.BLOCK
-
-# 检查路径
-result = guard.check_file_path("/etc/passwd", "read")
-print(result.allowed)  # False
+print(result.allowed)
+print(result.risk_level)
 ```
 
 ### Sandbox
@@ -280,12 +285,8 @@ config = SandboxConfig(
 )
 
 sandbox = Sandbox(config)
-
-# 安全读写
 success, content = sandbox.safe_read("test.txt")
 success, msg = sandbox.safe_write("output.txt", b"data")
-
-# 回滚
 sandbox.rollback()
 ```
 
@@ -299,51 +300,37 @@ Diff 生成和应用。
 from opennova.diff.engine import DiffEngine
 
 engine = DiffEngine()
-
-# 生成 diff
 diff = engine.generate_diff(original, modified, "file.py")
-
-# 应用 patch
 result = engine.apply_patch("file.py", diff, backup=True)
-
-# 预览
 preview = engine.preview_diff(diff)
 ```
 
 ### ChangeSet
 
-文件变更集合。
+文件变更集合，用于跟踪一次任务中的修改。
 
 ```python
 from opennova.diff.changeset import ChangeSet
 
 changeset = ChangeSet(task="重构")
-
-# 添加变更
-changeset.add_new_file("new.py", "content")
-changeset.add_modification("old.py", original, new)
-
-# 应用
-result = changeset.apply(backup=True)
 ```
 
-## Planning API
+## 扩展建议
 
-### Planner
+如果你要为 OpenNova 增加新能力，通常路径如下：
+1. 新工具：继承 `BaseTool`，返回 `ToolResult`
+2. 新 Skill：继承 `BaseSkill`，通过注册表自动发现
+3. 新 Provider：实现 `BaseLLMProvider`，接入 `ProviderFactory`
+4. 新 MCP 集成：通过 `MCPServerConfig` 与 connector 接入
 
-任务规划器。
+## 参考源码入口
 
-```python
-from opennova.planning.planner import Planner
-
-planner = Planner(llm_provider)
-
-# 创建计划
-plan = await planner.create_plan("重构认证模块")
-
-# 获取下一步
-step = plan.get_next_step()
-
-# 更新状态
-plan.mark_step_done(step.id, "完成")
-```
+- `src/opennova/runtime/agent.py`
+- `src/opennova/runtime/loop.py`
+- `src/opennova/tools/base.py`
+- `src/opennova/tools/file_tools.py`
+- `src/opennova/tools/shell_tools.py`
+- `src/opennova/tools/web_tools.py`
+- `src/opennova/tools/ask_question_tool.py`
+- `src/opennova/mcp/connector.py`
+- `src/opennova/skills/base.py`

@@ -1,6 +1,6 @@
 [project]
 name = "opennova"
-version = "0.1.0"
+version = "0.2.0"
 description = "A lightweight CLI AI Coding Agent built from scratch in Python"
 authors = [{ name = "Xingwang Lin", email = "wardell.stephen.curryii@gmail.com" }]
 readme = "README.md"

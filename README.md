@@ -1,6 +1,6 @@
 # OpenNova
 
-A lightweight CLI AI Coding Agent built from scratch in Python.
+OpenNova v0.2.0 is a lightweight CLI AI coding agent built from scratch in Python.
 
 **English** | **[简体中文](README.zh-CN.md)**
 
@@ -8,34 +8,27 @@ A lightweight CLI AI Coding Agent built from scratch in Python.
 
 ## Overview
 
-OpenNova is a minimalist AI coding assistant that runs in your terminal. It's designed to be:
-- **Lightweight**: No heavy framework dependencies (LangChain, CrewAI, etc.)
-- **Flexible**: Support for multiple LLM providers (OpenAI, Anthropic, DeepSeek)
-- **Extensible**: Plugin-based tool system with Skill support
-- **Safe**: Built-in guardrails and confirmation for dangerous operations
+OpenNova runs in your terminal and combines a small core with practical coding-agent workflows:
+- **Multi-provider runtime** for OpenAI, Anthropic, and DeepSeek
+- **Interactive REPL** with slash commands, history, and streamed output
+- **Plan + act workflows** for decomposing larger tasks before execution
+- **Tool + skill extensibility** for local tools and user-defined plugins
+- **MCP integration** for external tool servers
+- **Built-in safety guardrails** for risky commands and protected paths
 
-## Features
+## What’s in v0.2.0
 
-### Phase 1 ✅
-- ✅ ReAct (Reason-Act-Observe) reasoning loop
-- ✅ Multi-provider support (OpenAI, Anthropic, DeepSeek)
-- ✅ Streaming output for real-time responses
-- ✅ Built-in tools: file operations, shell commands
-- ✅ Interactive REPL with command history
-- ✅ Configuration management (YAML + environment variables)
+The 0.2.0 release reflects the now-complete core surface:
+- ReAct runtime with streaming responses and tool execution
+- Plan mode with approval flow inside the REPL
+- Diff/patch editing pipeline
+- Context, working memory, and project memory components
+- MCP stdio and SSE transport support
+- Skill auto-discovery and bundled example skills
+- Interactive user-question prompts in REPL runs
+- Real HTTP-backed `web_fetch` behavior
 
-### Phase 2 ✅
-- ✅ Diff/Patch code modification system
-- ✅ Plan mode with task decomposition
-- ✅ Memory and context management (token counting, working/project memory)
-- ✅ Security guardrails (dangerous command detection, path sandboxing)
-- ✅ Rich terminal rendering (syntax highlighting, diff preview, progress bars)
-
-### Phase 3 ✅
-- ✅ MCP (Model Context Protocol) integration
-- ✅ Skill plugin system with auto-discovery
-- ✅ Built-in example skills (code review, docs generator, git helper)
-- ✅ Extensible architecture for custom tools
+Note: `web_search` is present as a tool surface, but in this runtime it reports that search is not configured instead of fabricating results.
 
 ## Installation
 
@@ -43,21 +36,23 @@ OpenNova is a minimalist AI coding assistant that runs in your terminal. It's de
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager
 
-### Setup
+### Local development setup
 
 ```bash
 # Clone the repository
 git clone https://github.com/Wardell-Stephen-CurryII/OpenNova.git
 cd OpenNova
 
-# Install dependencies
+# Install dependencies into the project environment
 uv sync
 
 # Initialize configuration
 uv run opennova init
 ```
 
-### Configuration
+If you want an installed CLI instead of the local development flow, you can also run `uv tool install .` and then use `opennova` directly. The examples below use `uv run opennova ...` so they always match the checked-out source tree.
+
+## Configuration
 
 Edit `~/.opennova/config.yaml` or set environment variables:
 
@@ -83,7 +78,6 @@ agent:
   auto_confirm: false
   show_thinking: true
 
-# MCP server configuration
 mcp:
   enabled: true
   servers:
@@ -91,14 +85,7 @@ mcp:
       transport: stdio
       command: npx
       args: ["-y", "@modelcontextprotocol/server-filesystem", "./src"]
-    - name: github
-      transport: stdio
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-github"]
-      env:
-        GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
 
-# Skills configuration
 skills:
   enabled: true
   dirs: []
@@ -106,6 +93,7 @@ skills:
 ```
 
 Or use environment variables:
+
 ```bash
 export OPENAI_API_KEY=your_key_here
 export ANTHROPIC_API_KEY=your_key_here
@@ -114,13 +102,13 @@ export DEEPSEEK_API_KEY=your_key_here
 
 ## Usage
 
-### Interactive Mode (REPL)
+### Interactive mode
 
 ```bash
 uv run opennova
 ```
 
-### Single Task Mode
+### Single task mode
 
 ```bash
 # Execute a task directly
@@ -133,13 +121,13 @@ uv run opennova run --plan "Refactor the authentication module"
 uv run opennova run -m gpt-4o "Create a new Python module"
 ```
 
-### REPL Commands
+### REPL commands
 
 Inside the interactive REPL:
 
 | Command | Description |
 |---------|-------------|
-| `/plan <task>` | Generate a plan before executing |
+| `/plan <task>` | Generate a plan, show it, and ask whether to execute it now |
 | `/act <task>` | Execute directly (default mode) |
 | `/tools` | List available tools |
 | `/skills` | List loaded skills |
@@ -151,18 +139,23 @@ Inside the interactive REPL:
 | `/help` | Show help message |
 | `/exit` | Exit the REPL |
 
-## Built-in Tools
+## Built-in tools
+
+OpenNova ships with a broader tool surface than the original README listed.
 
 | Tool | Description |
 |------|-------------|
 | `read_file` | Read file contents with optional line range |
 | `write_file` | Write content to a file |
 | `create_file` | Create a new file |
-| `delete_file` | Delete a file (requires confirmation) |
+| `delete_file` | Delete a file with confirmation |
 | `list_directory` | List directory contents |
-| `execute_command` | Execute shell commands |
+| `execute_command` | Execute shell commands through guardrails |
+| `ask_user_question` | Ask the user to choose from 2-4 options during a run |
+| `web_fetch` | Fetch a real HTTP/HTTPS page and return extracted content |
+| `web_search` | Search interface placeholder; reports unconfigured when no backend is available |
 
-## Built-in Skills
+## Built-in skills
 
 OpenNova includes several example skills:
 
@@ -173,7 +166,7 @@ OpenNova includes several example skills:
 | `git_helper` | Git command assistance |
 | `analyze_project` | Analyze project structure |
 
-## Creating Custom Skills
+## Creating custom skills
 
 Create a skill file in `~/.opennova/skills/my_skill.py`:
 
@@ -196,16 +189,15 @@ class MySkill(BaseSkill):
     )
 
     def execute(self, **kwargs) -> ToolResult:
-        # Your skill logic here
         return ToolResult(success=True, output="Done!")
 ```
 
 Skills are auto-discovered from:
 - `~/.opennova/skills/`
 - `.opennova/skills/`
-- Configured directories
+- configured directories
 
-## MCP Integration
+## MCP integration
 
 OpenNova supports Model Context Protocol (MCP) servers for extended capabilities:
 
@@ -220,63 +212,34 @@ mcp:
 ```
 
 Supported transports:
-- **stdio**: Launch subprocess, communicate via stdin/stdout
-- **sse**: Connect via Server-Sent Events
+- **stdio**: launch a subprocess and communicate over stdin/stdout
+- **sse**: connect to an HTTP SSE endpoint
 
 ## Architecture
 
-```
+```text
 opennova/
 ├── providers/         # LLM provider implementations
-│   ├── base.py        # Abstract provider interface
-│   ├── openai.py      # OpenAI GPT-4, o1 support
-│   ├── anthropic.py   # Claude 4, 3.5 support
-│   ├── deepseek.py    # DeepSeek support
-│   └── factory.py     # Provider factory
-├── tools/             # Tool system
-│   ├── base.py        # BaseTool and ToolRegistry
-│   ├── file_tools.py  # File operations
-│   └── shell_tools.py # Shell commands
-├── runtime/           # Agent runtime
-│   ├── state.py       # Agent state management
-│   ├── loop.py        # ReAct loop
-│   └── agent.py       # Main orchestrator
-├── cli/               # CLI interface
-│   ├── repl.py        # Interactive REPL
-│   └── renderer.py    # Rich terminal rendering
-├── diff/              # Diff/Patch system
-│   ├── engine.py      # Diff generation and application
-│   ├── parser.py      # LLM output parsing
-│   └── changeset.py   # File change tracking
-├── memory/            # Memory management
-│   ├── context.py     # Context window management
-│   ├── working.py     # Short-term working memory
-│   └── project.py     # Long-term project memory
-├── planning/          # Planning system
-│   ├── planner.py     # Task decomposition
-│   └── models.py      # Plan data structures
-├── security/          # Security
-│   ├── guardrails.py  # Safety checks
-│   └── sandbox.py     # Path sandboxing
-├── mcp/               # MCP integration
-│   ├── types.py       # MCP data types
-│   └── connector.py   # MCP server connections
-├── skills/            # Skills system
-│   ├── base.py        # BaseSkill and loader
-│   ├── registry.py    # Skill management
-│   └── examples.py    # Example skills
-└── main.py            # Entry point
+├── tools/             # Built-in tools and tool registry
+├── runtime/           # Agent runtime, loop, and state
+├── cli/               # REPL and terminal rendering
+├── diff/              # Diff/patch system
+├── memory/            # Context and memory management
+├── planning/          # Plan data structures and planner
+├── security/          # Guardrails and sandboxing
+├── mcp/               # MCP transports and connectors
+├── skills/            # Skill system and examples
+└── main.py            # CLI entry point
 ```
 
-## Security Features
+## Security features
 
 OpenNova includes several safety mechanisms:
-
-- **Dangerous Command Detection**: Blocks potentially destructive shell commands
-- **Path Sandboxing**: Restricts file operations to allowed directories
-- **Protected Paths**: Prevents access to system directories (`/etc`, `/usr`, etc.)
-- **Confirmation Prompts**: Requires user confirmation for risky operations
-- **Sensitive File Detection**: Warns when accessing `.env`, `.pem`, and other sensitive files
+- **Dangerous command detection** for destructive shell commands
+- **Path sandboxing** for file access limits
+- **Protected paths** for system directories such as `/etc` and `/usr`
+- **Confirmation prompts** for risky operations
+- **Sensitive file detection** for files like `.env` and `.pem`
 
 ## Development
 
