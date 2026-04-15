@@ -1,6 +1,7 @@
 """Basic tests for OpenNova."""
 
 import asyncio
+import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -8,12 +9,21 @@ import pytest
 
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
 from opennova.tools.agent_tools import AgentTool, SendMessageTool
+from opennova.tools.ask_question_tool import AskUserQuestionTool
+from opennova.tools.git_tools import (
+    GitBranchTool,
+    GitCommitTool,
+    GitDiffTool,
+    GitLogTool,
+    GitStatusTool,
+)
 from opennova.tools.task_tools import (
     TaskGetTool,
     TaskListTool,
     TaskUpdateTool,
     set_global_task_manager,
 )
+from opennova.tools.web_tools import WebFetchTool, WebSearchTool
 from opennova.utils.task_output import read_task_output
 from opennova.providers.base import Message, ToolSchema
 from opennova.memory.context import ContextManager
@@ -1100,3 +1110,297 @@ def test_exit_plan_mode_tool_reports_runtime_plan_state(tmp_path: Path):
     assert result.metadata["plan_approval_status"] == "awaiting_approval"
 
 
+
+
+class Completed:
+    def __init__(self, stdout='', stderr='', returncode=0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+def test_ask_user_question_rejects_invalid_option_counts():
+    tool = AskUserQuestionTool()
+
+    too_few = tool.execute(question='Pick one?', options=[{'label': 'Only', 'description': 'One'}])
+    too_many = tool.execute(
+        question='Pick one?',
+        options=[
+            {'label': '1', 'description': 'one'},
+            {'label': '2', 'description': 'two'},
+            {'label': '3', 'description': 'three'},
+            {'label': '4', 'description': 'four'},
+            {'label': '5', 'description': 'five'},
+        ],
+    )
+
+    assert too_few.success is False
+    assert too_few.error == 'Questions must have 2-4 options.'
+    assert too_many.success is False
+    assert too_many.error == 'Questions must have 2-4 options.'
+
+
+def test_ask_user_question_formats_single_select_header_and_preview():
+    tool = AskUserQuestionTool()
+    preview = 'x' * 105
+
+    result = tool.execute(
+        question='Which approach should we use?',
+        header='Approach',
+        options=[
+            {
+                'label': 'Option A',
+                'description': 'Safer path',
+                'preview': preview,
+            },
+            {
+                'label': 'Option B',
+                'description': 'Faster path',
+            },
+        ],
+    )
+
+    assert result.success is True
+    assert 'Question: Which approach should we use?' in result.output
+    assert '[Approach]' in result.output
+    assert '(Select one option)' in result.output
+    assert 'Preview: ' + ('x' * 100) + '...' in result.output
+    assert result.metadata['questions'][0]['header'] == 'Approach'
+    assert result.metadata['questions'][0]['multiSelect'] is False
+    assert result.metadata['answers'] == {}
+    assert 'CLI mode' in result.metadata['note']
+
+
+def test_ask_user_question_formats_multi_select_prompt():
+    tool = AskUserQuestionTool()
+
+    result = tool.execute(
+        question='Which features do you want?',
+        multi_select=True,
+        options=[
+            {'label': 'A', 'description': 'Alpha'},
+            {'label': 'B', 'description': 'Beta'},
+        ],
+    )
+
+    assert result.success is True
+    assert '(Select multiple options, comma-separated)' in result.output
+    assert result.metadata['questions'][0]['multiSelect'] is True
+
+
+def test_web_search_caps_results_and_includes_sources():
+    tool = WebSearchTool()
+
+    result = tool.execute(query='latest docs', num_results=10)
+
+    assert result.success is True
+    assert result.metadata['query'] == 'latest docs'
+    assert result.metadata['count'] == 3
+    assert len(result.metadata['results']) == 3
+    assert result.metadata['current_year'] >= 2026
+    assert 'Sources:' in result.output
+    assert result.output.count('Search Result') >= 3
+
+
+def test_web_fetch_rejects_invalid_url():
+    result = WebFetchTool().execute(url='not-a-url')
+
+    assert result.success is False
+    assert result.error == 'Invalid URL: not-a-url'
+
+
+def test_web_fetch_returns_metadata_for_valid_url():
+    result = WebFetchTool().execute(url='https://example.com/docs')
+
+    assert result.success is True
+    assert 'Simulated content from https://example.com/docs' in result.output
+    assert result.metadata['url'] == 'https://example.com/docs'
+    assert 'fetched_at' in result.metadata
+
+
+def test_web_fetch_handles_urlparse_failure():
+    tool = WebFetchTool()
+
+    with patch('opennova.tools.web_tools.urlparse', side_effect=ValueError('parse failed')):
+        result = tool.execute(url='https://example.com')
+
+    assert result.success is False
+    assert result.error == 'parse failed'
+
+
+def test_git_status_parse_and_execute_reports_sections():
+    tool = GitStatusTool()
+    status_output = 'MM staged_and_modified.py\nM  unstaged.py\nA  added.py\nD  deleted.py\n?? new_file.py\n'
+
+    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+        mock_run.side_effect = [
+            Completed(stdout=status_output),
+            Completed(stdout='feature/test\n'),
+        ]
+
+        result = tool.execute()
+
+    assert result.success is True
+    assert result.metadata['branch'] == 'feature/test'
+    assert result.metadata['staged'] == ['staged_and_modified.py', 'added.py']
+    assert result.metadata['unstaged'] == ['unstaged.py', 'deleted.py']
+    assert result.metadata['untracked'] == ['new_file.py']
+    assert 'Staged changes:' in result.output
+    assert 'Unstaged changes:' in result.output
+    assert 'Untracked files:' in result.output
+
+
+def test_git_status_handles_clean_repo_and_unknown_branch():
+    tool = GitStatusTool()
+
+    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ['git', 'branch']),
+        ]
+
+        parsed = tool._parse_git_status('')
+
+    assert parsed.branch == 'unknown'
+    assert parsed.has_changes is False
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='')):
+        result = tool.execute()
+
+    assert result.success is True
+    assert '(No changes)' in result.output
+    assert result.metadata['has_changes'] is False
+
+
+def test_git_diff_supports_cached_empty_and_truncation():
+    tool = GitDiffTool()
+    long_diff = 'a' * 10001
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='')) as mock_run:
+        empty_result = tool.execute()
+        assert empty_result.success is True
+        assert empty_result.output == 'No changes to show.'
+        assert mock_run.call_args.args[0] == ['git', 'diff']
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout=long_diff)) as mock_run:
+        cached_result = tool.execute(cached=True)
+        assert cached_result.success is True
+        assert cached_result.metadata['cached'] is True
+        assert cached_result.output.endswith('... (diff truncated)')
+        assert mock_run.call_args.args[0] == ['git', 'diff', '--cached']
+
+
+def test_git_diff_handles_subprocess_failure():
+    tool = GitDiffTool()
+
+    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('diff failed')):
+        result = tool.execute()
+
+    assert result.success is False
+    assert result.error == 'diff failed'
+
+
+def test_git_log_handles_normal_empty_and_failure_cases():
+    tool = GitLogTool()
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='abc123 first\ndef456 second\n')):
+        result = tool.execute(max_count=2)
+    assert result.success is True
+    assert result.metadata['count'] == 2
+    assert result.metadata['commits'] == ['abc123 first', 'def456 second']
+    assert 'Recent commits:' in result.output
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='   ')):
+        empty = tool.execute()
+    assert empty.success is True
+    assert empty.output == 'No commits in history.'
+    assert empty.metadata['commits'] == []
+
+    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('log failed')):
+        failed = tool.execute()
+    assert failed.success is False
+    assert failed.error == 'log failed'
+
+
+def test_git_commit_uses_explicit_message_and_amend():
+    tool = GitCommitTool()
+
+    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+        mock_run.side_effect = [
+            Completed(stdout='', returncode=0),
+            Completed(stdout='12345678abcdef\n'),
+        ]
+
+        result = tool.execute(message='Fix bug', amend=True)
+
+    assert result.success is True
+    assert result.metadata['commit_hash'] == '12345678'
+    assert result.metadata['message'] == 'Fix bug'
+    assert mock_run.call_args_list[0].args[0] == ['git', 'commit', '-m', 'Fix bug', '--amend']
+
+
+def test_git_commit_generates_message_and_handles_failures():
+    tool = GitCommitTool()
+
+    with patch.object(tool, '_generate_commit_message', return_value='Auto message') as mock_generate:
+        with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Completed(stdout='', returncode=0),
+                Completed(stdout='abcdef123456\n'),
+            ]
+            result = tool.execute()
+
+    assert result.success is True
+    assert result.metadata['message'] == 'Auto message'
+    mock_generate.assert_called_once()
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stderr='commit failed', returncode=1)):
+        failed_commit = tool.execute(message='Broken')
+    assert failed_commit.success is False
+    assert failed_commit.error == 'commit failed'
+
+    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+        mock_run.side_effect = [
+            Completed(stdout='', returncode=0),
+            RuntimeError('rev parse failed'),
+        ]
+        failed_hash = tool.execute(message='Broken hash')
+    assert failed_hash.success is False
+    assert failed_hash.error == 'rev parse failed'
+
+
+def test_git_commit_message_generation_fallbacks():
+    tool = GitCommitTool()
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='file.py | 3 ++-\n')):
+        message = tool._generate_commit_message()
+    assert message == 'Update changes'
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='src/a.py | 1 | +\nsrc/b.py | 2 | ++\n')):
+        parsed_message = tool._generate_commit_message()
+    assert parsed_message == 'Update code with changes to: src/a.py (+), src/b.py (++)'
+
+    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('stat failed')):
+        fallback = tool._generate_commit_message()
+    assert fallback == 'Update changes'
+
+
+def test_git_branch_reports_current_branch_and_empty_state():
+    tool = GitBranchTool()
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='* master\n  feature/test\n  remotes/origin/master\n')):
+        result = tool.execute()
+    assert result.success is True
+    assert result.metadata['current'] == 'master'
+    assert result.metadata['branches'] == ['master', 'feature/test', 'remotes/origin/master']
+    assert '* master (current)' in result.output
+
+    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='')):
+        empty = tool.execute()
+    assert empty.success is True
+    assert empty.output == 'No branches found.'
+    assert empty.metadata['branches'] == []
+
+    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('branch failed')):
+        failed = tool.execute()
+    assert failed.success is False
+    assert failed.error == 'branch failed'

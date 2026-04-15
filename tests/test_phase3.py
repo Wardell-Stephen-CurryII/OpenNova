@@ -16,7 +16,7 @@ from opennova.mcp.types import (
     TransportType,
 )
 from opennova.providers.base import FinishReason, LLMResponse
-from opennova.skills.base import BaseSkill, SkillMetadata, SkillLoader
+from opennova.skills.base import BaseSkill, SkillMetadata, SkillLoader, LoadedSkill
 from opennova.skills.examples import get_builtin_skill_classes
 from opennova.skills.registry import SkillRegistry
 from opennova.runtime.agent import AgentRuntime
@@ -289,6 +289,202 @@ class SecondSkill(BaseSkill):
             assert not registry.tool_registry.has_tool("first")
             assert registry.tool_registry.has_tool("second")
             assert registry.get_skill_info("second")["source_type"] == "discovered"
+
+
+    def test_skill_loader_returns_empty_for_missing_file(self):
+        skills = SkillLoader.load_skill_file('/tmp/definitely_missing_skill.py')
+
+        assert skills == []
+
+    def test_skill_loader_returns_load_error_for_module_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_file = Path(tmpdir) / 'broken_skill.py'
+            skill_file.write_text("raise RuntimeError('broken import')\n")
+
+            skills = SkillLoader.load_skill_file(skill_file)
+
+        assert len(skills) == 1
+        assert skills[0].load_error is not None
+        assert 'Failed to load module: broken import' in skills[0].load_error
+        assert skills[0].source_path == str(skill_file)
+
+    def test_skill_loader_keeps_discovered_class_when_metadata_construction_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_file = Path(tmpdir) / 'failing_init_skill.py'
+            skill_file.write_text("""
+from opennova.skills.base import BaseSkill
+from opennova.tools.base import ToolResult
+
+class FailingInitSkill(BaseSkill):
+    name = 'failing_init'
+    description = 'Fails during init'
+
+    def __init__(self):
+        raise RuntimeError('init boom')
+
+    def execute(self) -> ToolResult:
+        return ToolResult(success=True, output='never')
+""")
+
+            skills = SkillLoader.load_skill_file(skill_file)
+
+        assert len(skills) == 1
+        assert skills[0].skill_class.__name__ == 'FailingInitSkill'
+        assert skills[0].metadata is None
+        assert skills[0].load_error is None
+
+    def test_loaded_skill_get_instance_caches_success_and_records_failure(self):
+        class WorkingSkill(BaseSkill):
+            name = 'working'
+            description = 'Working'
+
+            def __init__(self):
+                self.marker = object()
+
+            def execute(self) -> ToolResult:
+                return ToolResult(success=True, output='ok')
+
+        class BrokenSkill(BaseSkill):
+            name = 'broken'
+            description = 'Broken'
+
+            def __init__(self):
+                raise RuntimeError('boom')
+
+            def execute(self) -> ToolResult:
+                return ToolResult(success=True, output='nope')
+
+        ok_loaded = LoadedSkill(skill_class=WorkingSkill)
+        first = ok_loaded.get_instance()
+        second = ok_loaded.get_instance()
+        assert first is second
+        assert ok_loaded.load_error is None
+
+        broken_loaded = LoadedSkill(skill_class=BrokenSkill)
+        broken = broken_loaded.get_instance()
+        assert broken is None
+        assert broken_loaded.load_error == 'boom'
+        assert broken_loaded.get_instance() is None
+
+    def test_skill_loader_duplicate_names_keep_first_loaded_skill(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = Path(tmpdir) / 'alpha.py'
+            second = Path(tmpdir) / 'beta.py'
+            first.write_text("""
+from opennova.skills.base import BaseSkill, SkillMetadata
+from opennova.tools.base import ToolResult
+
+class FirstDuplicateSkill(BaseSkill):
+    name = 'duplicate'
+    description = 'First'
+    metadata = SkillMetadata(name='duplicate', description='first')
+
+    def execute(self) -> ToolResult:
+        return ToolResult(success=True, output='first')
+""")
+            second.write_text("""
+from opennova.skills.base import BaseSkill, SkillMetadata
+from opennova.tools.base import ToolResult
+
+class SecondDuplicateSkill(BaseSkill):
+    name = 'duplicate'
+    description = 'Second'
+    metadata = SkillMetadata(name='duplicate', description='second')
+
+    def execute(self) -> ToolResult:
+        return ToolResult(success=True, output='second')
+""")
+
+            original_dirs = SkillLoader.DEFAULT_SKILL_DIRS
+            original_load_skill_file = SkillLoader.load_skill_file
+            SkillLoader.DEFAULT_SKILL_DIRS = []
+            SkillLoader.load_skill_file = classmethod(
+                lambda cls, file_path: original_load_skill_file.__func__(
+                    cls,
+                    second if Path(file_path).name == 'alpha.py' else first,
+                )
+            )
+            try:
+                loaded = SkillLoader.load_all_skills([tmpdir])
+            finally:
+                SkillLoader.DEFAULT_SKILL_DIRS = original_dirs
+                SkillLoader.load_skill_file = original_load_skill_file
+
+        assert 'duplicate' in loaded
+        assert loaded['duplicate'].skill_class.__name__ == 'FirstDuplicateSkill'
+        assert loaded['duplicate'].metadata.description == 'first'
+
+    def test_skill_registry_methods_return_false_for_missing_or_metadata_less_skills(self):
+        registry = SkillRegistry(ToolRegistry())
+        registry.skills['meta_less'] = LoadedSkill(
+            skill_class=BaseSkill,
+            metadata=None,
+        )
+
+        assert registry.enable_skill('missing') is False
+        assert registry.disable_skill('missing') is False
+        assert registry.is_enabled('missing') is False
+        assert registry.enable_skill('meta_less') is False
+        assert registry.disable_skill('meta_less') is False
+        assert registry.is_enabled('meta_less') is False
+
+    def test_skill_registry_does_not_register_uninstantiable_enabled_skill(self):
+        class BrokenSkill(BaseSkill):
+            name = 'broken_skill'
+            description = 'Broken skill'
+            metadata = SkillMetadata(name='broken_skill', description='broken')
+
+            def __init__(self):
+                raise RuntimeError('init fail')
+
+            def execute(self) -> ToolResult:
+                return ToolResult(success=True, output='never')
+
+        registry = SkillRegistry(ToolRegistry())
+        loaded_skill = LoadedSkill(
+            skill_class=BrokenSkill,
+            metadata=SkillMetadata(name='broken_skill', description='broken'),
+        )
+
+        registry._store_loaded_skill('broken_skill', loaded_skill)
+
+        assert registry.tool_registry.has_tool('broken_skill') is False
+        assert registry.get_skill('broken_skill') is loaded_skill
+        assert loaded_skill.load_error == 'init fail'
+
+    def test_skill_registry_stats_count_enabled_disabled_and_error_skills(self):
+        registry = SkillRegistry(ToolRegistry())
+
+        class EnabledSkill(BaseSkill):
+            name = 'enabled'
+            description = 'enabled'
+
+            def execute(self) -> ToolResult:
+                return ToolResult(success=True, output='enabled')
+
+        registry.skills = {
+            'enabled': LoadedSkill(
+                skill_class=EnabledSkill,
+                metadata=SkillMetadata(name='enabled', enabled=True),
+            ),
+            'disabled': LoadedSkill(
+                skill_class=EnabledSkill,
+                metadata=SkillMetadata(name='disabled', enabled=False),
+            ),
+            'errored': LoadedSkill(
+                skill_class=EnabledSkill,
+                metadata=SkillMetadata(name='errored', enabled=True),
+                load_error='boom',
+            ),
+        }
+
+        registry._update_stats()
+        stats = registry.get_stats()
+
+        assert stats.total_skills == 3
+        assert stats.enabled_skills == 1
+        assert stats.disabled_skills == 1
+        assert stats.error_skills == 1
 
 
 
