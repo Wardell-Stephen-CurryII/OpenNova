@@ -50,12 +50,30 @@ class MCPServerConfig:
     timeout: float = 30.0
     enabled: bool = True
 
+    def validate(self) -> None:
+        """Validate transport-specific MCP server configuration."""
+        if not self.name or not isinstance(self.name, str):
+            raise ValueError("MCP server name is required")
+        if not isinstance(self.args, list):
+            raise ValueError(f"MCP server {self.name}: args must be a list")
+        if not isinstance(self.env, dict):
+            raise ValueError(f"MCP server {self.name}: env must be a dict")
+        if not isinstance(self.timeout, (int, float)) or self.timeout <= 0:
+            raise ValueError(f"MCP server {self.name}: timeout must be a positive number")
+
+        if self.transport == TransportType.STDIO and not self.command:
+            raise ValueError(f"MCP server {self.name}: command is required for stdio transport")
+        if self.transport == TransportType.SSE and not self.url:
+            raise ValueError(f"MCP server {self.name}: url is required for sse transport")
+        if self.transport == TransportType.WEBSOCKET:
+            raise ValueError(f"MCP server {self.name}: websocket transport is not yet supported")
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MCPServerConfig":
         """Create config from dictionary."""
         transport = TransportType(data.get("transport", "stdio"))
 
-        return cls(
+        config = cls(
             name=data["name"],
             transport=transport,
             command=data.get("command"),
@@ -65,6 +83,8 @@ class MCPServerConfig:
             timeout=data.get("timeout", 30.0),
             enabled=data.get("enabled", True),
         )
+        config.validate()
+        return config
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""

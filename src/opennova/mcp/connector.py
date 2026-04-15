@@ -186,33 +186,45 @@ class SSETransport(Transport):
         self.config = config
         self._connected = False
         self._request_id = 0
+        self._client = None
+
+    def _message_url(self) -> str:
+        if not self.config.url:
+            raise RuntimeError("No URL configured")
+        if self.config.url.endswith("/sse"):
+            return self.config.url[:-4] + "/messages"
+        raise RuntimeError("SSE transport URL must end with /sse")
 
     async def connect(self) -> None:
         """Connect to SSE endpoint."""
         if not self.config.url:
             raise ValueError("URL is required for SSE transport")
+        import httpx
+
+        self._client = httpx.AsyncClient(timeout=self.config.timeout)
         self._connected = True
 
     async def disconnect(self) -> None:
         """Disconnect from SSE endpoint."""
         self._connected = False
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def send(self, message: MCPMessage) -> None:
         """Send a message via HTTP POST."""
         import httpx
 
-        if not self.config.url:
-            raise RuntimeError("No URL configured")
-
+        if not self._client:
+            self._client = httpx.AsyncClient(timeout=self.config.timeout)
         data = message.to_dict()
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                self.config.url,
-                json=data,
-                timeout=self.config.timeout,
-            )
-            response.raise_for_status()
+        response = await self._client.post(
+            self._message_url(),
+            json=data,
+            timeout=self.config.timeout,
+        )
+        response.raise_for_status()
 
     async def receive(self) -> MCPMessage:
         """Receive a message (not applicable for SSE)."""
@@ -224,17 +236,24 @@ class SSETransport(Transport):
 
         if not self.config.url:
             raise RuntimeError("No URL configured")
+        if not self._client:
+            self._client = httpx.AsyncClient(timeout=self.config.timeout)
 
-        async with httpx.AsyncClient() as client:
-            async with client.stream(
-                "GET",
-                self.config.url.replace("/sse", "/messages"),
-                timeout=self.config.timeout,
-            ) as response:
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data = json.loads(line[6:])
-                        yield MCPMessage.from_dict(data)
+        async with self._client.stream(
+            "GET",
+            self.config.url,
+            timeout=self.config.timeout,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("Invalid SSE payload from MCP server") from exc
+                yield MCPMessage.from_dict(data)
 
     def is_connected(self) -> bool:
         """Check if connected."""
@@ -265,6 +284,7 @@ class MCPConnector:
         self._request_id = 0
         self._listener_task: asyncio.Task | None = None
         self._initialized = asyncio.Event()
+        self.last_error: str | None = None
 
     async def connect(self) -> None:
         """Connect to the MCP server."""
@@ -273,6 +293,7 @@ class MCPConnector:
 
         self.state = MCPConnectionState.CONNECTING
         self._initialized = asyncio.Event()
+        self.last_error = None
 
         try:
             if self.config.transport == TransportType.STDIO:
@@ -293,8 +314,21 @@ class MCPConnector:
             self.state = MCPConnectionState.CONNECTED
 
         except Exception as e:
+            self.last_error = str(e)
             self.state = MCPConnectionState.ERROR
             self._fail_pending_requests(e)
+            if self._listener_task:
+                self._listener_task.cancel()
+                try:
+                    await self._listener_task
+                except asyncio.CancelledError:
+                    pass
+                self._listener_task = None
+            if self.transport:
+                try:
+                    await self.transport.disconnect()
+                finally:
+                    self.transport = None
             raise RuntimeError(f"Failed to connect to MCP server: {e}") from e
 
     async def disconnect(self) -> None:
@@ -307,6 +341,7 @@ class MCPConnector:
                 await self._listener_task
             except asyncio.CancelledError:
                 pass
+            self._listener_task = None
 
         if self.transport:
             await self.transport.disconnect()
@@ -337,6 +372,7 @@ class MCPConnector:
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            self.last_error = str(e)
             self.state = MCPConnectionState.ERROR
             self._fail_pending_requests(e)
 
@@ -395,6 +431,7 @@ class MCPConnector:
                 "capabilities": {},
             },
         )
+        await self.transport.send(MCPMessage(method="notifications/initialized", params={}))
         self._initialized.set()
         return MCPServerInfo.from_dict(result, self.config.name)
 
@@ -514,6 +551,7 @@ class MCPManager:
         self.tool_registry = tool_registry
         self.connectors: dict[str, MCPConnector] = {}
         self._registered_tools_by_server: dict[str, list[str]] = {}
+        self.connection_errors: dict[str, str] = {}
 
     async def add_server(self, config: MCPServerConfig) -> bool:
         """
@@ -529,6 +567,7 @@ class MCPManager:
             return self.connectors[config.name].is_connected()
 
         if not config.enabled:
+            self.connection_errors.pop(config.name, None)
             return False
 
         connector = MCPConnector(config)
@@ -536,6 +575,7 @@ class MCPManager:
         try:
             await connector.connect()
             self.connectors[config.name] = connector
+            self.connection_errors.pop(config.name, None)
 
             registered_tools = []
             for mcp_tool in connector.get_tools():
@@ -547,7 +587,7 @@ class MCPManager:
             return True
 
         except Exception as e:
-            print(f"Failed to connect to MCP server {config.name}: {e}")
+            self.connection_errors[config.name] = str(e)
             return False
 
     async def remove_server(self, name: str) -> None:

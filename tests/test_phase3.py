@@ -58,6 +58,18 @@ class TestMCPTypes:
         assert data["transport"] == "sse"
         assert data["url"] == "http://localhost:3000/sse"
 
+    def test_server_config_requires_stdio_command(self):
+        with pytest.raises(ValueError, match="command is required for stdio transport"):
+            MCPServerConfig.from_dict({"name": "stdio_server", "transport": "stdio"})
+
+    def test_server_config_requires_sse_url(self):
+        with pytest.raises(ValueError, match="url is required for sse transport"):
+            MCPServerConfig.from_dict({"name": "sse_server", "transport": "sse"})
+
+    def test_server_config_rejects_unsupported_websocket_transport(self):
+        with pytest.raises(ValueError, match="websocket transport is not yet supported"):
+            MCPServerConfig.from_dict({"name": "ws_server", "transport": "websocket", "url": "ws://localhost:3000"})
+
     def test_mcp_tool(self):
         """Test MCP tool definition."""
         tool = MCPTool(
@@ -285,6 +297,26 @@ class TestMCPRuntimeIntegration:
     """Tests for MCP runtime integration."""
 
     @pytest.mark.asyncio
+    async def test_runtime_init_mcp_preserves_invalid_config_errors(self):
+        runtime = AgentRuntime.__new__(AgentRuntime)
+        runtime.tool_registry = ToolRegistry()
+        runtime.config = {
+            "mcp": {
+                "enabled": True,
+                "servers": [
+                    {"name": "valid_stdio", "transport": "stdio", "command": "python"},
+                    {"name": "invalid_sse", "transport": "sse"},
+                ],
+            }
+        }
+
+        AgentRuntime._init_mcp(runtime)
+
+        assert [config.name for config in runtime._mcp_server_configs] == ["valid_stdio"]
+        assert "invalid_sse" in runtime._mcp_config_errors
+        assert "url is required for sse transport" in runtime._mcp_config_errors["invalid_sse"]
+
+    @pytest.mark.asyncio
     async def test_runtime_act_mode_lazily_connects_mcp_servers(self):
         class DummyProvider:
             model = "gpt-4o"
@@ -450,7 +482,7 @@ class TestMCPRuntimeIntegration:
 
     @pytest.mark.asyncio
     async def test_mcp_connector_send_request_timeout_clears_pending_request(self):
-        connector = MCPConnector(MCPServerConfig(name="filesystem"))
+        connector = MCPConnector(MCPServerConfig(name="filesystem", command="python"))
 
         class SlowTransport:
             async def send(self, message):
@@ -462,6 +494,44 @@ class TestMCPRuntimeIntegration:
             await connector._send_request("tools/list", timeout=0.01)
 
         assert connector._pending_requests == {}
+
+    @pytest.mark.asyncio
+    async def test_connector_initialize_sends_initialized_notification(self):
+        connector = MCPConnector(MCPServerConfig(name="filesystem", command="python"))
+        sent_messages = []
+
+        class DummyTransport:
+            async def send(self, message):
+                sent_messages.append(message)
+
+        async def send_request(method, params=None, timeout=30.0):
+            assert method == "initialize"
+            return {
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"version": "1.0.0"},
+                "capabilities": {},
+            }
+
+        connector.transport = DummyTransport()
+        connector._send_request = send_request
+
+        server_info = await connector._initialize()
+
+        assert server_info.name == "filesystem"
+        assert connector._initialized.is_set()
+        assert len(sent_messages) == 1
+        assert sent_messages[0].method == "notifications/initialized"
+
+    @pytest.mark.asyncio
+    async def test_sse_transport_requires_sse_url_shape_for_message_endpoint(self):
+        from opennova.mcp.connector import SSETransport
+
+        transport = SSETransport(
+            MCPServerConfig(name="filesystem", transport=TransportType.SSE, url="http://localhost:3000/messages")
+        )
+
+        with pytest.raises(RuntimeError, match="must end with /sse"):
+            transport._message_url()
 
     @pytest.mark.asyncio
     async def test_mcp_manager_add_server_returns_false_for_disabled_server_without_connect_attempt(self):
@@ -486,11 +556,17 @@ class TestMCPRuntimeIntegration:
 
         with pytest.MonkeyPatch.context() as monkeypatch:
             monkeypatch.setattr(MCPConnector, "connect", fail_connect)
-            result = await manager.add_server(MCPServerConfig(name="filesystem"))
+            result = await manager.add_server(MCPServerConfig(name="filesystem", command="python"))
+
+        assert result is False
+        assert manager.connectors == {}
+        assert manager._registered_tools_by_server == {}
+        assert manager.connection_errors["filesystem"] == "connect failed"
+        assert registry.list_names() == []
 
     @pytest.mark.asyncio
     async def test_connector_disconnect_fails_pending_requests(self):
-        connector = MCPConnector(MCPServerConfig(name="filesystem"))
+        connector = MCPConnector(MCPServerConfig(name="filesystem", command="python"))
         future = asyncio.get_running_loop().create_future()
         connector._pending_requests[1] = future
 

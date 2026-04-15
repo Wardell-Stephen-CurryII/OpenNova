@@ -205,15 +205,17 @@ class AgentRuntime:
 
         self.mcp_manager = MCPManager(self.tool_registry)
         self._mcp_server_configs: list[MCPServerConfig] = []
+        self._mcp_config_errors: dict[str, str] = {}
+        self._mcp_connection_results: dict[str, bool] = {}
 
         servers = mcp_config.get("servers", [])
-        for server_data in servers:
+        for index, server_data in enumerate(servers):
+            server_name = server_data.get("name", f"server[{index}]")
             try:
                 server_config = MCPServerConfig.from_dict(server_data)
-                # Store config for later connection
                 self._mcp_server_configs.append(server_config)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._mcp_config_errors[server_name] = str(exc)
 
     async def connect_mcp_servers(self) -> dict[str, bool]:
         """
@@ -225,8 +227,8 @@ class AgentRuntime:
         if not self.mcp_manager or not self._mcp_server_configs:
             return {}
 
-        # Use stored configs instead of re-parsing from config
-        return await self.mcp_manager.connect_all(self._mcp_server_configs)
+        self._mcp_connection_results = await self.mcp_manager.connect_all(self._mcp_server_configs)
+        return self._mcp_connection_results
 
     async def _ensure_mcp_ready(self) -> dict[str, bool]:
         """Lazily connect configured MCP servers before act-mode execution."""
