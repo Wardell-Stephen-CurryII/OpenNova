@@ -10,6 +10,7 @@ Implements the core Reason-Act-Observe cycle:
 
 import asyncio
 import json
+import re
 import traceback
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -54,6 +55,19 @@ class ReActLoop:
     5. Repeats until task complete or max iterations
     """
 
+    _SKILL_CREATOR_TRIGGER_RE = re.compile(
+        r"("
+        r"\b(create|write|design|build|generate|make|improve|optimi[sz]e|modify|edit)\b[\s\S]{0,80}\b(skill|skills|skill\.md)\b"
+        r"|\b(skill|skills|skill\.md)\b[\s\S]{0,80}\b(create|write|design|build|generate|make|improve|optimi[sz]e|modify|edit)\b"
+        r"|创建[\s\S]{0,40}(技能|skill|skills|SKILL\.md)"
+        r"|写[\s\S]{0,40}(技能|skill|skills|SKILL\.md)"
+        r"|设计[\s\S]{0,40}(技能|skill|skills|SKILL\.md)"
+        r"|优化[\s\S]{0,40}(技能|skill|skills|SKILL\.md)"
+        r"|改进[\s\S]{0,40}(技能|skill|skills|SKILL\.md)"
+        r")",
+        re.IGNORECASE,
+    )
+
     def __init__(
         self,
         llm: BaseLLMProvider,
@@ -94,6 +108,7 @@ class ReActLoop:
         self.on_result: Callable | None = None
         self.on_stream: Callable | None = None
         self._errors: list[str] = []
+        self._skill_listing_sent: bool = False
 
     @property
     def messages(self) -> list[Message]:
@@ -156,8 +171,11 @@ class ReActLoop:
                 )
             )
 
+        self._inject_skill_listing()
+
         self.add_message(Message(role="user", content=f"Task: {task}"))
         self._report_progress(activity=f"Started task: {task}")
+        pending_routed_action: ParsedAction | None = self._route_task_to_skill(task)
 
         while (
             not self.state.is_complete
@@ -168,9 +186,13 @@ class ReActLoop:
             self.state.increment_iteration()
 
             try:
-                response = await self._think()
-
-                action = self._parse_response(response)
+                if pending_routed_action:
+                    action = pending_routed_action
+                    pending_routed_action = None
+                    response = LLMResponse(content=action.thought or "", finish_reason=FinishReason.TOOL_CALL)
+                else:
+                    response = await self._think()
+                    action = self._parse_response(response, task)
 
                 if action.is_final:
                     self.state.mark_complete(action.thought or response.content or "")
@@ -295,7 +317,7 @@ class ReActLoop:
             )
             return response
 
-    def _parse_response(self, response: LLMResponse) -> ParsedAction:
+    def _parse_response(self, response: LLMResponse, task: str = "") -> ParsedAction:
         """
         Parse LLM response into an action.
 
@@ -324,9 +346,31 @@ class ReActLoop:
             action = self._parse_skill_invocation(action, content)
 
         if response.finish_reason == FinishReason.STOP and not response.tool_calls and not action.tool_name:
+            routed_action = self._route_task_to_skill(task)
+            if routed_action:
+                return routed_action
             action.is_final = True
 
         return action
+
+    def _route_task_to_skill(self, task: str) -> ParsedAction | None:
+        """Route obvious natural-language skill requests before accepting prose answers."""
+        if "skill" not in self.tool_registry:
+            return None
+        if not self.skill_registry or not self.skill_registry.can_model_invoke("skill-creator"):
+            return None
+        if not self._is_skill_creator_request(task):
+            return None
+
+        return ParsedAction(
+            tool_name="skill",
+            arguments={"skill": "skill-creator", "args": task},
+            thought="The user's request is to create or improve a skill, so I will invoke skill-creator first.",
+        )
+
+    def _is_skill_creator_request(self, task: str) -> bool:
+        """Return whether a task is a high-confidence request for skill-creator."""
+        return bool(self._SKILL_CREATOR_TRIGGER_RE.search(task))
 
     def _parse_skill_invocation(self, action: ParsedAction, content: str) -> ParsedAction:
         """Detect a markdown skill invocation from assistant text."""
@@ -502,33 +546,23 @@ class ReActLoop:
             params_str = "\n".join(params_desc) if params_desc else "    No parameters"
             tools_description.append(f"- {schema.name}: {schema.description}\n{params_str}")
 
-        skills_description = []
-        if self.skill_registry:
-            for name in self.skill_registry.list_model_invocable_skills():
-                info = self.skill_registry.get_skill_info(name) or {}
-                skill_line = f"- {name}: {info.get('description', '')}"
-                if info.get("when_to_use"):
-                    skill_line += f" - {info.get('when_to_use')}"
-                skills_description.append(skill_line)
-
         prompt = f"""You are an AI coding assistant that helps users with software engineering tasks.
 
 You have access to the following tools:
 {chr(10).join(tools_description)}
 """
 
-        if skills_description:
-            prompt += f"""
+        if self.skill_registry and self.skill_registry.list_model_invocable_skills():
+            prompt += """
+You also have access to reusable skills through the skill tool.
+Available skills are listed in a system-reminder message in the conversation.
 
-You also have access to reusable skills through the skill tool:
-{chr(10).join(skills_description)}
-
-When one of these skills clearly matches the user's request, invoke the skill tool before continuing.
-Do not rely on emitting literal /skill text when the skill tool is available.
+Skill invocation is a BLOCKING REQUIREMENT: when a listed skill matches the user's request,
+invoke the skill tool BEFORE generating any other response about the task.
+Do not merely mention a skill in prose — call the skill tool.
 """
 
         prompt += """
-
 Use these tools and skills to complete the user's task. When you have completed the task,
 provide a summary of what was done.
 
@@ -544,6 +578,35 @@ Rules:
         """Check if an action is potentially dangerous."""
         dangerous_tools = {"delete_file", "execute_command", "write_file"}
         return tool_name in dangerous_tools
+
+    def _inject_skill_listing(self) -> None:
+        """Inject the first-layer skill listing as a system-reminder message.
+
+        Progressive disclosure: only name + description are shown.
+        Full SKILL.md content is loaded only when the Skill tool is invoked.
+        The listing is sent once per loop instance to avoid repetition.
+        """
+        if self._skill_listing_sent:
+            return
+        if not self.skill_registry:
+            return
+
+        skill_names = self.skill_registry.list_model_invocable_skills()
+        if not skill_names:
+            return
+
+        listing = self.skill_registry.format_skill_listing()
+        if not listing:
+            return
+
+        self._skill_listing_sent = True
+
+        content = (
+            "The following skills are available. Use the Skill tool to invoke them. "
+            "Full details are loaded on invocation.\n\n"
+            + listing
+        )
+        self.add_message(Message(role="user", content=content))
 
 
 async def run_simple_task(

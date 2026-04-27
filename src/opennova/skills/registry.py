@@ -5,6 +5,7 @@ Provides centralized management for Claude Code-style skills:
 - discovery/loading from <skill-name>/SKILL.md directories
 - enable/disable/exclude handling
 - metadata lookup and prompt materialization
+- budget-constrained progressive disclosure listing
 """
 
 from __future__ import annotations
@@ -14,6 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from opennova.skills.base import LoadedSkill, SkillLoader, SkillMetadata
+
+# Skill listing budget: 1% of context window (in characters).
+# 200k tokens * 4 chars/token * 1% = 8000 chars by default.
+SKILL_LISTING_CHAR_BUDGET = 8_000
+# Per-entry description cap for the first-layer listing.
+MAX_SKILL_DESC_CHARS = 250
 
 
 @dataclass
@@ -115,6 +122,62 @@ class SkillRegistry:
             for name, skill in self.skills.items()
             if skill.metadata.enabled and not skill.load_error and skill.metadata.user_invocable
         ]
+
+    def list_model_invocable_skill_summaries(self) -> list[dict[str, str]]:
+        summaries: list[dict[str, str]] = []
+        for name in self.list_model_invocable_skills():
+            skill = self.skills[name]
+            summaries.append(
+                {
+                    "name": name,
+                    "description": skill.metadata.description or "",
+                    "when_to_use": skill.metadata.when_to_use or "",
+                    "argument_hint": skill.metadata.argument_hint or "",
+                }
+            )
+        return summaries
+
+    def format_skill_listing(self, max_chars: int | None = None) -> str:
+        """Format a first-layer skill listing with name + description only.
+
+        Progressive disclosure: only name and description are shown.
+        Full content is loaded on invocation via the Skill tool.
+
+        If the listing exceeds max_chars, descriptions are truncated.
+        """
+        if max_chars is None:
+            max_chars = SKILL_LISTING_CHAR_BUDGET
+
+        skills = [
+            self.skills[name]
+            for name in self.list_model_invocable_skills()
+        ]
+        if not skills:
+            return ""
+
+        # Build full entries: "- name: description"
+        def _format_entry(skill: LoadedSkill, max_desc: int | None = None) -> str:
+            desc = skill.metadata.description or ""
+            if max_desc is not None and len(desc) > max_desc:
+                desc = desc[: max_desc - 1] + "…"
+            return f"- {skill.name}: {desc}"
+
+        full_entries = [_format_entry(s) for s in skills]
+        full_total = sum(len(e) for e in full_entries) + len(full_entries) - 1  # newlines
+
+        if full_total <= max_chars:
+            return "\n".join(full_entries)
+
+        # Budget exceeded — truncate descriptions equally
+        name_overhead = sum(len(s.name) + 4 for s in skills) + len(skills) - 1
+        available_for_descs = max_chars - name_overhead
+        max_desc_len = max(available_for_descs // len(skills), 20)
+
+        if max_desc_len < 20:
+            # Extreme: names only
+            return "\n".join(f"- {s.name}" for s in skills)
+
+        return "\n".join(_format_entry(s, max_desc_len) for s in skills)
 
     def can_model_invoke(self, name: str) -> bool:
         skill = self.skills.get(name)

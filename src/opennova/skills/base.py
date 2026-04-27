@@ -110,10 +110,10 @@ class SkillLoader:
     """Discover and parse directory-based Claude Code-style SKILL.md files."""
 
     DEFAULT_SKILL_DIRS = [
-        # Path(".claude") / "skills",
         Path(".opennova") / "skills",
-        # Path.home() / ".claude" / "skills",
         Path.home() / ".opennova" / "skills",
+        Path(".claude") / "skills",
+        Path.home() / ".claude" / "skills",
     ]
 
     @classmethod
