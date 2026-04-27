@@ -504,7 +504,7 @@ class REPL:
         self.renderer.print_skills(skills)
 
     async def _cmd_skill(self, args: str) -> None:
-        """Invoke a loaded skill directly."""
+        """Invoke a loaded skill and start agent execution with its instructions."""
         if not args:
             self.renderer.print_error("Usage: /skill <name> [args]")
             return
@@ -512,8 +512,48 @@ class REPL:
         parts = args.split(maxsplit=1)
         skill_name = parts[0]
         skill_args = parts[1] if len(parts) > 1 else ""
-        result = self.agent.invoke_skill(skill_name=skill_name, skill_args=skill_args, caller="user")
-        self.renderer.print_result(result)
+
+        # Step 1: Validate and materialize the skill
+        result = self.agent.invoke_skill(
+            skill_name=skill_name, skill_args=skill_args, caller="user"
+        )
+
+        if not result.success:
+            self.renderer.print_error(result.error or "Failed to invoke skill")
+            return
+
+        skill_prompt = result.metadata.get("skill_prompt", "")
+        if not skill_prompt:
+            self.renderer.print_error("Skill prompt is empty")
+            return
+
+        self.renderer.print_success(f"Invoked skill: {skill_name}")
+
+        # Step 2: Add the skill prompt to context
+        from opennova.providers.base import Message
+
+        self.agent.context_manager.add_message(
+            Message(
+                role="user",
+                content=f"Invoked skill '{skill_name}':\n\n{skill_prompt}",
+            )
+        )
+
+        # Step 3: Run the agent with preserved context so it processes the skill
+        task = f"/skill {skill_name} {skill_args}".strip()
+        self._register_act_callbacks()
+        self.agent.register_callback("interaction", self._handle_interaction)
+
+        try:
+            result_text = await self.agent._run_act_mode(
+                task=task,
+                stream=True,
+                preserve_context=True,
+            )
+            if result_text:
+                self.renderer.print_markdown(result_text)
+        except Exception as e:
+            self.renderer.print_error(f"Skill execution failed: {type(e).__name__}: {e}")
 
     async def _cmd_reload_skills(self, args: str) -> None:
         """Reload skills from disk."""

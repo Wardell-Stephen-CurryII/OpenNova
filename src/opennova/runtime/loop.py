@@ -109,6 +109,7 @@ class ReActLoop:
         self.on_stream: Callable | None = None
         self._errors: list[str] = []
         self._skill_listing_sent: bool = False
+        self._skill_routed: bool = False
 
     @property
     def messages(self) -> list[Message]:
@@ -137,6 +138,7 @@ class ReActLoop:
         on_result: Callable | None = None,
         on_stream: Callable | None = None,
         preserve_plan_state: bool = False,
+        preserve_context: bool = False,
     ) -> str:
         """
         Run the ReAct loop for a task.
@@ -163,7 +165,16 @@ class ReActLoop:
         self.on_stream = on_stream
         self._errors = []
 
-        if not self.messages:
+        if preserve_context:
+            # Messages already exist (e.g., skill prompt from /skill command).
+            # Ensure system prompt is at position 0 if not already present.
+            has_system = any(msg.role == "system" for msg in self.messages)
+            if not has_system:
+                self.context_manager.messages.insert(
+                    0,
+                    Message(role="system", content=self._build_system_prompt()),
+                )
+        elif not self.messages:
             self.add_message(
                 Message(
                     role="system",
@@ -355,12 +366,16 @@ class ReActLoop:
 
     def _route_task_to_skill(self, task: str) -> ParsedAction | None:
         """Route obvious natural-language skill requests before accepting prose answers."""
+        if self._skill_routed:
+            return None
         if "skill" not in self.tool_registry:
             return None
         if not self.skill_registry or not self.skill_registry.can_model_invoke("skill-creator"):
             return None
         if not self._is_skill_creator_request(task):
             return None
+
+        self._skill_routed = True
 
         return ParsedAction(
             tool_name="skill",
@@ -525,6 +540,18 @@ class ReActLoop:
                 name=action.tool_name,
             )
         )
+
+        # For skill invocations, add the skill prompt as a user message
+        # AFTER the tool result, matching Claude Code's message ordering.
+        if action.tool_name == "skill" and result.success and "skill_prompt" in result.metadata:
+            skill_name = result.metadata.get("skill", "unknown")
+            skill_prompt = result.metadata["skill_prompt"]
+            self.add_message(
+                Message(
+                    role="user",
+                    content=f"Invoked skill '{skill_name}':\n\n{skill_prompt}",
+                )
+            )
 
         self.state.last_action = action.tool_name
         self.state.last_result = result.output

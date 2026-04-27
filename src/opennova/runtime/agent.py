@@ -530,6 +530,7 @@ class AgentRuntime:
         stream: bool = True,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         preserve_plan_state: bool = False,
+        preserve_context: bool = False,
     ) -> str:
         """
         Run in act mode: execute directly without planning.
@@ -537,6 +538,8 @@ class AgentRuntime:
         Args:
             task: Task description
             stream: Whether to stream output
+            preserve_context: If True, keep existing messages (e.g., skill prompt
+                from /skill command) instead of clearing context.
 
         Returns:
             Final result string
@@ -557,10 +560,12 @@ class AgentRuntime:
             working_memory=self.working_memory,
         )
         started_at = perf_counter()
-        self.context_manager.clear()
+        if not preserve_context:
+            self.context_manager.clear()
         self.working_memory.set_task(task)
         self.working_memory.start_task()
-        self.loop.set_context(self._build_memory_messages(task))
+        if not preserve_context:
+            self.loop.set_context(self._build_memory_messages(task))
 
         def on_thought(thought: str) -> None:
             if self.show_thinking:
@@ -583,6 +588,7 @@ class AgentRuntime:
                 on_result=on_result,
                 on_stream=on_stream if stream else None,
                 preserve_plan_state=preserve_plan_state,
+                preserve_context=preserve_context,
             )
         except Exception:
             self.working_memory.complete_task(success=False, error="Act mode execution failed")
@@ -670,9 +676,6 @@ class AgentRuntime:
         if prompt is None:
             return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' is unavailable")
 
-        self.context_manager.add_message(
-            Message(role="user", content=f"Invoked skill '{normalized_name}':\n\n{prompt}")
-        )
         return ToolResult(
             success=True,
             output=f"Invoked skill: {normalized_name}",
