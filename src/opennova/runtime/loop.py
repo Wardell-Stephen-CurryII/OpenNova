@@ -579,14 +579,38 @@ You have access to the following tools:
 {chr(10).join(tools_description)}
 """
 
-        if self.skill_registry and self.skill_registry.list_model_invocable_skills():
-            prompt += """
-You also have access to reusable skills through the skill tool.
-Available skills are listed in a system-reminder message in the conversation.
+        # Include skill listing directly in the system prompt for reliable discovery.
+        # Previously skills were only listed in a user-role message, which LLMs
+        # treat as conversation history rather than authoritative instructions.
+        if self.skill_registry:
+            model_skills = self.skill_registry.list_model_invocable_skills()
+            if model_skills:
+                skill_entries: list[str] = []
+                for name in model_skills:
+                    skill = self.skill_registry.get_skill(name)
+                    if skill is None:
+                        continue
+                    meta = skill.metadata
+                    entry = f"- {meta.name}: {meta.description}"
+                    if meta.when_to_use:
+                        entry += f"\n  When to use: {meta.when_to_use}"
+                    if meta.argument_hint:
+                        entry += f"\n  Arguments: {meta.argument_hint}"
+                    skill_entries.append(entry)
 
-Skill invocation is a BLOCKING REQUIREMENT: when a listed skill matches the user's request,
-invoke the skill tool BEFORE generating any other response about the task.
-Do not merely mention a skill in prose — call the skill tool.
+                prompt += f"""
+In addition to tools, you have access to specialized skills. Each skill provides
+domain-specific instructions that are loaded on invocation.
+
+Available skills:
+{chr(10).join(skill_entries)}
+
+How to invoke a skill: call the Skill tool with skill="<skill-name>" and optional args.
+Example: Skill("code_review", "src/main.py")
+
+IMPORTANT: Skill invocation is a BLOCKING REQUIREMENT. When a listed skill matches
+the user's request, invoke the Skill tool BEFORE generating any other response.
+Do not mention a skill in prose without calling the Skill tool.
 """
 
         prompt += """
@@ -609,31 +633,10 @@ Rules:
     def _inject_skill_listing(self) -> None:
         """Inject the first-layer skill listing as a system-reminder message.
 
-        Progressive disclosure: only name + description are shown.
-        Full SKILL.md content is loaded only when the Skill tool is invoked.
-        The listing is sent once per loop instance to avoid repetition.
+        Skills are now listed directly in the system prompt via _build_system_prompt(),
+        so this separate user-message injection is skipped to avoid redundancy.
         """
-        if self._skill_listing_sent:
-            return
-        if not self.skill_registry:
-            return
-
-        skill_names = self.skill_registry.list_model_invocable_skills()
-        if not skill_names:
-            return
-
-        listing = self.skill_registry.format_skill_listing()
-        if not listing:
-            return
-
-        self._skill_listing_sent = True
-
-        content = (
-            "The following skills are available. Use the Skill tool to invoke them. "
-            "Full details are loaded on invocation.\n\n"
-            + listing
-        )
-        self.add_message(Message(role="user", content=content))
+        pass
 
 
 async def run_simple_task(

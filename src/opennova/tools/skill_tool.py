@@ -11,22 +11,21 @@ class SkillTool(BaseTool):
     When a skill matches the user's request, invoking this tool is a BLOCKING REQUIREMENT:
     call the skill BEFORE generating any other response about the task.
 
-    Available skills are listed in system-reminder messages in the conversation.
+    Available skills are listed in the system prompt with their descriptions.
     Do not invoke a skill that is already running.
     """
 
     name = "skill"
     description = (
         "Execute a skill within the main conversation. "
-        "When users ask you to perform tasks, check if any of the available skills "
-        "(listed in system-reminder messages) match. "
+        "Available skills are listed in the system prompt with their descriptions. "
         "Skills provide specialized capabilities and domain knowledge.\n"
         "How to invoke:\n"
-        "- Set 'skill' to the skill name (e.g. 'pdf', 'commit', 'review-pr')\n"
+        "- Set 'skill' to the exact skill name from the available skills list\n"
         "- Set 'args' to optional arguments for the skill\n"
-        "When a skill matches the user's request, invoke the Skill tool "
-        "BEFORE generating any other response about the task. "
-        "Never mention a skill without actually calling this tool."
+        "BLOCKING REQUIREMENT: When a skill matches the user's request, "
+        "invoke this tool BEFORE generating any other response. "
+        "Do not describe a skill in prose — call this tool with the skill name."
     )
 
     def __init__(self, config: dict[str, Any] | None = None):
@@ -48,8 +47,8 @@ class SkillTool(BaseTool):
                 "skill": {
                     "type": "string",
                     "description": (
-                        "The skill name. E.g., 'commit', 'review-pr', or 'pdf'. "
-                        "Available skills are listed in system-reminder messages."
+                        "The skill name from the available skills list in the system prompt. "
+                        "E.g., 'code_review', 'analyze_project', or 'git_helper'."
                     ),
                 },
                 "args": {
