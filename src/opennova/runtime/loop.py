@@ -503,6 +503,23 @@ class ReActLoop:
 
         prompt_payload = result.metadata.get("prompt_payload", {})
         question = prompt_payload.get("question", "")
+        skipped = interaction_result.get("skipped", False)
+
+        if skipped:
+            return ToolResult(
+                success=True,
+                output=(
+                    f"Question: {question}\n"
+                    "User did not provide an answer. Please make the best decision."
+                ),
+                metadata={
+                    **result.metadata,
+                    "interaction_required": False,
+                    "skipped": True,
+                    "skipped_question": question,
+                },
+            )
+
         return ToolResult(
             success=True,
             output=f"Answer to: {question}\n{interaction_result.get('display', '')}".strip(),
@@ -548,6 +565,16 @@ class ReActLoop:
                 name=action.tool_name,
             )
         )
+
+        # When user skips a free-text question, give the LLM explicit permission to decide.
+        if result.metadata.get("skipped"):
+            question = result.metadata.get("skipped_question", "")
+            self.add_message(
+                Message(
+                    role="user",
+                    content=f"I'll let you decide on this: {question}",
+                )
+            )
 
         # For skill invocations, add the skill prompt as a user message
         # AFTER the tool result, matching Claude Code's message ordering.

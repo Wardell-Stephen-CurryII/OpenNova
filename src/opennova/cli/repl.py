@@ -668,47 +668,85 @@ class REPL:
         self.running = False
 
     async def _handle_interaction(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        """Handle interactive tool prompts during REPL runs."""
+        """Handle interactive tool prompts during REPL runs.
+
+        Two modes:
+        - Choice mode (2+ options): numbered selection dialog
+        - Free-text mode (0-1 options): text input, empty = skipped
+        """
         payload = metadata.get("prompt_payload", {})
         question = payload.get("question", "")
         options = payload.get("options", [])
         multi_select = payload.get("multi_select", False)
+        free_text = payload.get("free_text", False)
         header = payload.get("header")
 
+        # Dialog box with Rich Panel
+        dialog_lines = [f"[bold]{question}[/bold]"]
         if header:
-            self.renderer.print(f"[cyan][{header}][/cyan]")
-        self.renderer.print(question)
-        for option in options:
-            self.renderer.print(f"  [{option['index']}] {option['label']}")
-            if option.get("description"):
-                self.renderer.print(f"      {option['description']}")
+            dialog_lines.insert(0, f"[cyan][{header}][/cyan]")
+        if free_text:
+            dialog_lines.append("[dim](Press Enter to skip — model will decide)[/dim]")
+        else:
+            for option in options:
+                idx = option["index"]
+                label = option["label"]
+                desc = option.get("description", "")
+                line = f"  [[{idx}]] [yellow]{label}[/yellow]"
+                if desc:
+                    line += f"\n      [dim]{desc}[/dim]"
+                dialog_lines.append(line)
 
+        self.renderer.print()
+        self.renderer.print(Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2)))
+
+        # Free-text mode
+        if free_text:
+            response = await self.session.prompt_async("Your answer: ")
+            answer = response.strip()
+            if not answer:
+                # User skipped — let the model decide
+                return {
+                    "answer": None,
+                    "skipped": True,
+                    "answers": {question: None},
+                    "display": "(skipped — model will decide)",
+                }
+            return {
+                "answer": answer,
+                "skipped": False,
+                "answers": {question: answer},
+                "display": answer,
+            }
+
+        # Choice mode
         prompt = "Select option(s): " if multi_select else "Select option: "
         while True:
             response = await self.session.prompt_async(prompt)
             selected = [part.strip() for part in response.split(",") if part.strip()]
             if not selected:
-                self.renderer.print_error("Please choose at least one option.")
+                self.renderer.print("[yellow]Please choose at least one option.[/yellow]")
                 continue
             if not multi_select and len(selected) != 1:
-                self.renderer.print_error("Please choose exactly one option.")
+                self.renderer.print("[yellow]Please choose exactly one option.[/yellow]")
                 continue
 
             try:
                 indexes = [int(value) for value in selected]
             except ValueError:
-                self.renderer.print_error("Please enter numeric option values.")
+                self.renderer.print("[yellow]Please enter numeric option values.[/yellow]")
                 continue
 
             option_map = {option["index"]: option for option in options}
             if any(index not in option_map for index in indexes):
-                self.renderer.print_error("Selection out of range.")
+                self.renderer.print("[yellow]Selection out of range.[/yellow]")
                 continue
 
             chosen = [option_map[index] for index in indexes]
             labels = [item["label"] for item in chosen]
             return {
                 "answer": labels if multi_select else labels[0],
+                "skipped": False,
                 "answers": {question: labels if multi_select else labels[0]},
                 "selected_options": chosen,
                 "display": ", ".join(labels),

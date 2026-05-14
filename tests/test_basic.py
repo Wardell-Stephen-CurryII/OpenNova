@@ -1198,11 +1198,32 @@ class Completed:
         self.returncode = returncode
 
 
-def test_ask_user_question_rejects_invalid_option_counts():
+def test_ask_user_question_supports_free_text_and_choice_modes():
     tool = AskUserQuestionTool()
 
-    too_few = tool.execute(question='Pick one?', options=[{'label': 'Only', 'description': 'One'}])
-    too_many = tool.execute(
+    # 0 options → free-text mode
+    no_options = tool.execute(question="What's your name?")
+    assert no_options.success is True
+    assert no_options.metadata["prompt_payload"]["free_text"] is True
+
+    # 1 option → free-text mode
+    one_option = tool.execute(question='Pick one?', options=[{'label': 'Only', 'description': 'One'}])
+    assert one_option.success is True
+    assert one_option.metadata["prompt_payload"]["free_text"] is True
+
+    # 2+ options → choice mode
+    two_options = tool.execute(
+        question='Pick one?',
+        options=[
+            {'label': 'A', 'description': 'First'},
+            {'label': 'B', 'description': 'Second'},
+        ],
+    )
+    assert two_options.success is True
+    assert two_options.metadata["prompt_payload"]["free_text"] is False
+
+    # 5+ options → still works (no upper limit)
+    five_options = tool.execute(
         question='Pick one?',
         options=[
             {'label': '1', 'description': 'one'},
@@ -1212,11 +1233,8 @@ def test_ask_user_question_rejects_invalid_option_counts():
             {'label': '5', 'description': 'five'},
         ],
     )
-
-    assert too_few.success is False
-    assert too_few.error == 'Questions must have 2-4 options.'
-    assert too_many.success is False
-    assert too_many.error == 'Questions must have 2-4 options.'
+    assert five_options.success is True
+    assert five_options.metadata["prompt_payload"]["free_text"] is False
 
 
 def test_ask_user_question_formats_single_select_header_and_preview():
