@@ -36,16 +36,26 @@ from opennova.tools.base import ToolResult
 
 
 class SlashCommandCompleter(Completer):
-    """Tab completion for REPL slash commands and skill names."""
+    """Tab completion for REPL slash commands, skill names, and history."""
 
     def __init__(self, repl: "REPL"):
         self.repl = repl
 
     def get_completions(self, document: Document, complete_event):
         text = document.text_before_cursor
-        if not text.startswith("/"):
+
+        # Slash command completion
+        if text.startswith("/"):
+            yield from self._slash_completions(text)
             return
 
+        # History-based completion for regular text
+        if not text.strip():
+            return
+
+        yield from self._history_completions(text)
+
+    def _slash_completions(self, text: str):
         parts = text.split()
         ends_with_space = text.endswith(" ")
 
@@ -74,6 +84,49 @@ class SlashCommandCompleter(Completer):
         for skill in skills:
             if skill.startswith(skill_token):
                 yield Completion(skill, start_position=-len(skill_token))
+
+    def _history_completions(self, text: str):
+        """Yield completions from command history.
+
+        Matches history entries that start with the typed text, and also
+        suggests individual words from history that match the current word.
+        """
+        try:
+            history = self.repl.session.history
+        except Exception:
+            return
+
+        seen = set()
+        current_word = text.split()[-1] if text else text
+
+        for item in history.get_strings():
+            item_stripped = item.strip()
+            if not item_stripped:
+                continue
+
+            # Complete whole history entry if it starts with typed text
+            if item_stripped.startswith(text) and item_stripped != text:
+                if item_stripped not in seen:
+                    seen.add(item_stripped)
+                    yield Completion(
+                        item_stripped,
+                        start_position=-len(text),
+                        display=item_stripped[:80],
+                    )
+
+            # Complete individual word from history matching the last word
+            for word in item_stripped.split():
+                if (
+                    len(word) > 1
+                    and word.startswith(current_word)
+                    and word != current_word
+                ):
+                    if word not in seen:
+                        seen.add(word)
+                        yield Completion(
+                            word,
+                            start_position=-len(current_word),
+                        )
 
 
 class Renderer:
@@ -199,8 +252,9 @@ class Renderer:
 
 ## Tips
 
-- Press `Tab` to complete slash commands
-- History suggestions remain available from prompt history
+- Press `Tab` to complete slash commands, skill names, and history entries
+- Start typing a command you've used before — Tab will match it from history
+- Ghost text suggestions are also shown from history
 """
         self.console.print(Markdown(help_text))
 
