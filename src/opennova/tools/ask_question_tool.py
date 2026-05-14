@@ -75,9 +75,15 @@ class AskUserQuestionTool(BaseTool):
                 output_lines.append("")
 
                 for i, option in enumerate(options, 1):
-                    label = option.get("label", f"Option {i}")
-                    description = option.get("description", "")
-                    preview = option.get("preview")
+                    # LLMs may pass options as plain strings instead of dicts.
+                    if isinstance(option, str):
+                        label = option
+                        description = ""
+                        preview = None
+                    else:
+                        label = option.get("label", f"Option {i}")
+                        description = option.get("description", "")
+                        preview = option.get("preview")
 
                     normalized_option = {
                         "index": i,
