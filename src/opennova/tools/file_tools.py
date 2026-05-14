@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from opennova.diff.engine import DiffEngine
 from opennova.tools.base import BaseTool, ToolResult
 
 
@@ -233,16 +234,29 @@ class WriteFileTool(BaseTool):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
 
+            old_content = ""
+            file_existed = path.exists()
+            if file_existed:
+                old_content = path.read_text(encoding="utf-8")
+
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
+
+            diff_engine = DiffEngine()
+            diff_text = diff_engine.generate_diff(old_content, content, str(path))
+
+            metadata: dict[str, Any] = {
+                "file_path": str(path),
+                "bytes_written": len(content),
+                "change_type": "modify" if file_existed else "create",
+            }
+            if diff_text.strip():
+                metadata["diff"] = diff_text
 
             return ToolResult(
                 success=True,
                 output=f"Successfully wrote {len(content)} bytes to {file_path}",
-                metadata={
-                    "file_path": str(path),
-                    "bytes_written": len(content),
-                },
+                metadata=metadata,
             )
 
         except PermissionError:
@@ -298,10 +312,21 @@ class CreateFileTool(BaseTool):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
 
+            metadata: dict[str, Any] = {
+                "file_path": str(path),
+                "bytes_written": len(content),
+                "change_type": "create",
+            }
+            if content.strip():
+                diff_engine = DiffEngine()
+                diff_text = diff_engine.generate_diff("", content, str(path))
+                if diff_text.strip():
+                    metadata["diff"] = diff_text
+
             return ToolResult(
                 success=True,
                 output=f"Created file: {file_path}",
-                metadata={"file_path": str(path), "bytes_written": len(content)},
+                metadata=metadata,
             )
 
         except PermissionError:

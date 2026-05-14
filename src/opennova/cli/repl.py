@@ -173,6 +173,42 @@ class Renderer:
         if result.error:
             self.console.print(f"[red]Error: {result.error}[/red]")
 
+        diff = result.metadata.get("diff") if result.success else None
+        if diff:
+            self.print_diff(diff)
+
+    def print_diff(self, diff_text: str) -> None:
+        """Display a unified diff with colored backgrounds.
+
+        Deletions are shown on a red background, additions on green.
+        """
+        from rich.text import Text
+
+        lines = diff_text.splitlines()
+        # Limit diff display to avoid flooding the terminal.
+        if len(lines) > 120:
+            lines = lines[:120]
+            truncated = True
+        else:
+            truncated = False
+
+        self.console.print()
+        for line in lines:
+            if line.startswith("---") or line.startswith("+++"):
+                self.console.print(f"[bold cyan]{line}[/bold cyan]")
+            elif line.startswith("@@"):
+                self.console.print(f"[bold blue]{line}[/bold blue]")
+            elif line.startswith("+"):
+                self.console.print(Text(line, style="on green"))
+            elif line.startswith("-"):
+                self.console.print(Text(line, style="on red"))
+            else:
+                self.console.print(f"[dim]{line}[/dim]")
+
+        if truncated:
+            self.console.print("[dim]... (diff truncated)[/dim]")
+        self.console.print()
+
     def print_stream(self, chunk: StreamChunk) -> None:
         """Display streaming chunk."""
         if chunk.content:
