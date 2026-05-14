@@ -148,18 +148,32 @@ class Renderer:
 
         self.console.print(table)
 
+    _BANNER = (
+        " ██████╗ ██████╗ ███████╗███╗   ██╗███╗   ██╗ ██████╗ ██╗   ██╗ █████╗ \n"
+        "██╔═══██╗██╔══██╗██╔════╝████╗  ██║████╗  ██║██╔═══██╗██║   ██║██╔══██╗\n"
+        "██║   ██║██████╔╝█████╗  ██╔██╗ ██║██╔██╗ ██║██║   ██║██║   ██║███████║\n"
+        "██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██║╚██╗██║██║   ██║╚██╗ ██╔╝██╔══██║\n"
+        "╚██████╔╝██║     ███████╗██║ ╚████║██║ ╚████║╚██████╔╝ ╚████╔╝ ██║  ██║\n"
+        " ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝"
+    )
+
     def print_welcome(self, model_info: dict[str, Any] | None = None) -> None:
         """Display welcome message with model info."""
+        from opennova import __version__
+
         provider = model_info.get("provider", "—") if model_info else "—"
         model = model_info.get("model", "—") if model_info else "—"
 
         self.console.print()
+        for line in self._BANNER.split("\n"):
+            self.console.print(f"[bold cyan]{line}[/bold cyan]")
+        self.console.print()
         self.console.print(
             Panel.fit(
-                f"[bold cyan]OpenNova[/bold cyan] — AI Coding Agent\n\n"
-                f"[dim]Provider:[/dim] [green]{provider}[/green]\n"
-                f"[dim]Model:   [/dim] [yellow]{model}[/yellow]\n\n"
-                f"[dim]Type [bold]/help[/bold] for commands  ·  [bold]Ctrl+D[/bold] to exit[/dim]",
+                f"[bold]AI Coding Agent[/bold] [dim]v{__version__}[/dim]\n\n"
+                f"[dim]Provider:[/dim] [green]{provider}[/green]  ·  "
+                f"[dim]Model:[/dim] [yellow]{model}[/yellow]\n\n"
+                f"[dim]Type [bold]/help[/bold] for commands  ·  [bold]Ctrl+C×2[/bold] to exit[/dim]",
                 border_style="bright_blue",
                 padding=(1, 3),
             )
