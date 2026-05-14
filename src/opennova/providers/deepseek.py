@@ -22,6 +22,8 @@ class DeepSeekProvider(OpenAIProvider):
     DeepSeek models:
     - deepseek-chat: General-purpose chat model
     - deepseek-reasoner: Reasoning-focused model (similar to o1)
+    - deepseek-v4-pro: Latest flagship model with enhanced reasoning
+    - deepseek-v4-flash: Fast inference model for lower latency
     """
 
     DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
@@ -29,6 +31,8 @@ class DeepSeekProvider(OpenAIProvider):
     SUPPORTED_MODELS = {
         "deepseek-chat": {"context_window": 64000, "supports_vision": False},
         "deepseek-reasoner": {"context_window": 64000, "supports_vision": False},
+        "deepseek-v4-pro": {"context_window": 131072, "supports_vision": False},
+        "deepseek-v4-flash": {"context_window": 131072, "supports_vision": False},
     }
 
     def __init__(

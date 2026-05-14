@@ -38,6 +38,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-3-haiku": 200000,
     "deepseek-chat": 64000,
     "deepseek-reasoner": 64000,
+    "deepseek-v4-pro": 131072,
+    "deepseek-v4-flash": 131072,
 }
 
 DEFAULT_CONTEXT_WINDOW = 128000
