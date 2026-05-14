@@ -651,7 +651,7 @@ async def run_simple_task(
     llm: BaseLLMProvider,
     tool_registry: ToolRegistry,
     task: str,
-    max_iterations: int = 20,
+    max_iterations: int = 200,
     stream: bool = True,
     on_stream: Callable | None = None,
 ) -> str:
