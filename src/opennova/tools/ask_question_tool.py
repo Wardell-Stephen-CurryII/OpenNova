@@ -8,6 +8,7 @@ Provides:
 - Free-text input when no options are provided
 """
 
+import json
 from typing import Any
 
 from opennova.tools.base import BaseTool, ToolResult
@@ -47,7 +48,15 @@ class AskUserQuestionTool(BaseTool):
             multi_select: Whether multiple options can be selected (choice mode only)
         """
         try:
+            # LLMs may pass options as a JSON string instead of a list.
+            if isinstance(options, str):
+                try:
+                    options = json.loads(options)
+                except (json.JSONDecodeError, TypeError):
+                    options = []
             options = options or []
+            if not isinstance(options, list):
+                options = []
             is_free_text = len(options) < 2
 
             output_lines = [f"Question: {question}"]

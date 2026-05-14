@@ -497,9 +497,25 @@ class ReActLoop:
                 metadata={**result.metadata, "interaction_unresolved": True},
             )
 
-        interaction_result = self.interaction_callback(result.metadata)
-        if asyncio.iscoroutine(interaction_result):
-            interaction_result = await interaction_result
+        try:
+            interaction_result = self.interaction_callback(result.metadata)
+            if asyncio.iscoroutine(interaction_result):
+                interaction_result = await interaction_result
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output=result.output,
+                error=f"Interaction failed: {e}",
+                metadata={**result.metadata, "interaction_unresolved": True},
+            )
+
+        if not isinstance(interaction_result, dict):
+            return ToolResult(
+                success=False,
+                output=result.output,
+                error=f"Interaction callback returned unexpected type: {type(interaction_result).__name__}",
+                metadata={**result.metadata, "interaction_unresolved": True},
+            )
 
         prompt_payload = result.metadata.get("prompt_payload", {})
         question = prompt_payload.get("question", "")

@@ -751,7 +751,7 @@ class REPL:
                     line += f"\n      [dim]{desc}[/dim]"
                 dialog_lines.append(line)
 
-        self.renderer.print()
+        self.renderer.print("")
         self.renderer.print(Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2)))
 
         # Free-text mode
