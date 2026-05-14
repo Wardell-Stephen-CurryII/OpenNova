@@ -345,7 +345,24 @@ class REPL:
 
         @kb.add("c-c")
         def _(event):
-            event.app.current_buffer.reset()
+            import time
+            now = time.time()
+            buffer = event.app.current_buffer
+
+            # If buffer has text, first Ctrl+C just clears it
+            if buffer.text:
+                buffer.reset()
+                self._last_ctrl_c = 0.0
+                return
+
+            # Double Ctrl+C within 2 seconds on empty buffer → exit
+            if self._last_ctrl_c > 0 and (now - self._last_ctrl_c) < 2.0:
+                self.running = False
+                event.app.exit()
+                return
+
+            self._last_ctrl_c = now
+            self.renderer.print("[yellow]Press Ctrl+C again to exit[/yellow]")
 
         return kb
 
