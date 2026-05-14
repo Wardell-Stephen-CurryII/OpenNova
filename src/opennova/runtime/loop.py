@@ -226,7 +226,7 @@ class ReActLoop:
                         tool_use_increment=1,
                         token_count=response.usage.total_tokens if response.usage else 0,
                     )
-                    self._observe(action, result)
+                    self._observe(action, result, response.reasoning_content)
                 else:
                     observation = Message(
                         role="user",
@@ -298,6 +298,7 @@ class ReActLoop:
             full_content = ""
             tool_calls: list[ToolCall] = []
             usage = None
+            reasoning_content: str | None = None
 
             async for chunk in self.llm.stream_chat(
                 self.context_manager.get_messages_for_llm(),
@@ -312,6 +313,11 @@ class ReActLoop:
                     tool_calls.append(chunk.tool_call)
                 if chunk.usage:
                     usage = chunk.usage
+                if chunk.reasoning_content:
+                    if reasoning_content is None:
+                        reasoning_content = chunk.reasoning_content
+                    else:
+                        reasoning_content += chunk.reasoning_content
 
             return LLMResponse(
                 content=full_content,
@@ -319,6 +325,7 @@ class ReActLoop:
                 usage=usage,
                 finish_reason=FinishReason.TOOL_CALL if tool_calls else FinishReason.STOP,
                 model=self.llm.model,
+                reasoning_content=reasoning_content,
             )
         else:
             response = await self.llm.chat(
@@ -508,29 +515,30 @@ class ReActLoop:
             },
         )
 
-    def _observe(self, action: ParsedAction, result: ToolResult) -> None:
+    def _observe(self, action: ParsedAction, result: ToolResult, reasoning_content: str | None = None) -> None:
         """
         Observe step: Add results to context.
 
         Args:
             action: The action that was executed
             result: The tool execution result
+            reasoning_content: Optional reasoning content from the LLM (DeepSeek thinking mode)
         """
-        self.add_message(
-            Message(
-                role="assistant",
-                content=action.thought or "",
-                tool_calls=[
-                    ToolCall(
-                        id=f"call_{self.state.iteration}",
-                        name=action.tool_name,
-                        arguments=action.arguments,
-                    )
-                ]
-                if action.tool_name
-                else None,
-            )
+        assistant_msg = Message(
+            role="assistant",
+            content=action.thought or "",
+            tool_calls=[
+                ToolCall(
+                    id=f"call_{self.state.iteration}",
+                    name=action.tool_name,
+                    arguments=action.arguments,
+                )
+            ]
+            if action.tool_name
+            else None,
+            reasoning_content=reasoning_content,
         )
+        self.add_message(assistant_msg)
 
         self.add_message(
             Message(

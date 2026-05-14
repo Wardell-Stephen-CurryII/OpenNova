@@ -90,6 +90,7 @@ class Message:
     name: str | None = None
     timestamp: datetime = field(default_factory=datetime.now)
     token_count: int = 0
+    reasoning_content: str | None = None
 
     def to_openai_format(self) -> dict[str, Any]:
         """Convert to OpenAI message format."""
@@ -113,6 +114,9 @@ class Message:
 
         if self.name:
             msg["name"] = self.name
+
+        if self.role == "assistant" and self.reasoning_content:
+            msg["reasoning_content"] = self.reasoning_content
 
         return msg
 
@@ -167,6 +171,7 @@ class LLMResponse:
     finish_reason: FinishReason = FinishReason.STOP
     model: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    reasoning_content: str | None = None
 
 
 @dataclass
@@ -178,6 +183,7 @@ class StreamChunk:
     finish_reason: FinishReason | None = None
     usage: Usage | None = None
     delta: bool = True
+    reasoning_content: str | None = None
 
 
 class BaseLLMProvider(ABC):

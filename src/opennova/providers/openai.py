@@ -146,6 +146,7 @@ class OpenAIProvider(BaseLLMProvider):
             ),
             model=response.model,
             metadata={"response_id": response.id},
+            reasoning_content=getattr(choice.message, "reasoning_content", None) or None,
         )
 
     async def stream_chat(
@@ -186,6 +187,7 @@ class OpenAIProvider(BaseLLMProvider):
         stream = await self.client.chat.completions.create(**request_params)
 
         tool_call_accumulator: dict[int, dict[str, Any]] = {}
+        accumulated_reasoning: str = ""
 
         async for chunk in stream:
             if not chunk.choices:
@@ -201,6 +203,11 @@ class OpenAIProvider(BaseLLMProvider):
                 continue
 
             choice = chunk.choices[0]
+
+            # Capture reasoning_content from deltas (DeepSeek thinking mode)
+            delta_reasoning = getattr(choice.delta, "reasoning_content", None) or ""
+            if delta_reasoning:
+                accumulated_reasoning += delta_reasoning
 
             if choice.delta.content:
                 yield StreamChunk(content=choice.delta.content, delta=True)
@@ -252,6 +259,7 @@ class OpenAIProvider(BaseLLMProvider):
                         FinishReason.STOP,
                     ),
                     delta=False,
+                    reasoning_content=accumulated_reasoning or None,
                 )
 
     def get_model_info(self) -> dict[str, Any]:
