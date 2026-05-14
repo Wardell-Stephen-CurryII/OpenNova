@@ -148,13 +148,20 @@ class Renderer:
 
         self.console.print(table)
 
-    def print_welcome(self) -> None:
-        """Display welcome message."""
+    def print_welcome(self, model_info: dict[str, Any] | None = None) -> None:
+        """Display welcome message with model info."""
+        provider = model_info.get("provider", "—") if model_info else "—"
+        model = model_info.get("model", "—") if model_info else "—"
+
+        self.console.print()
         self.console.print(
             Panel.fit(
-                "[bold cyan]OpenNova[/bold cyan] - AI Coding Agent\n"
-                "Type /help for commands, Ctrl+D to exit",
-                border_style="blue",
+                f"[bold cyan]OpenNova[/bold cyan] — AI Coding Agent\n\n"
+                f"[dim]Provider:[/dim] [green]{provider}[/green]\n"
+                f"[dim]Model:   [/dim] [yellow]{model}[/yellow]\n\n"
+                f"[dim]Type [bold]/help[/bold] for commands  ·  [bold]Ctrl+D[/bold] to exit[/dim]",
+                border_style="bright_blue",
+                padding=(1, 3),
             )
         )
 
@@ -348,7 +355,7 @@ class REPL:
             key_bindings=self._setup_key_bindings(),
         )
 
-        self.renderer.print_welcome()
+        self.renderer.print_welcome(self.agent.get_model_info())
 
         while self.running:
             try:
