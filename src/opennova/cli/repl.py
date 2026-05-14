@@ -506,15 +506,23 @@ class REPL:
         """Show help."""
         self.renderer.print_help()
 
+    # Tool names whose results are not displayed to the user (verbose file ops).
+    _SUPPRESSED_RESULT_TOOLS: set[str] = {"list_directory", "read_file"}
+
     def _register_act_callbacks(self) -> None:
         """Register the same visible callbacks used by normal act mode."""
+        _current_tool: dict[str, str] = {"name": ""}
+
         def on_thought(thought: str) -> None:
             self.renderer.print_thinking(thought)
 
         def on_action(tool_name: str, args: dict) -> None:
+            _current_tool["name"] = tool_name
             self.renderer.print_action(tool_name, args)
 
         def on_result(result: ToolResult) -> None:
+            if _current_tool["name"] in self._SUPPRESSED_RESULT_TOOLS:
+                return
             self.renderer.print_result(result)
 
         def on_stream(chunk: StreamChunk) -> None:
@@ -552,7 +560,7 @@ class REPL:
         self._register_act_callbacks()
         self.agent.register_callback("interaction", self._handle_interaction)
         self.renderer.print("[cyan]Executing approved plan...[/cyan]")
-        execution_result = await self.agent.execute_approved_plan()
+        execution_result = await self._run_with_spinner(self.agent.execute_approved_plan())
         self.renderer.print_markdown(execution_result)
 
     async def _prompt_plan_execution(self) -> bool:
@@ -646,10 +654,12 @@ class REPL:
         self.agent.register_callback("interaction", self._handle_interaction)
 
         try:
-            result_text = await self.agent._run_act_mode(
-                task=task,
-                stream=True,
-                preserve_context=True,
+            result_text = await self._run_with_spinner(
+                self.agent._run_act_mode(
+                    task=task,
+                    stream=True,
+                    preserve_context=True,
+                )
             )
             if result_text:
                 self.renderer.print_markdown(result_text)
@@ -806,6 +816,36 @@ class REPL:
                 "display": ", ".join(labels),
             }
 
+    async def _run_with_spinner(self, coro):
+        """Run a coroutine while showing a spinner with elapsed time."""
+        import time
+
+        start = time.time()
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        async def spin():
+            i = 0
+            while True:
+                elapsed = time.time() - start
+                frame = frames[i % len(frames)]
+                sys.stderr.write(f"\r  {frame} Working... ({elapsed:.0f}s)")
+                sys.stderr.flush()
+                i += 1
+                await asyncio.sleep(0.1)
+
+        spinner_task = asyncio.create_task(spin())
+        try:
+            result = await coro
+            return result
+        finally:
+            spinner_task.cancel()
+            try:
+                await spinner_task
+            except asyncio.CancelledError:
+                pass
+            sys.stderr.write("\r" + " " * 40 + "\r")
+            sys.stderr.flush()
+
     async def _execute_task(self, task: str) -> None:
         """Execute a task with streaming output."""
         import traceback
@@ -815,7 +855,7 @@ class REPL:
 
         print()
         try:
-            result = await self.agent.run(task)
+            result = await self._run_with_spinner(self.agent.run(task))
             print()
             if result is None:
                 self.renderer.print_error("Task returned None - check logs for details")
