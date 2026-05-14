@@ -292,6 +292,7 @@ class REPL:
 
         self.running = True
         self.current_task: str = ""
+        self._last_ctrl_c: float = 0.0
 
     def _get_command_handlers(self) -> dict[str, Callable[[str], Any]]:
         """Return canonical slash command handlers."""
@@ -372,10 +373,18 @@ class REPL:
                 if not user_input:
                     continue
 
+                self._last_ctrl_c = 0.0
                 await self._handle_input(user_input)
 
             except KeyboardInterrupt:
                 print()
+                import time
+                now = time.time()
+                if self._last_ctrl_c > 0 and (now - self._last_ctrl_c) < 2.0:
+                    self.running = False
+                    break
+                self._last_ctrl_c = now
+                self.renderer.print("[yellow]Press Ctrl+C again to exit[/yellow]")
                 continue
             except EOFError:
                 self.running = False
@@ -559,6 +568,10 @@ class REPL:
             )
             if result_text:
                 self.renderer.print_markdown(result_text)
+        except KeyboardInterrupt:
+            print()
+            self.renderer.print("[yellow]Skill execution cancelled[/yellow]")
+            raise
         except Exception as e:
             self.renderer.print_error(f"Skill execution failed: {type(e).__name__}: {e}")
 
@@ -685,6 +698,10 @@ class REPL:
                 self.renderer.print_error("Task returned None - check logs for details")
             else:
                 self.renderer.print_markdown(result)
+        except KeyboardInterrupt:
+            print()
+            self.renderer.print("[yellow]Task cancelled[/yellow]")
+            raise
         except Exception as e:
             print()
             error_msg = f"Exception during task execution: {type(e).__name__}: {e}"
