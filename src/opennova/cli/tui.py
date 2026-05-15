@@ -116,7 +116,8 @@ class OpenNovaTUI(App):
         self._start_time: float = 0.0
         self._last_ctrl_c: float = 0.0
         # Guard against duplicate Submitted events from a single Enter press
-        self._last_submitted_id: int = 0
+        self._last_submitted_text: str = ""
+        self._last_submitted_time: float = 0.0
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -239,20 +240,25 @@ class OpenNovaTUI(App):
         # Stop event propagation to prevent duplicate handling
         event.stop()
 
-        # De-duplicate: Textual can fire Submitted more than once for a
-        # single Enter press due to event bubbling.  We use the monotonic
-        # id() of the event object — but since that can be recycled we
-        # also use a simple timestamp guard: ignore two events within 50ms.
-        now_ns = time.monotonic_ns()
-        if (now_ns - self._last_submitted_id) < 50_000_000:  # 50 ms
-            return
-        self._last_submitted_id = now_ns
-
         text = event.value.strip()
         if not text:
             return
 
-        # Immediately clear input to prevent re-submission of same text
+        # Text-based de-dup: Textual can fire Submitted more than once for a
+        # single Enter press due to event bubbling, and event.value is captured
+        # at post time so clearing the widget has no effect on duplicate events.
+        now = time.monotonic()
+        if text == self._last_submitted_text and (now - self._last_submitted_time) < 0.3:
+            return
+        self._last_submitted_text = text
+        self._last_submitted_time = now
+
+        # Don't process new tasks while agent is running.
+        if self._running:
+            self._set_status("[yellow]Agent is busy, please wait...[/yellow]")
+            return
+
+        # Clear input and proceed.
         input_widget = self.query_one("#input", Input)
         input_widget.value = ""
 
@@ -262,12 +268,6 @@ class OpenNovaTUI(App):
         if self._interaction_mode:
             if self._interaction_future and not self._interaction_future.done():
                 self._interaction_future.set_result(text)
-            return
-
-        # Don't process new tasks while agent is running.
-        if self._running:
-            log = self.query_one("#messages", RichLog)
-            log.write("[dim]Agent is busy, please wait...[/dim]")
             return
 
         self._add_to_history(text)
