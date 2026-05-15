@@ -148,7 +148,6 @@ class OpenNovaTUI(App):
         """Ensure input always has focus."""
         try:
             inp = self.query_one("#input", Input)
-            inp.disabled = False
             inp.focus()
         except Exception:
             pass
@@ -190,7 +189,7 @@ class OpenNovaTUI(App):
 
     def action_cancel(self) -> None:
         """Cancel the running agent task, or double-press to exit."""
-        if self._running and self._agent_task and not self._agent_task.done():
+        if self._is_agent_running():
             self._agent_task.cancel()
             self._set_status("[yellow]Cancelling...[/yellow]")
             return
@@ -233,20 +232,23 @@ class OpenNovaTUI(App):
         except Exception:
             pass
         self._completion_state = {}
+        
+    def _is_agent_running(self) -> bool:
+        """Return True when an agent task is running or being set up."""
+        if self._running:
+            return True
+        return self._agent_task is not None and not self._agent_task.done()
     
     # ── input dispatch ───────────────────────────────────────────
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Stop event propagation to prevent duplicate handling
         event.stop()
 
         text = event.value.strip()
         if not text:
             return
 
-        # Text-based de-dup: Textual can fire Submitted more than once for a
-        # single Enter press due to event bubbling, and event.value is captured
-        # at post time so clearing the widget has no effect on duplicate events.
+        # Text-based de-dup
         now = time.monotonic()
         if text == self._last_submitted_text and (now - self._last_submitted_time) < 0.3:
             return
@@ -254,14 +256,13 @@ class OpenNovaTUI(App):
         self._last_submitted_time = now
 
         # Don't process new tasks while agent is running.
-        if self._running:
+        if self._is_agent_running():
             self._set_status("[yellow]Agent is busy, please wait...[/yellow]")
             return
 
-        # Clear input and proceed.
+        # Clear input and echo user message.
         input_widget = self.query_one("#input", Input)
         input_widget.value = ""
-
         self._clear_suggestions()
 
         # Interaction mode: answer is routed to the pending future.
@@ -272,21 +273,21 @@ class OpenNovaTUI(App):
 
         self._add_to_history(text)
 
-        # Echo user message to the chat area.
         log = self.query_one("#messages", RichLog)
         log.write(f"[bold]You:[/bold] {text}")
         log.scroll_end(animate=False)
 
-        # Yield one frame so the message renders before we disable input
-        await asyncio.sleep(0)
-
+        # Fast commands: handle synchronously (they return quickly).
         if text.startswith("/"):
-            await self._handle_command(text)
+            cmd = text.split(maxsplit=1)[0].lower().replace("_", "-")
+            if cmd in self._SYNC_COMMANDS:
+                await self._handle_command(text)
+                self._focus_input()
+                return
+            # Agent commands: launch in background so Textual can refresh UI.
+            self._launch_agent_task(self._handle_command(text))
         else:
-            await self._execute_task(text)
-
-        # Ensure focus returns to input after dispatch.
-        self._focus_input()
+            self._launch_agent_task(self._execute_task(text))
 
     # NOTE: We intentionally do NOT define key_enter().
     # Textual's Input widget natively fires Input.Submitted on Enter.
@@ -309,6 +310,21 @@ class OpenNovaTUI(App):
         "/quit": "_cmd_exit",
         "/history": "_cmd_history",
     }
+
+    # Commands that return quickly and can be awaited synchronously
+    _SYNC_COMMANDS: set[str] = {
+        "/help", "/tools", "/skills", "/model", "/config",
+        "/clear", "/exit", "/quit", "/history", "/reload-skills",
+    }
+
+    def _launch_agent_task(self, coro) -> None:
+        """Launch a coroutine as a background task so Textual can refresh UI."""
+        async def _runner() -> None:
+            try:
+                await coro
+            except Exception:
+                self._reset_input_state()
+        asyncio.create_task(_runner())
 
     async def _handle_command(self, text: str) -> None:
         parts = text.split(maxsplit=1)
