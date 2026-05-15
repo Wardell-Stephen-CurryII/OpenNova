@@ -257,6 +257,223 @@ class OpenNovaTUI(App):
             return
         await self._execute_task(args)
 
+    async def _cmd_tools(self, args: str) -> None:
+        log = self.query_one("#messages", RichLog)
+        table = Table(title="Available Tools")
+        table.add_column("Tool Name", style="cyan")
+        for tool in sorted(self.agent.get_tools()):
+            table.add_row(tool)
+        log.write(table)
+
+    async def _cmd_skills(self, args: str) -> None:
+        log = self.query_one("#messages", RichLog)
+        skill_registry = getattr(self.agent, "skill_registry", None)
+        if not skill_registry:
+            log.write("[yellow]No skills loaded.[/yellow]")
+            return
+
+        table = Table(title="Loaded Skills")
+        table.add_column("Name", style="cyan")
+        table.add_column("Description")
+        names = skill_registry.list_skills()
+        if not names:
+            log.write("[yellow]No skills loaded.[/yellow]")
+            return
+
+        for name in sorted(names):
+            info = skill_registry.get_skill_info(name) or {}
+            table.add_row(name, info.get("description", ""))
+        log.write(table)
+
+    async def _cmd_skill(self, args: str) -> None:
+        if not args:
+            log = self.query_one("#messages", RichLog)
+            log.write("[red]Usage: /skill <name> [args][/red]")
+            return
+
+        parts = args.split(maxsplit=1)
+        skill_name = parts[0]
+        skill_args = parts[1] if len(parts) > 1 else ""
+
+        result = self.agent.invoke_skill(skill_name=skill_name, skill_args=skill_args, caller="user")
+        if not result.success:
+            log = self.query_one("#messages", RichLog)
+            log.write(f"[red]{result.error or 'Failed to invoke skill'}[/red]")
+            return
+
+        skill_prompt = result.metadata.get("skill_prompt", "")
+        if not skill_prompt:
+            log = self.query_one("#messages", RichLog)
+            log.write("[red]Skill prompt is empty[/red]")
+            return
+
+        log = self.query_one("#messages", RichLog)
+        log.write(f"[green]Invoked skill: {skill_name}[/green]")
+
+        from opennova.providers.base import Message
+
+        self.agent.context_manager.add_message(
+            Message(
+                role="user",
+                content=f"Invoked skill '{skill_name}':\n\n{skill_prompt}",
+            )
+        )
+
+        task = f"/skill {skill_name} {skill_args}".strip()
+        await self._execute_task(task)
+
+    async def _cmd_reload_skills(self, args: str) -> None:
+        count = self.agent.reload_skills()
+        log = self.query_one("#messages", RichLog)
+        log.write(f"[green]Reloaded {count} skills.[/green]")
+
+    async def _cmd_model(self, args: str) -> None:
+        log = self.query_one("#messages", RichLog)
+        info = self.agent.get_model_info()
+        table = Table(title="Model Information")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value")
+        for key, value in info.items():
+            table.add_row(key, str(value))
+        log.write(table)
+
+    async def _cmd_config(self, args: str) -> None:
+        import yaml
+
+        log = self.query_one("#messages", RichLog)
+        if not self.config:
+            log.write("[red]No configuration object available.[/red]")
+            return
+        if self.config.config_path:
+            log.write(f"[cyan]Config path:[/cyan] {self.config.config_path}")
+        log.write(
+            Syntax(
+                yaml.dump(self.config.data, default_flow_style=False, sort_keys=False),
+                "yaml",
+                theme="monokai",
+            )
+        )
+
+    async def _cmd_clear(self, args: str) -> None:
+        self.agent.clear_conversation()
+        log = self.query_one("#messages", RichLog)
+        log.write("[green]Conversation cleared.[/green]")
+
+    async def _cmd_history(self, args: str) -> None:
+        log = self.query_one("#messages", RichLog)
+        context_manager = getattr(self.agent, "context_manager", None)
+        if not context_manager:
+            log.write("[yellow]No conversation history.[/yellow]")
+            return
+
+        history = context_manager.get_conversation_history()
+        if args:
+            try:
+                limit = int(args)
+                history = history[-limit:] if limit > 0 else history
+            except ValueError:
+                log.write("[red]Usage: /history [n][/red]")
+                return
+
+        if not history:
+            log.write("[yellow]No conversation history.[/yellow]")
+            return
+
+        table = Table(title="Conversation History")
+        table.add_column("Role", style="cyan")
+        table.add_column("Content")
+        for entry in history:
+            table.add_row(
+                entry.get("role", ""),
+                (entry.get("content", "") or "")[:120],
+            )
+        log.write(table)
+
+    async def _cmd_plan(self, args: str) -> None:
+        log = self.query_one("#messages", RichLog)
+        if not args:
+            log.write("[red]Usage: /plan <task>[/red]")
+            return
+
+        log.write(f"[yellow]Planning: {args}[/yellow]")
+
+        def on_plan(plan, plan_file_path=None):
+            log = self.query_one("#messages", RichLog)
+            table = Table(title=f"Plan: {plan.task}")
+            table.add_column("Step", style="cyan")
+            table.add_column("Description")
+            table.add_column("Status", justify="center")
+            status_icons = {"pending": "⏳", "running": "🔄", "done": "✅", "failed": "❌", "skipped": "⏭️"}
+            for step in plan.steps:
+                icon = status_icons.get(step.status.value, "❓")
+                table.add_row(step.id, step.description, icon)
+            log.write(table)
+            if plan_file_path:
+                log.write(f"[green]Plan saved to:[/green] {plan_file_path}")
+
+        self.agent.register_callback("plan", on_plan)
+
+        result = await self.agent.run(args, mode="plan")
+        log.write(Markdown(result))
+
+        # Ask for plan approval
+        log.write("[cyan]Execute this plan now? [y/N][/cyan]")
+        self._interaction_mode = True
+        input_widget = self.query_one("#input", Input)
+        input_widget.disabled = False
+        input_widget.placeholder = "Execute this plan now? [y/N]: "
+        input_widget.focus()
+
+        loop = asyncio.get_running_loop()
+        self._interaction_future = loop.create_future()
+        try:
+            answer = await self._interaction_future
+        finally:
+            self._interaction_future = None
+            self._interaction_mode = False
+            input_widget.disabled = True
+            input_widget.placeholder = "Working..."
+
+        if answer.strip().lower() not in {"y", "yes"}:
+            log.write("[yellow]Plan kept for later execution.[/yellow]")
+            return
+
+        self.agent.state.mark_plan_approved()
+        self._register_callbacks()
+        self.agent.register_callback("interaction", self._handle_interaction)
+        log.write("[cyan]Executing approved plan...[/cyan]")
+
+        self._running = True
+        self._start_time = time.time()
+        self._agent_task = asyncio.create_task(self.agent.execute_approved_plan())
+
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        try:
+            while not self._agent_task.done():
+                elapsed = time.time() - self._start_time
+                frame = frames[i % len(frames)]
+                self._set_status(f"  {frame} Working... ({elapsed:.0f}s)")
+                i += 1
+                await asyncio.sleep(0.1)
+
+            plan_result = self._agent_task.result()
+            self._set_status("")
+            if plan_result:
+                log.write(Markdown(plan_result))
+        except asyncio.CancelledError:
+            self._set_status("")
+            log.write("[yellow]Plan execution cancelled[/yellow]")
+        except Exception as e:
+            self._set_status("")
+            log.write(f"[red]Error: {type(e).__name__}: {e}[/red]")
+        finally:
+            self._running = False
+            self._agent_task = None
+            input_widget.disabled = False
+            input_widget.placeholder = "Type a message or /command..."
+            input_widget.focus()
+
     # ── task execution ───────────────────────────────────────────
 
     async def _execute_task(self, task: str) -> None:
