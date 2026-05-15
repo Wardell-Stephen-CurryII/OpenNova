@@ -320,7 +320,7 @@ class OpenNovaTUI(App):
         )
 
         task = f"/skill {skill_name} {skill_args}".strip()
-        await self._execute_task(task)
+        await self._execute_task(task, preserve_context=True)
 
     async def _cmd_reload_skills(self, args: str) -> None:
         count = self.agent.reload_skills()
@@ -476,7 +476,7 @@ class OpenNovaTUI(App):
 
     # ── task execution ───────────────────────────────────────────
 
-    async def _execute_task(self, task: str) -> None:
+    async def _execute_task(self, task: str, preserve_context: bool = False) -> None:
         self._running = True
         self._start_time = time.time()
         self._register_callbacks()
@@ -486,7 +486,12 @@ class OpenNovaTUI(App):
         input_widget.disabled = True
         input_widget.placeholder = "Working..."
 
-        self._agent_task = asyncio.create_task(self.agent.run(task))
+        if preserve_context:
+            self._agent_task = asyncio.create_task(
+                self.agent._run_act_mode(task=task, stream=True, preserve_context=True)
+            )
+        else:
+            self._agent_task = asyncio.create_task(self.agent.run(task))
 
         frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         i = 0
