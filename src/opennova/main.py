@@ -68,6 +68,11 @@ def main(ctx: click.Context, config_path: Optional[str]) -> None:
 @click.option("--model", "-m", "model", help="Override model to use.")
 @click.option("--provider", help="Override provider to use.")
 @click.option("--no-stream", is_flag=True, help="Disable streaming output.")
+@click.option(
+    "--no-tui",
+    is_flag=True,
+    help="Use the original line-based REPL instead of the TUI.",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -76,11 +81,12 @@ def run(
     model: Optional[str],
     provider: Optional[str],
     no_stream: bool,
+    no_tui: bool,
 ) -> None:
     """
     Run OpenNova agent on a task.
 
-    If no task is provided, starts interactive REPL mode.
+    If no task is provided, starts interactive TUI mode.
 
     Examples:
 
@@ -94,8 +100,12 @@ def run(
 
     if task:
         asyncio.run(_run_single_task(config, task, plan, not no_stream))
-    else:
+    elif no_tui:
         asyncio.run(run_repl(config))
+    else:
+        from opennova.cli.tui import run_tui
+
+        asyncio.run(run_tui(config))
 
 
 @main.command()
