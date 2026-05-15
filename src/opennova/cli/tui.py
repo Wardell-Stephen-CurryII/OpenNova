@@ -70,6 +70,11 @@ class OpenNovaTUI(App):
     RichLog {
         scrollbar-size: 1 1;
     }
+
+    RichLog:focus {
+        /* Prevent RichLog from visually showing focus */
+        border: none;
+    }
     """
 
     BINDINGS = [
@@ -109,7 +114,14 @@ class OpenNovaTUI(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Container(id="messages-container"):
-            yield RichLog(id="messages", highlight=True, markup=True, wrap=True, max_lines=10000)
+            yield RichLog(
+                id="messages",
+                highlight=True,
+                markup=True,
+                wrap=True,
+                max_lines=10000,
+                can_focus=False,
+            )
         with Container(id="status-bar"):
             yield Label(id="status-text", markup=False)
         with Container(id="input-container"):
@@ -122,7 +134,15 @@ class OpenNovaTUI(App):
     def on_mount(self) -> None:
         self._load_history()
         self._show_welcome()
-        self.query_one("#input", Input).focus()
+        # Defer focus so it sticks after layout settles.
+        self.call_after_refresh(self._focus_input)
+
+    def _focus_input(self) -> None:
+        """Ensure input always has focus."""
+        try:
+            self.query_one("#input", Input).focus()
+        except Exception:
+            pass
 
     # ── welcome ──────────────────────────────────────────────────
 
@@ -183,6 +203,9 @@ class OpenNovaTUI(App):
             await self._handle_command(text)
         else:
             await self._execute_task(text)
+
+        # Ensure focus returns to input after dispatch.
+        self._focus_input()
 
     # ── command dispatch ─────────────────────────────────────────
 
