@@ -24,7 +24,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import Footer, Header, Input, Label, TextArea
+from textual.widgets import Footer, Header, Input, Label, RichLog, TextArea
 
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
@@ -35,74 +35,68 @@ from opennova.tools.base import ToolResult
 _SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 
 
-class _MessagesLog(TextArea):
-    """Read-only TextArea for selectable, copyable message display.
+class _MessagesLog(RichLog):
+    """RichLog with a parallel plain-text buffer for copy-mode support."""
 
-    Strips Rich markup, appends plain text. Supports mouse selection and copy.
-    """
-
-    _MAX_LINES = 10000
+    can_focus = False
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(
-            read_only=True,
-            show_line_numbers=False,
-            soft_wrap=True,
-            **kwargs,
-        )
-        self._line_count: int = 0
+        super().__init__(**kwargs)
+        self._plain_lines: list[str] = []
 
-    def _to_plain(self, text: Any) -> str:
-        """Convert Rich renderables / markup strings to plain text."""
-        try:
-            if isinstance(text, Text):
-                return text.plain
-            if hasattr(text, "__rich_console__") or hasattr(text, "__rich__"):
-                from rich.console import Console as RichConsole
-                console = RichConsole(no_color=True, width=120)
-                with console.capture() as capture:
-                    console.print(text)
-                return capture.get()
-            if isinstance(text, str):
-                return Text.from_markup(text).plain
-            return str(text)
-        except Exception:
-            return str(text)
-
-    def write(self, text: Any, **_: Any) -> None:
-        """Append *text* on its own line, stripping Rich markup to plain text."""
-        plain = self._to_plain(text)
-        if not plain.endswith("\n"):
-            plain += "\n"
-        current = self.text
-        self.load_text(current + plain)
-        self._line_count += 1
-        # Prune old lines
-        if self._line_count > self._MAX_LINES:
-            lines = self.text.split("\n")
-            trimmed = "\n".join(lines[-self._MAX_LINES:])
-            self.load_text(trimmed)
-            self._line_count = len(lines[-self._MAX_LINES:]) - 1
-
-    def write_no_newline(self, text: Any) -> None:
-        """Append *text* without adding a newline."""
-        plain = self._to_plain(text)
-        current = self.text
-        self.load_text(current + plain)
+    def write(self, text: Any, *args: Any, **kwargs: Any) -> None:
+        super().write(text, *args, **kwargs)
+        self._plain_lines.append(_to_plain(text))
 
     def clear_messages(self) -> None:
-        """Clear all message text."""
-        self.load_text("")
-        self._line_count = 0
+        self.clear()
+        self._plain_lines.clear()
+
+    def get_plain_text(self) -> str:
+        return "\n".join(self._plain_lines)
+
+
+def _to_plain(text: Any) -> str:
+    """Convert Rich renderables / markup strings to plain text (no ANSI codes)."""
+    try:
+        if isinstance(text, Text):
+            return text.plain
+        if hasattr(text, "__rich_console__") or hasattr(text, "__rich__"):
+            from rich.console import Console as RichConsole
+            console = RichConsole(no_color=True, width=120, force_terminal=False)
+            with console.capture() as capture:
+                console.print(text)
+            import re
+            # Strip any residual ANSI escape sequences
+            return re.sub(r'\x1b\[[0-9;]*m', '', capture.get()).rstrip("\n")
+        if isinstance(text, str):
+            return Text.from_markup(text).plain
+        return str(text)
+    except Exception:
+        return str(text)
 
 
 class OpenNovaTUI(App):
     """Textual TUI application for OpenNova with split-pane layout."""
 
     CSS = """
+    #messages-area {
+        height: 1fr;
+    }
+
     #messages {
         height: 1fr;
         overflow-y: auto;
+    }
+
+    #copy-overlay {
+        display: none;
+        height: 1fr;
+        border: thick $accent;
+    }
+
+    #copy-overlay.visible {
+        display: block;
     }
 
     #input-container {
@@ -129,11 +123,16 @@ class OpenNovaTUI(App):
     #status-text {
         width: 100%;
     }
+
+    RichLog {
+        scrollbar-size: 1 1;
+    }
     """
 
     BINDINGS = [
         Binding("ctrl+c", "cancel", "Cancel", show=True),
         Binding("ctrl+d", "quit_app", "Quit", show=True),
+        Binding("ctrl+y", "toggle_copy_mode", "Copy Mode", show=True),
         Binding("up", "history_prev", "Previous", show=False),
         Binding("down", "history_next", "Next", show=False),
         Binding("tab", "complete", "Complete", show=False, priority=True),
@@ -173,7 +172,20 @@ class OpenNovaTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield _MessagesLog(id="messages")
+        with Container(id="messages-area"):
+            yield _MessagesLog(
+                id="messages",
+                highlight=True,
+                markup=True,
+                wrap=True,
+                max_lines=10000,
+            )
+            yield TextArea(
+                id="copy-overlay",
+                read_only=True,
+                show_line_numbers=False,
+                soft_wrap=True,
+            )
         with Container(id="status-bar"):
             yield Label(id="status-text", markup=False)
         with Container(id="input-container"):
@@ -1056,7 +1068,41 @@ class OpenNovaTUI(App):
         input_widget.cursor_position = len(input_widget.value)
 
     def action_focus_input(self) -> None:
+        self._hide_copy_overlay()
         self._focus_input()
+
+    def action_toggle_copy_mode(self) -> None:
+        """Toggle the copy-mode TextArea overlay."""
+        try:
+            overlay = self.query_one("#copy-overlay", TextArea)
+        except Exception:
+            return
+
+        if "visible" in overlay.classes:
+            self._hide_copy_overlay()
+        else:
+            self._show_copy_overlay()
+
+    def _show_copy_overlay(self) -> None:
+        """Populate the copy overlay with plain text and show it."""
+        try:
+            log = self.query_one("#messages", RichLog)
+            overlay = self.query_one("#copy-overlay", TextArea)
+            # RichLog doesn't have get_plain_text, use _MessagesLog
+            text = log.get_plain_text()
+            overlay.load_text(text)
+            overlay.add_class("visible")
+            overlay.focus()
+        except Exception:
+            pass
+
+    def _hide_copy_overlay(self) -> None:
+        """Hide the copy overlay."""
+        try:
+            overlay = self.query_one("#copy-overlay", TextArea)
+            overlay.remove_class("visible")
+        except Exception:
+            pass
 
 async def run_tui(config: Config) -> None:
     """Launch the Textual TUI."""
