@@ -84,7 +84,7 @@ class OpenNovaTUI(App):
         Binding("ctrl+d", "quit_app", "Quit", show=True),
         Binding("up", "history_prev", "Previous", show=False),
         Binding("down", "history_next", "Next", show=False),
-        Binding("tab", "complete", "Complete", show=False),
+        Binding("tab", "complete", "Complete", show=False, priority=True),
         Binding("escape", "focus_input", "", show=False),
     ]
 
@@ -243,7 +243,17 @@ class OpenNovaTUI(App):
 
         state = self._completion_state
 
-        # If we have active matches, cycle to the next one
+        # If current text is one of our existing matches, keep cycling
+        if state and text in state.get("matches", []):
+            matches = state["matches"]
+            idx = (matches.index(text) + 1) % len(matches)
+            state["index"] = idx
+            input_widget.value = matches[idx]
+            input_widget.cursor_position = len(matches[idx])
+            self._show_suggestions(matches, idx)
+            return
+
+        # If the original query hasn't changed, cycle to the next match
         if state and state.get("text") == text:
             matches = state["matches"]
             if matches:
