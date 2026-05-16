@@ -135,7 +135,7 @@ class OpenNovaTUI(App):
                 id="input",
                 placeholder="Type a message or /command...",
             )
-            yield Label(id="suggestions", markup=False)
+            yield Label(id="suggestions", markup=True)
 
     def on_mount(self) -> None:
         self._load_history()
@@ -326,10 +326,12 @@ class OpenNovaTUI(App):
         return matches
 
     def _show_suggestions(self, matches: list[str], current_idx: int) -> None:
-        """Display completion matches in the suggestions label."""
+        """Display completion matches in the suggestions label.
+
+        current_idx < 0 means no highlight (real-time hint mode).
+        """
         try:
             label = self.query_one("#suggestions", Label)
-            # Show up to 8 matches, highlight current
             display = matches[:8]
             if current_idx >= len(display):
                 current_idx = 0
@@ -349,6 +351,19 @@ class OpenNovaTUI(App):
         return self._agent_task is not None and not self._agent_task.done()
     
     # ── input dispatch ───────────────────────────────────────────
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Show completion hints in real-time as the user types."""
+        text = event.value
+        if not text:
+            self._clear_suggestions()
+            return
+
+        matches = self._get_completions(text)
+        if matches:
+            self._show_suggestions(matches, -1)
+        else:
+            self._clear_suggestions()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
