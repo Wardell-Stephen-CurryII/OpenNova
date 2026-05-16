@@ -649,6 +649,8 @@ class OpenNovaTUI(App):
     def _register_callbacks(self) -> None:
         _current_tool: dict[str, str] = {"name": ""}
 
+        _stream_buffer: list[str] = [""]  # mutable so closure can reassign
+
         def on_thought(thought: str) -> None:
             try:
                 log = self.query_one("#messages", RichLog)
@@ -689,8 +691,21 @@ class OpenNovaTUI(App):
             try:
                 log = self.query_one("#messages", RichLog)
                 if chunk.content:
-                    log.write(chunk.content)
+                    content = chunk.content
+                    # Buffer content and write only on natural line breaks
+                    # to avoid each tiny chunk becoming its own RichLog line.
+                    combined = _stream_buffer[0] + content
+                    lines = combined.split("\n")
+                    # Write all complete lines; keep the last (possibly partial) line in buffer
+                    for line in lines[:-1]:
+                        if line:
+                            log.write(line)
+                    _stream_buffer[0] = lines[-1]
                 if chunk.finish_reason:
+                    # Flush any remaining buffered content
+                    if _stream_buffer[0]:
+                        log.write(_stream_buffer[0])
+                        _stream_buffer[0] = ""
                     log.write("")
             except Exception:
                 pass
