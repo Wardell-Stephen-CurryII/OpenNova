@@ -108,7 +108,7 @@ class OpenNovaTUI(App):
         self._history_index: int = -1
         self._saved_input: str = ""
 
-        self._running: bool = False
+        self._task_active: bool = False
         self._agent_task: asyncio.Task | None = None
         self._interaction_future: asyncio.Future | None = None
         self._interaction_mode: bool = False
@@ -214,7 +214,7 @@ class OpenNovaTUI(App):
         Called in every finally block and can also be called as an
         emergency recovery so the UI never gets permanently stuck.
         """
-        self._running = False
+        self._task_active = False
         self._agent_task = None
         self._set_status("")
         try:
@@ -235,8 +235,6 @@ class OpenNovaTUI(App):
         
     def _is_agent_running(self) -> bool:
         """Return True when an agent task is running or being set up."""
-        if self._running:
-            return True
         return self._agent_task is not None and not self._agent_task.done()
     
     # ── input dispatch ───────────────────────────────────────────
@@ -597,7 +595,7 @@ class OpenNovaTUI(App):
 
         Returns the result string or None.
         """
-        self._running = True
+        self._task_active = True
         self._start_time = time.time()
 
         try:
@@ -693,7 +691,7 @@ class OpenNovaTUI(App):
             try:
                 log = self.query_one("#messages", RichLog)
                 if chunk.content:
-                    log.write(chunk.content, markup=False)
+                    log.write(chunk.content)
                 if chunk.finish_reason:
                     log.write("")
             except Exception:
