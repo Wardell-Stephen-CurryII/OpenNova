@@ -46,11 +46,10 @@ class OpenNovaTUI(App):
     CSS = """
     #messages {
         height: 1fr;
-        dock: top;
+        overflow-y: auto;
     }
 
     #input-container {
-        dock: bottom;
         height: auto;
         padding: 0 1;
         margin-bottom: 1;
@@ -67,7 +66,6 @@ class OpenNovaTUI(App):
     }
 
     #status-bar {
-        dock: bottom;
         height: 1;
         background: $surface;
     }
