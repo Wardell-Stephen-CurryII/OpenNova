@@ -230,7 +230,110 @@ class OpenNovaTUI(App):
         except Exception:
             pass
         self._completion_state = {}
-        
+
+    # ── tab completion ────────────────────────────────────────────
+
+    def action_complete(self) -> None:
+        """Tab completion: cycle through matching slash commands or history entries."""
+        try:
+            input_widget = self.query_one("#input", Input)
+        except Exception:
+            return
+        text = input_widget.value
+
+        state = self._completion_state
+
+        # If we have active matches, cycle to the next one
+        if state and state.get("text") == text:
+            matches = state["matches"]
+            if matches:
+                idx = (state["index"] + 1) % len(matches)
+                state["index"] = idx
+                input_widget.value = matches[idx]
+                input_widget.cursor_position = len(matches[idx])
+                self._show_suggestions(matches, idx)
+                return
+
+        # Find new completions
+        matches = self._get_completions(text)
+        if not matches:
+            self._clear_suggestions()
+            return
+
+        state.clear()
+        state["text"] = text
+        state["matches"] = matches
+        state["index"] = 0
+
+        input_widget.value = matches[0]
+        input_widget.cursor_position = len(matches[0])
+        self._show_suggestions(matches, 0)
+
+    def _get_completions(self, text: str) -> list[str]:
+        """Return matching completions for the given input text."""
+        stripped = text.lstrip()
+        if stripped.startswith("/"):
+            return self._slash_completions(stripped)
+        if stripped:
+            return self._history_completions(stripped)
+        return []
+
+    def _slash_completions(self, text: str) -> list[str]:
+        """Complete slash command names and skill names after /skill."""
+        # If after "/skill ", complete skill names
+        if text.startswith("/skill ") or text == "/skill":
+            skill_prefix = text[len("/skill"):].lstrip()
+            skills = self.agent.get_skills()
+            matches = [f"/skill {s}" for s in skills if s.startswith(skill_prefix)]
+            if skill_prefix:
+                matches = [f"/skill {s}" for s in skills if s.startswith(skill_prefix)]
+            else:
+                matches = [f"/skill {s}" for s in skills]
+            matches.sort()
+            return matches
+
+        # Complete slash command name (first word)
+        parts = text.split(maxsplit=1)
+        cmd_prefix = parts[0].replace("_", "-")
+        if len(parts) == 1 and not text.endswith(" "):
+            # Still typing the command name
+            all_cmds = list(self._COMMAND_MAP.keys())
+            matches = [c for c in all_cmds if c.startswith(cmd_prefix)]
+            matches.sort()
+            return matches
+        return []
+
+    def _history_completions(self, text: str) -> list[str]:
+        """Complete from command history — prefix match on full entries."""
+        seen: set[str] = set()
+        matches: list[str] = []
+        for entry in self._history_entries:
+            entry_stripped = entry.strip()
+            if entry_stripped.startswith(text) and entry_stripped != text:
+                if entry_stripped not in seen:
+                    seen.add(entry_stripped)
+                    matches.append(entry_stripped)
+        return matches
+
+    def _show_suggestions(self, matches: list[str], current_idx: int) -> None:
+        """Display completion matches in the suggestions label."""
+        try:
+            label = self.query_one("#suggestions", Label)
+            # Show up to 8 matches, highlight current
+            display = matches[:8]
+            if current_idx >= len(display):
+                current_idx = 0
+            parts: list[str] = []
+            for i, m in enumerate(display):
+                if i == current_idx:
+                    parts.append(f"[reverse]{m}[/reverse]")
+                else:
+                    parts.append(f"[dim]{m}[/dim]")
+            suffix = " …" if len(matches) > 8 else ""
+            label.update("  ".join(parts) + suffix)
+        except Exception:
+            pass
+
     def _is_agent_running(self) -> bool:
         """Return True when an agent task is running or being set up."""
         return self._agent_task is not None and not self._agent_task.done()
