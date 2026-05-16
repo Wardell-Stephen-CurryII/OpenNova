@@ -20,6 +20,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
@@ -35,9 +36,23 @@ _SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 
 
 class _MessagesLog(RichLog):
-    """RichLog subclass that cannot receive focus, so keystrokes always reach Input."""
+    """RichLog that allows text selection. Forwards typing keys to Input."""
 
-    can_focus = False
+    def _on_key(self, event: events.Key) -> None:
+        # Navigation / scroll / copy keys stay in RichLog
+        if event.key in (
+            "up", "down", "left", "right",
+            "pageup", "pagedown", "home", "end",
+            "ctrl+c", "ctrl+a",
+        ):
+            super()._on_key(event)
+            return
+        # Forward all other keystrokes to Input
+        try:
+            inp = self.screen.query_one("#input", Input)
+            inp.focus()
+        except Exception:
+            pass
 
 
 class OpenNovaTUI(App):
