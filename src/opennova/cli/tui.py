@@ -24,7 +24,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import Footer, Header, Input, Label, RichLog
+from textual.widgets import Footer, Header, Input, Label, TextArea
 
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
@@ -35,24 +35,65 @@ from opennova.tools.base import ToolResult
 _SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 
 
-class _MessagesLog(RichLog):
-    """RichLog that allows text selection. Forwards typing keys to Input."""
+class _MessagesLog(TextArea):
+    """Read-only TextArea for selectable, copyable message display.
 
-    def _on_key(self, event: events.Key) -> None:
-        # Navigation / scroll / copy keys stay in RichLog
-        if event.key in (
-            "up", "down", "left", "right",
-            "pageup", "pagedown", "home", "end",
-            "ctrl+c", "ctrl+a",
-        ):
-            super()._on_key(event)
-            return
-        # Forward all other keystrokes to Input
+    Strips Rich markup, appends plain text. Supports mouse selection and copy.
+    """
+
+    _MAX_LINES = 10000
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(
+            read_only=True,
+            show_line_numbers=False,
+            soft_wrap=True,
+            **kwargs,
+        )
+        self._line_count: int = 0
+
+    def _to_plain(self, text: Any) -> str:
+        """Convert Rich renderables / markup strings to plain text."""
         try:
-            inp = self.screen.query_one("#input", Input)
-            inp.focus()
+            if isinstance(text, Text):
+                return text.plain
+            if hasattr(text, "__rich_console__") or hasattr(text, "__rich__"):
+                from rich.console import Console as RichConsole
+                console = RichConsole(no_color=True, width=120)
+                with console.capture() as capture:
+                    console.print(text)
+                return capture.get()
+            if isinstance(text, str):
+                return Text.from_markup(text).plain
+            return str(text)
         except Exception:
-            pass
+            return str(text)
+
+    def write(self, text: Any, **_: Any) -> None:
+        """Append *text* on its own line, stripping Rich markup to plain text."""
+        plain = self._to_plain(text)
+        if not plain.endswith("\n"):
+            plain += "\n"
+        current = self.text
+        self.load_text(current + plain)
+        self._line_count += 1
+        # Prune old lines
+        if self._line_count > self._MAX_LINES:
+            lines = self.text.split("\n")
+            trimmed = "\n".join(lines[-self._MAX_LINES:])
+            self.load_text(trimmed)
+            self._line_count = len(lines[-self._MAX_LINES:]) - 1
+
+    def write_no_newline(self, text: Any) -> None:
+        """Append *text* without adding a newline."""
+        plain = self._to_plain(text)
+        current = self.text
+        self.load_text(current + plain)
+
+    def clear_messages(self) -> None:
+        """Clear all message text."""
+        self.load_text("")
+        self._line_count = 0
 
 
 class OpenNovaTUI(App):
@@ -87,10 +128,6 @@ class OpenNovaTUI(App):
 
     #status-text {
         width: 100%;
-    }
-
-    RichLog {
-        scrollbar-size: 1 1;
     }
     """
 
@@ -136,13 +173,7 @@ class OpenNovaTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield _MessagesLog(
-            id="messages",
-            highlight=True,
-            markup=True,
-            wrap=True,
-            max_lines=10000,
-        )
+        yield _MessagesLog(id="messages")
         with Container(id="status-bar"):
             yield Label(id="status-text", markup=False)
         with Container(id="input-container"):
@@ -179,7 +210,7 @@ class OpenNovaTUI(App):
     def _show_welcome(self) -> None:
         from opennova import __version__
 
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         for line in self._BANNER.split("\n"):
             log.write(f"[bold cyan]{line}[/bold cyan]")
         log.write("")
@@ -412,7 +443,7 @@ class OpenNovaTUI(App):
 
         self._add_to_history(text)
 
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         log.write(f"[bold]You:[/bold] {text}")
         log.scroll_end(animate=False)
 
@@ -475,13 +506,13 @@ class OpenNovaTUI(App):
             handler = getattr(self, method_name)
             await handler(args)
         else:
-            log = self.query_one("#messages", RichLog)
+            log = self.query_one("#messages")
             log.write(f"[red]Unknown command: {cmd}[/red]")
 
     # ── slash commands ───────────────────────────────────────────
 
     async def _cmd_help(self, args: str) -> None:
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         log.write(
             Markdown(
                 """
@@ -514,13 +545,13 @@ class OpenNovaTUI(App):
 
     async def _cmd_act(self, args: str) -> None:
         if not args:
-            log = self.query_one("#messages", RichLog)
+            log = self.query_one("#messages")
             log.write("[red]Usage: /act <task>[/red]")
             return
         await self._execute_task(args)
 
     async def _cmd_tools(self, args: str) -> None:
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         table = Table(title="Available Tools")
         table.add_column("Tool Name", style="cyan")
         for tool in sorted(self.agent.get_tools()):
@@ -528,7 +559,7 @@ class OpenNovaTUI(App):
         log.write(table)
 
     async def _cmd_skills(self, args: str) -> None:
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         skill_registry = getattr(self.agent, "skill_registry", None)
         if not skill_registry:
             log.write("[yellow]No skills loaded.[/yellow]")
@@ -549,7 +580,7 @@ class OpenNovaTUI(App):
 
     async def _cmd_skill(self, args: str) -> None:
         if not args:
-            log = self.query_one("#messages", RichLog)
+            log = self.query_one("#messages")
             log.write("[red]Usage: /skill <name> [args][/red]")
             return
 
@@ -561,17 +592,17 @@ class OpenNovaTUI(App):
             skill_name=skill_name, skill_args=skill_args, caller="user"
         )
         if not result.success:
-            log = self.query_one("#messages", RichLog)
+            log = self.query_one("#messages")
             log.write(f"[red]{result.error or 'Failed to invoke skill'}[/red]")
             return
 
         skill_prompt = result.metadata.get("skill_prompt", "")
         if not skill_prompt:
-            log = self.query_one("#messages", RichLog)
+            log = self.query_one("#messages")
             log.write("[red]Skill prompt is empty[/red]")
             return
 
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         log.write(f"[green]Invoked skill: {skill_name}[/green]")
 
         from opennova.providers.base import Message
@@ -588,11 +619,11 @@ class OpenNovaTUI(App):
 
     async def _cmd_reload_skills(self, args: str) -> None:
         count = self.agent.reload_skills()
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         log.write(f"[green]Reloaded {count} skills.[/green]")
 
     async def _cmd_model(self, args: str) -> None:
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         info = self.agent.get_model_info()
         table = Table(title="Model Information")
         table.add_column("Property", style="cyan")
@@ -604,7 +635,7 @@ class OpenNovaTUI(App):
     async def _cmd_config(self, args: str) -> None:
         import yaml
 
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         if not self.config:
             log.write("[red]No configuration object available.[/red]")
             return
@@ -620,11 +651,11 @@ class OpenNovaTUI(App):
 
     async def _cmd_clear(self, args: str) -> None:
         self.agent.clear_conversation()
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         log.write("[green]Conversation cleared.[/green]")
 
     async def _cmd_history(self, args: str) -> None:
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         context_manager = getattr(self.agent, "context_manager", None)
         if not context_manager:
             log.write("[yellow]No conversation history.[/yellow]")
@@ -654,7 +685,7 @@ class OpenNovaTUI(App):
         log.write(table)
 
     async def _cmd_plan(self, args: str) -> None:
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         if not args:
             log.write("[red]Usage: /plan <task>[/red]")
             return
@@ -663,7 +694,7 @@ class OpenNovaTUI(App):
 
         def on_plan(plan, plan_file_path=None):
             try:
-                _log = self.query_one("#messages", RichLog)
+                _log = self.query_one("#messages")
                 table = Table(title=f"Plan: {plan.task}")
                 table.add_column("Step", style="cyan")
                 table.add_column("Description")
@@ -741,7 +772,7 @@ class OpenNovaTUI(App):
 
         try:
             input_widget = self.query_one("#input", Input)
-            log = self.query_one("#messages", RichLog)
+            log = self.query_one("#messages")
 
             self._register_callbacks()
             self.agent.register_callback("interaction", self._handle_interaction)
@@ -796,7 +827,7 @@ class OpenNovaTUI(App):
 
         def on_thought(thought: str) -> None:
             try:
-                log = self.query_one("#messages", RichLog)
+                log = self.query_one("#messages")
                 log.write(Panel(thought, title="Thinking", border_style="yellow"))
             except Exception:
                 pass
@@ -804,7 +835,7 @@ class OpenNovaTUI(App):
         def on_action(tool_name: str, args: dict) -> None:
             _current_tool["name"] = tool_name
             try:
-                log = self.query_one("#messages", RichLog)
+                log = self.query_one("#messages")
                 args_str = ", ".join(f"{k}={repr(v)}" for k, v in args.items())
                 log.write(f"[cyan]Executing:[/cyan] {tool_name}({args_str})")
             except Exception:
@@ -814,7 +845,7 @@ class OpenNovaTUI(App):
             if _current_tool["name"] in _SUPPRESSED_RESULT_TOOLS:
                 return
             try:
-                log = self.query_one("#messages", RichLog)
+                log = self.query_one("#messages")
                 if result.success:
                     log.write("[green]Result:[/green]")
                 else:
@@ -832,7 +863,7 @@ class OpenNovaTUI(App):
 
         def on_stream(chunk: StreamChunk) -> None:
             try:
-                log = self.query_one("#messages", RichLog)
+                log = self.query_one("#messages")
                 if chunk.content:
                     content = chunk.content
                     # Buffer content and write only on natural line breaks
@@ -867,7 +898,7 @@ class OpenNovaTUI(App):
         free_text = payload.get("free_text", False)
         header = payload.get("header")
 
-        log = self.query_one("#messages", RichLog)
+        log = self.query_one("#messages")
         dialog_lines = [f"[bold]{question}[/bold]"]
         if header:
             dialog_lines.insert(0, f"[cyan][{header}][/cyan]")
@@ -938,7 +969,7 @@ class OpenNovaTUI(App):
 
     # ── diff display ─────────────────────────────────────────────
 
-    def _write_diff(self, log: RichLog, diff_text: str) -> None:
+    def _write_diff(self, log: _MessagesLog, diff_text: str) -> None:
         lines = diff_text.splitlines()
         if len(lines) > 120:
             lines = lines[:120]
@@ -948,16 +979,10 @@ class OpenNovaTUI(App):
 
         log.write("")
         for line in lines:
-            if line.startswith("---") or line.startswith("+++"):
-                log.write(Text(line, style="bold cyan"))
-            elif line.startswith("@@"):
-                log.write(Text(line, style="bold blue"))
-            elif line.startswith("+"):
-                log.write(Text(line, style="on green"))
-            elif line.startswith("-"):
-                log.write(Text(line, style="on red"))
+            if line.startswith("+") or line.startswith("-") or line.startswith("@@"):
+                log.write(line)
             else:
-                log.write(Text(line, style="dim"))
+                log.write(line)
 
         if truncated:
             log.write("[dim]... (diff truncated)[/dim]")
