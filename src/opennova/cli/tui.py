@@ -36,7 +36,7 @@ _SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 
 
 class _MessagesLog(RichLog):
-    """RichLog with a parallel plain-text buffer for copy-mode support."""
+    """RichLog that shows a selectable TextArea overlay when clicked."""
 
     can_focus = False
 
@@ -54,6 +54,41 @@ class _MessagesLog(RichLog):
 
     def get_plain_text(self) -> str:
         return "\n".join(self._plain_lines)
+
+    def on_click(self) -> None:
+        """Show the selectable text overlay when user clicks the message area."""
+        try:
+            self.app._show_copy_overlay()
+        except Exception:
+            pass
+
+
+class _CopyOverlay(TextArea):
+    """Selectable text overlay for copying message content."""
+
+    can_focus = True
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            try:
+                self.app.action_focus_input()
+            except Exception:
+                pass
+            return
+        if event.key == "ctrl+c":
+            # Let TextArea copy, then auto-dismiss
+            await super()._on_key(event)
+            try:
+                self.app.action_focus_input()
+            except Exception:
+                pass
+            return
+        # Forward all other keys to Input
+        await super()._on_key(event)
+        try:
+            self.app.query_one("#input", Input).focus()
+        except Exception:
+            pass
 
 
 def _to_plain(text: Any) -> str:
@@ -132,7 +167,6 @@ class OpenNovaTUI(App):
     BINDINGS = [
         Binding("ctrl+c", "cancel", "Cancel", show=True),
         Binding("ctrl+d", "quit_app", "Quit", show=True),
-        Binding("ctrl+y", "toggle_copy_mode", "Copy Mode", show=True),
         Binding("up", "history_prev", "Previous", show=False),
         Binding("down", "history_next", "Next", show=False),
         Binding("tab", "complete", "Complete", show=False, priority=True),
@@ -180,7 +214,7 @@ class OpenNovaTUI(App):
                 wrap=True,
                 max_lines=10000,
             )
-            yield TextArea(
+            yield _CopyOverlay(
                 id="copy-overlay",
                 read_only=True,
                 show_line_numbers=False,
@@ -1069,40 +1103,28 @@ class OpenNovaTUI(App):
 
     def action_focus_input(self) -> None:
         self._hide_copy_overlay()
-        self._focus_input()
-
-    def action_toggle_copy_mode(self) -> None:
-        """Toggle the copy-mode TextArea overlay."""
-        try:
-            overlay = self.query_one("#copy-overlay", TextArea)
-        except Exception:
-            return
-
-        if "visible" in overlay.classes:
-            self._hide_copy_overlay()
-        else:
-            self._show_copy_overlay()
 
     def _show_copy_overlay(self) -> None:
         """Populate the copy overlay with plain text and show it."""
         try:
             log = self.query_one("#messages", RichLog)
             overlay = self.query_one("#copy-overlay", TextArea)
-            # RichLog doesn't have get_plain_text, use _MessagesLog
-            text = log.get_plain_text()
-            overlay.load_text(text)
+            overlay.load_text(log.get_plain_text())
             overlay.add_class("visible")
             overlay.focus()
+            # Scroll to bottom so latest content is visible
+            overlay.move_cursor((0, 0))
         except Exception:
             pass
 
     def _hide_copy_overlay(self) -> None:
-        """Hide the copy overlay."""
+        """Hide the copy overlay and return focus to Input."""
         try:
             overlay = self.query_one("#copy-overlay", TextArea)
             overlay.remove_class("visible")
         except Exception:
             pass
+        self._focus_input()
 
 async def run_tui(config: Config) -> None:
     """Launch the Textual TUI."""
