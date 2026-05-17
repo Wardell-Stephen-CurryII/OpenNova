@@ -101,7 +101,7 @@ class ReActLoop:
         self.iteration_start_callback = iteration_start_callback
         self.interaction_callback = interaction_callback
         self.skill_registry = skill_registry
-        self.context_manager = context_manager or ContextManager(model=llm.model)
+        self.context_manager = context_manager if context_manager is not None else ContextManager(model=llm.model)
         self.working_memory = working_memory
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None

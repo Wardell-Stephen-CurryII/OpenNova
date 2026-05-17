@@ -327,7 +327,9 @@ class AgentRuntime:
             Final result string
         """
         plan = await self._create_plan(task)
-        return self._prepare_plan_for_approval(plan)
+        result = self._prepare_plan_for_approval(plan)
+        self._save_session_messages()
+        return result
 
     def _prepare_plan_for_approval(self, plan: Plan) -> str:
         """Persist plan state and return an approval-gated response."""
@@ -596,6 +598,7 @@ class AgentRuntime:
         except Exception:
             self.working_memory.complete_task(success=False, error="Act mode execution failed")
             self._record_run_session(task, success=False, started_at=started_at)
+            self._save_session_messages()
             raise
 
         success = not (
@@ -645,8 +648,11 @@ class AgentRuntime:
 
     def _save_session_messages(self) -> None:
         """Persist all context messages to the current session JSONL file."""
-        for msg in self.context_manager.messages:
-            self.session_manager.save_message(msg)
+        try:
+            for msg in self.context_manager.messages:
+                self.session_manager.save_message(msg)
+        except Exception:
+            pass
 
     def resume_session(self, session_id: str) -> list[Any]:
         """Load a past session's messages into the context manager."""
