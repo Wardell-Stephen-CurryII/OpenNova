@@ -32,7 +32,7 @@ from opennova.runtime.agent import AgentRuntime
 from opennova.tools.base import ToolResult
 
 # Tool names whose results are not displayed (verbose file ops).
-_SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
+_SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file", "execute_command"}
 
 
 class _MessagesLog(RichLog):
