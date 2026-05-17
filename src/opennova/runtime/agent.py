@@ -75,6 +75,9 @@ class AgentRuntime:
         self.project_memory = ProjectMemory(project_path=os.getcwd())
         self.working_memory = WorkingMemory()
         self.context_manager = ContextManager(model=self.llm.model)
+        from opennova.session import SessionManager
+        self.session_manager = SessionManager(project_path=os.getcwd())
+        self.session_manager.start_session()
 
         self.loop: ReActLoop | None = None
         self._callbacks: dict[str, Callable] = {}
@@ -602,6 +605,7 @@ class AgentRuntime:
         )
         self.working_memory.complete_task(success=success, error=None if success else result)
         self._record_run_session(task, success=success, started_at=started_at)
+        self._save_session_messages()
         return result
 
     async def chat(self, message: str, stream: bool = True) -> str:
@@ -632,9 +636,34 @@ class AgentRuntime:
             return response.content
 
     def clear_conversation(self) -> None:
-        """Clear current conversation context and volatile runtime state."""
+        """Clear current conversation context and start a fresh session."""
+        self._save_session_messages()
         self.context_manager.clear()
         self.state.reset("")
+        self.session_manager.clear_session()
+        self.session_manager.start_session()
+
+    def _save_session_messages(self) -> None:
+        """Persist all context messages to the current session JSONL file."""
+        for msg in self.context_manager.messages:
+            self.session_manager.save_message(msg)
+
+    def resume_session(self, session_id: str) -> list[Any]:
+        """Load a past session's messages into the context manager."""
+        messages = self.session_manager.load_session(session_id)
+        self.context_manager.clear()
+        for msg in messages:
+            self.context_manager.add_message(msg)
+        # Start a new session and immediately save the resumed messages
+        self.session_manager.clear_session()
+        self.session_manager.start_session()
+        for msg in messages:
+            self.session_manager.save_message(msg)
+        return messages
+
+    def get_sessions(self) -> list[Any]:
+        """List all saved sessions for the current project."""
+        return self.session_manager.list_sessions()
 
     def get_state(self) -> AgentState:
         """Get current agent state."""

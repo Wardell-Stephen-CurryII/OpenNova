@@ -414,6 +414,8 @@ class REPL:
             "/exit": self._cmd_exit,
             "/quit": self._cmd_exit,
             "/history": self._cmd_history,
+            "/resume": self._cmd_resume,
+            "/sessions": self._cmd_sessions,
         }
 
     def _get_slash_commands(self) -> list[str]:
@@ -761,6 +763,57 @@ class REPL:
             return
 
         self.renderer.print_history(history)
+
+    async def _cmd_sessions(self, args: str) -> None:
+        """List all saved sessions."""
+        sessions = self.agent.get_sessions()
+        current_id = self.agent.session_manager.session_id
+        if not sessions:
+            self.renderer.print_warning("No saved sessions found for this project.")
+            return
+        self.renderer.print_info("Saved Sessions:")
+        from datetime import datetime
+        for s in sessions:
+            marker = " [bold](current)[/bold]" if s.session_id == current_id else ""
+            date_str = datetime.fromtimestamp(s.modified).strftime("%m-%d %H:%M")
+            prompt = (s.first_prompt or "-")[:80]
+            self.renderer.print(
+                f"  [cyan]{s.session_id[:8]}[/cyan]  {date_str}  "
+                f"msgs: {s.message_count}  {prompt}{marker}"
+            )
+        self.renderer.print_info("Use /resume <id> to restore a session.")
+
+    async def _cmd_resume(self, args: str) -> None:
+        """Resume a past session."""
+        if args:
+            session_id = args.strip()
+            sessions = self.agent.get_sessions()
+            matched = [s for s in sessions if s.session_id.startswith(session_id)]
+            if not matched:
+                self.renderer.print_error(f"Session '{session_id}' not found.")
+                return
+            if len(matched) > 1:
+                self.renderer.print_warning("Multiple matches, use a longer prefix:")
+                for s in matched:
+                    self.renderer.print(f"  {s.session_id[:16]}... - {s.first_prompt[:60]}")
+                return
+            session_id = matched[0].session_id
+        else:
+            sessions = self.agent.get_sessions()
+            current_id = self.agent.session_manager.session_id
+            sessions = [s for s in sessions if s.session_id != current_id]
+            if not sessions:
+                self.renderer.print_warning("No past sessions to resume.")
+                return
+            session_id = sessions[0].session_id
+
+        try:
+            messages = self.agent.resume_session(session_id)
+            self.renderer.print_success(
+                f"Resumed session {session_id[:8]} ({len(messages)} messages restored)."
+            )
+        except Exception as e:
+            self.renderer.print_error(f"Failed to resume session: {e}")
 
 
     async def _cmd_exit(self, args: str) -> None:

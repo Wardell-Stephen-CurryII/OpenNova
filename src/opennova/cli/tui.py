@@ -525,12 +525,15 @@ class OpenNovaTUI(App):
         "/exit": "_cmd_exit",
         "/quit": "_cmd_exit",
         "/history": "_cmd_history",
+        "/resume": "_cmd_resume",
+        "/sessions": "_cmd_sessions",
     }
 
     # Commands that return quickly and can be awaited synchronously
     _SYNC_COMMANDS: set[str] = {
         "/help", "/tools", "/skills", "/model", "/config",
         "/clear", "/exit", "/quit", "/history", "/reload-skills",
+        "/resume", "/sessions",
     }
 
     def _launch_agent_task(self, coro) -> None:
@@ -573,7 +576,9 @@ class OpenNovaTUI(App):
 - `/model` - Show current model info
 - `/config` - Show current configuration
 - `/history [n]` - Show recent conversation history
-- `/clear` - Clear conversation state
+- `/clear` - Clear conversation (starts a new session)
+- `/resume [id]` - Resume a past session (empty = pick from list)
+- `/sessions` - List all saved sessions
 - `/help` - Show this help
 - `/exit` - Exit
 
@@ -729,6 +734,66 @@ class OpenNovaTUI(App):
                 (entry.get("content", "") or "")[:120],
             )
         log.write(table)
+
+    async def _cmd_sessions(self, args: str) -> None:
+        log = self.query_one("#messages")
+        sessions = self.agent.get_sessions()
+        current_id = self.agent.session_manager.session_id
+        if not sessions:
+            log.write("[yellow]No saved sessions found for this project.[/yellow]")
+            return
+        table = Table(title="Saved Sessions")
+        table.add_column("ID", style="cyan")
+        table.add_column("First Prompt")
+        table.add_column("Messages", justify="right")
+        table.add_column("Date")
+        for s in sessions:
+            sid = s.session_id[:8]
+            if s.session_id == current_id:
+                sid = f"[bold]{sid}[/bold]"
+            prompt = (s.first_prompt or "—")[:80]
+            from datetime import datetime
+            date_str = datetime.fromtimestamp(s.modified).strftime("%m-%d %H:%M")
+            table.add_row(sid, prompt, str(s.message_count), date_str)
+        log.write(table)
+        log.write("[dim]Use /resume <id> to restore a session.[/dim]")
+
+    async def _cmd_resume(self, args: str) -> None:
+        log = self.query_one("#messages")
+        if args:
+            session_id = args.strip()
+            # Support partial ID matching
+            sessions = self.agent.get_sessions()
+            matched = [s for s in sessions if s.session_id.startswith(session_id)]
+            if not matched:
+                log.write(f"[red]Session '{session_id}' not found.[/red]")
+                return
+            if len(matched) > 1:
+                log.write("[yellow]Multiple matches, use a longer prefix:[/yellow]")
+                for s in matched:
+                    log.write(f"  [dim]{s.session_id[:16]}...[/dim] - {s.first_prompt[:60]}")
+                return
+            session_id = matched[0].session_id
+        else:
+            # No args: show picker (list recent sessions)
+            sessions = self.agent.get_sessions()
+            current_id = self.agent.session_manager.session_id
+            # Filter out current session
+            sessions = [s for s in sessions if s.session_id != current_id]
+            if not sessions:
+                log.write("[yellow]No past sessions to resume.[/yellow]")
+                return
+            # Auto-pick the most recent
+            session_id = sessions[0].session_id
+
+        try:
+            messages = self.agent.resume_session(session_id)
+            log.write(
+                f"[green]Resumed session [bold]{session_id[:8]}[/bold] "
+                f"({len(messages)} messages restored).[/green]"
+            )
+        except Exception as e:
+            log.write(f"[red]Failed to resume session: {e}[/red]")
 
     async def _cmd_plan(self, args: str) -> None:
         log = self.query_one("#messages")

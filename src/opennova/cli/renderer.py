@@ -80,7 +80,9 @@ class Renderer:
 | `/model` | Show current model info |
 | `/config` | Show current configuration |
 | `/history` | Show conversation history |
-| `/clear` | Clear conversation |
+| `/clear` | Clear conversation (starts new session) |
+| `/resume [id]` | Resume a past session |
+| `/sessions` | List all saved sessions |
 | `/help` | Show this help message |
 | `/exit` / `/quit` | Exit the REPL |
 

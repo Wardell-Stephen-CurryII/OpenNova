@@ -151,6 +151,58 @@ class Message:
 
         return msg
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize Message to a JSON-compatible dict."""
+        data: dict[str, Any] = {
+            "role": self.role,
+            "content": self.content,
+            "timestamp": self.timestamp.isoformat(),
+            "token_count": self.token_count,
+        }
+        if self.tool_calls:
+            data["tool_calls"] = [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments, "call_type": tc.call_type}
+                for tc in self.tool_calls
+            ]
+        if self.tool_call_id:
+            data["tool_call_id"] = self.tool_call_id
+        if self.name:
+            data["name"] = self.name
+        if self.reasoning_content:
+            data["reasoning_content"] = self.reasoning_content
+        return data
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "Message":
+        """Deserialize a Message from a dict."""
+        tool_calls = None
+        if "tool_calls" in data and data["tool_calls"]:
+            tool_calls = [
+                ToolCall(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=tc.get("arguments", {}),
+                    call_type=tc.get("call_type", "function"),
+                )
+                for tc in data["tool_calls"]
+            ]
+        timestamp = datetime.now()
+        if "timestamp" in data:
+            try:
+                timestamp = datetime.fromisoformat(data["timestamp"])
+            except (ValueError, TypeError):
+                pass
+        return Message(
+            role=data["role"],
+            content=data.get("content", ""),
+            tool_calls=tool_calls,
+            tool_call_id=data.get("tool_call_id"),
+            name=data.get("name"),
+            timestamp=timestamp,
+            token_count=data.get("token_count", 0),
+            reasoning_content=data.get("reasoning_content"),
+        )
+
 
 @dataclass
 class Usage:
