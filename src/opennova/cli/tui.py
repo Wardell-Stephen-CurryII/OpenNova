@@ -73,23 +73,60 @@ class _CopyOverlay(TextArea):
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "escape":
-            try:
-                self.app.action_focus_input()
-            except Exception:
-                pass
+            event.stop()
+            self._dismiss()
             return
         if event.key == "ctrl+c":
-            # Let TextArea copy, then auto-dismiss
-            await super()._on_key(event)
+            event.stop()
+            self._copy_selected()
+            return
+        # Forward all other keys to TextArea for navigation and selection
+        await super()._on_key(event)
+
+    def _copy_selected(self) -> None:
+        """Copy selected text to system clipboard and auto-dismiss."""
+        selected = self.selected_text
+        if selected:
+            self._copy_to_clipboard(selected)
             try:
-                self.app.action_focus_input()
+                self.app._set_status("[green]Copied![/green]")
             except Exception:
                 pass
-            return
-        # Forward all other keys to Input
-        await super()._on_key(event)
+        self._dismiss()
+
+    @staticmethod
+    def _copy_to_clipboard(text: str) -> None:
+        """Copy text to system clipboard via native shell commands."""
+        import subprocess
+        import platform
         try:
-            self.app.query_one("#input", Input).focus()
+            system = platform.system()
+            if system == "Darwin":
+                subprocess.run(
+                    ["pbcopy"], input=text, text=True, check=False,
+                )
+            elif system == "Linux":
+                # Try wayland first, then x11
+                if subprocess.run(["which", "wl-copy"], capture_output=True).returncode == 0:
+                    subprocess.run(
+                        ["wl-copy"], input=text, text=True, check=False,
+                    )
+                else:
+                    subprocess.run(
+                        ["xclip", "-selection", "clipboard"],
+                        input=text, text=True, check=False,
+                    )
+            elif system == "Windows":
+                subprocess.run(
+                    ["clip"], input=text, text=True, check=False,
+                )
+        except Exception:
+            pass
+
+    def _dismiss(self) -> None:
+        """Dismiss overlay and return focus to input."""
+        try:
+            self.app.action_focus_input()
         except Exception:
             pass
 
@@ -1186,18 +1223,22 @@ class OpenNovaTUI(App):
             overlay.load_text(log.get_plain_text())
             overlay.add_class("visible")
             overlay.focus()
-            # Scroll to bottom so latest content is visible
+            # Scroll to top so user sees the beginning
             overlay.move_cursor((0, 0))
+            self._set_status(
+                "[dim]Select text with mouse or keyboard, then Ctrl+C to copy | Esc to exit[/dim]"
+            )
         except Exception:
             pass
 
     def _hide_copy_overlay(self) -> None:
-        """Hide the copy overlay and return focus to Input."""
+        """Hide the copy overlay, return focus to Input, and clear hint."""
         try:
             overlay = self.query_one("#copy-overlay", TextArea)
             overlay.remove_class("visible")
         except Exception:
             pass
+        self._set_status("")
         self._focus_input()
 
 async def run_tui(config: Config) -> None:
