@@ -925,14 +925,19 @@ class OpenNovaTUI(App):
         finally:
             self._reset_input_state()
 
-    async def _execute_task(self, task: str, preserve_context: bool = False) -> None:
-        """Execute a user task through the agent."""
-        if preserve_context:
-            await self._run_agent_task(
-                self.agent._run_act_mode(task=task, stream=True, preserve_context=True)
+    async def _execute_task(self, task: str, preserve_context: bool = True) -> None:
+        """Execute a user task through the agent.
+
+        By default preserves context so the conversation accumulates across
+        turns within a session. The ReActLoop handles first-turn setup
+        (system prompt injection) correctly even with preserve_context=True.
+        """
+        await self._run_agent_task(
+            self.agent._run_act_mode(
+                task=task, stream=True,
+                preserve_context=preserve_context,
             )
-        else:
-            await self._run_agent_task(self.agent.run(task))
+        )
 
     def _register_callbacks(self) -> None:
         _current_tool: dict[str, str] = {"name": ""}

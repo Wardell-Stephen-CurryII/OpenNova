@@ -588,6 +588,10 @@ class AgentRuntime:
         self.working_memory.start_task()
         if not preserve_context:
             self.loop.set_context(self._build_memory_messages(task))
+        elif not self.context_manager.messages:
+            # First turn: inject project memory directly (set_context clears, so we add manually)
+            for msg in self._build_memory_messages(task):
+                self.context_manager.add_message(msg)
 
         def on_thought(thought: str) -> None:
             if self.show_thinking:
