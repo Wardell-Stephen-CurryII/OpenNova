@@ -74,6 +74,7 @@ class ContextManager:
         context_window: int | None = None,
         max_messages: int = 100,
         encoding_name: str = "cl100k_base",
+        max_tool_result_tokens: int = 8000,
     ):
         """
         Initialize context manager.
@@ -83,14 +84,24 @@ class ContextManager:
             context_window: Override context window size
             max_messages: Maximum messages to keep
             encoding_name: Tiktoken encoding name
+            max_tool_result_tokens: Truncate tool results exceeding this
         """
         self.model = model
         self.context_window = context_window or self._get_context_window(model)
         self.max_messages = max_messages
         self.encoding_name = encoding_name
+        self.max_tool_result_tokens = max_tool_result_tokens
 
         self.messages: list[Message] = []
         self.system_prompt: str | None = None
+
+        # Compression state
+        self._compressed_summary: str | None = None
+        self._compressor: Any = None
+        self._compressing: bool = False
+        self._compression_count: int = 0
+        self.compression_threshold: float = 0.55
+        self.keep_last_pairs: int = 6
 
         self._encoding = None
         if TIKTOKEN_AVAILABLE:
@@ -108,6 +119,27 @@ class ContextManager:
                 return window
 
         return DEFAULT_CONTEXT_WINDOW
+
+    def _truncate_tool_result(self, content: str) -> str:
+        """Truncate a tool result that exceeds max_tool_result_tokens.
+
+        Keeps head (20%) and tail (80% of budget) to preserve structure.
+        """
+        if self._encoding is None:
+            return content
+        tokens = self._encoding.encode(content)
+        limit = self.max_tool_result_tokens
+        if len(tokens) <= limit:
+            return content
+        head_tokens = int(limit * 0.2)
+        tail_tokens = limit - head_tokens
+        head = self._encoding.decode(tokens[:head_tokens])
+        tail = self._encoding.decode(tokens[-tail_tokens:])
+        return (
+            head
+            + f"\n\n... [truncated: {len(tokens)} total tokens, {limit} limit] ...\n\n"
+            + tail
+        )
 
     def count_tokens(self, text: str) -> int:
         """
@@ -197,6 +229,18 @@ class ContextManager:
         Returns:
             True if added successfully, False if would exceed context
         """
+        # Truncate large tool results before counting/adding
+        if message.role == "tool" and self._encoding:
+            tok = self.count_tokens(message.content)
+            if tok > self.max_tool_result_tokens:
+                message = Message(
+                    role=message.role,
+                    content=self._truncate_tool_result(message.content),
+                    tool_call_id=message.tool_call_id,
+                    name=message.name,
+                    timestamp=message.timestamp,
+                )
+
         if len(self.messages) >= self.max_messages:
             self._trim_old_messages()
 
@@ -244,71 +288,163 @@ class ContextManager:
         """Set the system prompt."""
         self.system_prompt = prompt
 
-    def get_messages_for_llm(self) -> list[Message]:
-        """
-        Get messages formatted for LLM API.
+    # ── compression ──────────────────────────────────────────────────
 
-        Returns:
-            List of messages with system prompt if set
+    def set_compressor(self, compressor: Any) -> None:
+        """Wire in a ContextCompressor for LLM-based compression."""
+        self._compressor = compressor
+
+    def set_compressed_summary(self, summary: str | None) -> None:
+        """Restore compression state (used when resuming sessions)."""
+        self._compressed_summary = summary
+
+    def get_compressed_summary(self) -> str | None:
+        """Expose current summary for session persistence."""
+        return self._compressed_summary
+
+    def _should_compress(self) -> bool:
+        """Check if token utilization exceeds the compression threshold."""
+        tokens = self.get_total_tokens()
+        return tokens > self.context_window * self.compression_threshold
+
+    def _is_safe_to_compress(self) -> bool:
+        """Check there are enough messages and we're not currently compressing."""
+        if self._compressing:
+            return False
+        min_messages = self.keep_last_pairs * 2 + 4
+        return len(self.messages) >= min_messages
+
+    def _find_safe_cut_point(self) -> int | None:
+        """Find index where we can safely split old from recent messages.
+
+        Scans from the end, counting complete (assistant-with-tool_calls +
+        tool-result) pairs. Never splits a pair. Returns the index of the
+        first message to keep, or None if there aren't enough messages.
         """
-        result = []
+        if len(self.messages) < self.keep_last_pairs * 2:
+            return None
+
+        pair_count = 0
+        i = len(self.messages) - 1
+        open_tool_ids: set[str] = set()
+
+        while i >= 0 and pair_count < self.keep_last_pairs:
+            msg = self.messages[i]
+            if msg.role == "tool" and msg.tool_call_id:
+                open_tool_ids.add(msg.tool_call_id)
+            elif msg.role == "assistant" and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if tc.id in open_tool_ids:
+                        open_tool_ids.discard(tc.id)
+                        pair_count += 1
+            i -= 1
+
+        # Walk back to include orphaned tool results
+        while open_tool_ids and i >= 0:
+            msg = self.messages[i]
+            if msg.role == "assistant" and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if tc.id in open_tool_ids:
+                        open_tool_ids.discard(tc.id)
+            i -= 1
+
+        cut = i + 1
+        return cut if cut > 0 else None
+
+    async def compress(self) -> bool:
+        """Compress old messages into a summary, keeping recent pairs."""
+        if self._compressor is None or self._compressing:
+            return False
+
+        cut = self._find_safe_cut_point()
+        if cut is None:
+            return False
+
+        old_messages = self.messages[:cut]
+        if not old_messages:
+            return False
+
+        try:
+            summary = await self._compressor.compress(
+                old_messages, self._compressed_summary
+            )
+        except Exception:
+            return False
+
+        if not summary:
+            return False
+
+        self._compressed_summary = summary
+        self._compression_count += 1
+        self.messages = self.messages[cut:]
+        return True
+
+    async def _maybe_compress(self) -> bool:
+        """Check conditions and compress if needed."""
+        if self._compressor is None:
+            return False
+        if not self._should_compress():
+            return False
+        if not self._is_safe_to_compress():
+            return False
+        self._compressing = True
+        try:
+            return await self.compress()
+        finally:
+            self._compressing = False
+
+    async def add_message_and_compress(self, message: Message) -> bool:
+        """Add a message and potentially compress. Async for ReActLoop use."""
+        added = self.add_message(message)
+        if added:
+            await self._maybe_compress()
+        return added
+
+    # ── llm output ─────────────────────────────────────────────────
+
+    def get_messages_for_llm(self) -> list[Message]:
+        """Get messages with compression summary injected at the boundary."""
+        result: list[Message] = []
 
         if self.system_prompt:
             result.append(Message(role="system", content=self.system_prompt))
 
-        result.extend(self.messages)
+        if self._compressed_summary:
+            result.append(
+                Message(
+                    role="user",
+                    content=(
+                        "[Compressed conversation context"
+                        f" ({self._compression_count} compression(s))]\n\n"
+                        + self._compressed_summary
+                    ),
+                    is_compression_boundary=True,
+                )
+            )
+            result.append(
+                Message(
+                    role="user",
+                    content="[Continuing conversation after context compression]",
+                    is_compression_boundary=True,
+                )
+            )
 
+        result.extend(self.messages)
         return result
 
     def _trim_old_messages(self, keep_last: int = 4) -> None:
-        """
-        Trim old messages to fit context window.
+        """Fallback trim for when compression is not available.
 
-        Args:
-            keep_last: Number of recent messages to always keep
+        Pops oldest messages while token count exceeds 70% of window and
+        more than keep_last messages remain.
         """
         if len(self.messages) <= keep_last:
             return
-
         while (
             len(self.messages) > keep_last
             and self.get_total_tokens() > self.context_window * 0.7
         ):
             self.messages.pop(0)
-
-    def summarize_old_context(self) -> str:
-        """
-        Create a summary of old context for compression.
-
-        Returns:
-            Summary string of old context
-        """
-        if len(self.messages) < 6:
-            return ""
-
-        old_messages = self.messages[:-4]
-
-        summary_parts = ["[Previous context summary:]"]
-
-        topics = set()
-        for msg in old_messages:
-            if msg.role == "user":
-                words = msg.content.lower().split()[:10]
-                topics.update(w for w in words if len(w) > 4)
-
-        if topics:
-            summary_parts.append(f"Topics discussed: {', '.join(list(topics)[:5])}")
-
-        tools_used = set()
-        for msg in old_messages:
-            if msg.role == "assistant" and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    tools_used.add(tc.name)
-
-        if tools_used:
-            summary_parts.append(f"Tools used: {', '.join(tools_used)}")
-
-        return "\n".join(summary_parts)
 
     def clear(self) -> None:
         """Clear all messages."""

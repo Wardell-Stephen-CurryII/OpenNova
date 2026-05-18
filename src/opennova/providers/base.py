@@ -91,6 +91,7 @@ class Message:
     timestamp: datetime = field(default_factory=datetime.now)
     token_count: int = 0
     reasoning_content: str | None = None
+    is_compression_boundary: bool = False
 
     def to_openai_format(self) -> dict[str, Any]:
         """Convert to OpenAI message format."""
@@ -170,6 +171,8 @@ class Message:
             data["name"] = self.name
         if self.reasoning_content:
             data["reasoning_content"] = self.reasoning_content
+        if self.is_compression_boundary:
+            data["is_compression_boundary"] = True
         return data
 
     @staticmethod
@@ -198,9 +201,10 @@ class Message:
             tool_calls=tool_calls,
             tool_call_id=data.get("tool_call_id"),
             name=data.get("name"),
+            reasoning_content=data.get("reasoning_content"),
+            is_compression_boundary=data.get("is_compression_boundary", False),
             timestamp=timestamp,
             token_count=data.get("token_count", 0),
-            reasoning_content=data.get("reasoning_content"),
         )
 
 

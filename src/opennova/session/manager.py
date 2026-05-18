@@ -32,6 +32,15 @@ class SessionMeta:
     file_path: Path
 
 
+@dataclass
+class CompressionMarker:
+    """Marks a compression boundary in a session JSONL file."""
+
+    session_id: str
+    summary: str
+    message_count: int
+
+
 class SessionManager:
     """Manages conversation session persistence as JSONL files."""
 
@@ -104,10 +113,55 @@ class SessionManager:
         with open(self._file, "a", encoding="utf-8") as f:
             f.write(line)
 
+    def save_compression_marker(self, summary: str, message_count: int) -> None:
+        """Write a compression boundary marker to the current session JSONL."""
+        if self._file is None:
+            return
+        entry = {
+            "type": "compression_boundary",
+            "session_id": self._session_id,
+            "summary": summary,
+            "message_count": message_count,
+        }
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        with open(self._file, "a", encoding="utf-8") as f:
+            f.write(line)
+
+    def get_compression_markers(self, session_id: str) -> list[CompressionMarker]:
+        """Read all compression markers from a session JSONL file."""
+        file = self._sessions_dir / f"{session_id}.jsonl"
+        if not file.exists():
+            return []
+        markers: list[CompressionMarker] = []
+        with open(file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "compression_boundary":
+                    markers.append(
+                        CompressionMarker(
+                            session_id=entry.get("session_id", session_id),
+                            summary=entry.get("summary", ""),
+                            message_count=entry.get("message_count", 0),
+                        )
+                    )
+        return markers
+
     # ── load ────────────────────────────────────────────────────────
 
-    def load_session(self, session_id: str) -> list[Any]:
-        """Load and deserialize all messages from a session JSONL file.
+    def load_session(
+        self, session_id: str, apply_compression: bool = True
+    ) -> list[Any]:
+        """Load and deserialize messages from a session JSONL file.
+
+        If apply_compression is True and compression markers exist, only
+        messages after the last marker are returned. The caller must inject
+        the summary message separately via get_compression_markers().
 
         Returns a list of ``Message`` objects in chronological order.
         """
@@ -117,7 +171,15 @@ class SessionManager:
         if not file.exists():
             return []
 
+        # Determine the earliest message index to keep (after last marker)
+        skip_until_count: int | None = None
+        if apply_compression:
+            markers = self.get_compression_markers(session_id)
+            if markers:
+                skip_until_count = markers[-1].message_count
+
         messages: list[Any] = []
+        msg_index: int = 0
         with open(file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -128,6 +190,9 @@ class SessionManager:
                 except json.JSONDecodeError:
                     continue
                 if entry.get("type") == "message" and "message" in entry:
+                    msg_index += 1
+                    if skip_until_count is not None and msg_index <= skip_until_count:
+                        continue
                     messages.append(Message.from_dict(entry["message"]))
         return messages
 

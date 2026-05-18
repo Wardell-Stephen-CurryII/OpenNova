@@ -38,6 +38,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_iterations": 20,
         "auto_confirm": False,
         "show_thinking": True,
+        "compression": {
+            "enabled": True,
+            "threshold": 0.55,
+            "keep_last_pairs": 6,
+            "max_tool_result_tokens": 8000,
+        },
     },
     "security": {
         "sandbox_mode": True,

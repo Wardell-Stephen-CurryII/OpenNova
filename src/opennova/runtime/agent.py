@@ -74,7 +74,24 @@ class AgentRuntime:
         self.llm = ProviderFactory.create_provider(config)
         self.project_memory = ProjectMemory(project_path=os.getcwd())
         self.working_memory = WorkingMemory()
-        self.context_manager = ContextManager(model=self.llm.model)
+
+        # Read compression config
+        compression_config = agent_config.get("compression", {})
+        self.context_manager = ContextManager(
+            model=self.llm.model,
+            max_tool_result_tokens=compression_config.get("max_tool_result_tokens", 8000),
+        )
+        self.context_manager.compression_threshold = compression_config.get(
+            "threshold", 0.55
+        )
+        self.context_manager.keep_last_pairs = compression_config.get(
+            "keep_last_pairs", 6
+        )
+
+        # Wire up context compressor
+        from opennova.memory.compressor import ContextCompressor
+        self.context_manager.set_compressor(ContextCompressor(llm_provider=self.llm))
+
         from opennova.session import SessionManager
         self.session_manager = SessionManager(project_path=os.getcwd())
         self.session_manager.start_session()
@@ -642,25 +659,43 @@ class AgentRuntime:
         """Clear current conversation context and start a fresh session."""
         self._save_session_messages()
         self.context_manager.clear()
+        self.context_manager.set_compressed_summary(None)
         self.state.reset("")
-        self.session_manager.clear_session()
-        self.session_manager.start_session()
+        sm = getattr(self, "session_manager", None)
+        if sm is not None:
+            sm.clear_session()
+            sm.start_session()
 
     def _save_session_messages(self) -> None:
-        """Persist all context messages to the current session JSONL file."""
+        """Persist all context messages and compression markers to session JSONL."""
         try:
+            summary = self.context_manager.get_compressed_summary()
+            if summary:
+                self.session_manager.save_compression_marker(
+                    summary=summary,
+                    message_count=len(self.context_manager.messages),
+                )
             for msg in self.context_manager.messages:
                 self.session_manager.save_message(msg)
         except Exception:
             pass
 
     def resume_session(self, session_id: str) -> list[Any]:
-        """Load a past session's messages into the context manager."""
+        """Load a past session's messages into the context manager.
+
+        Restores compression state from session markers so the compact
+        context view (summary + recent messages) is reconstructed.
+        """
+        # Restore compression markers
+        markers = self.session_manager.get_compression_markers(session_id)
+        if markers:
+            self.context_manager.set_compressed_summary(markers[-1].summary)
+
         messages = self.session_manager.load_session(session_id)
         self.context_manager.clear()
         for msg in messages:
             self.context_manager.add_message(msg)
-        # Start a new session and immediately save the resumed messages
+        # Re-start session with resumed messages
         self.session_manager.clear_session()
         self.session_manager.start_session()
         for msg in messages:

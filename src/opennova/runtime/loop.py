@@ -226,7 +226,7 @@ class ReActLoop:
                         tool_use_increment=1,
                         token_count=response.usage.total_tokens if response.usage else 0,
                     )
-                    self._observe(action, result, response.reasoning_content)
+                    await self._observe(action, result, response.reasoning_content)
                 else:
                     observation = Message(
                         role="user",
@@ -548,7 +548,7 @@ class ReActLoop:
             },
         )
 
-    def _observe(self, action: ParsedAction, result: ToolResult, reasoning_content: str | None = None) -> None:
+    async def _observe(self, action: ParsedAction, result: ToolResult, reasoning_content: str | None = None) -> None:
         """
         Observe step: Add results to context.
 
@@ -573,7 +573,9 @@ class ReActLoop:
         )
         self.add_message(assistant_msg)
 
-        self.add_message(
+        # Use add_message_and_compress for the tool message to trigger
+        # compression after each complete (assistant + tool) pair.
+        await self.context_manager.add_message_and_compress(
             Message(
                 role="tool",
                 content=result.to_string(),
