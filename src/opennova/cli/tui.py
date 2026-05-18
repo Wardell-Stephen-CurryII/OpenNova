@@ -31,8 +31,11 @@ from opennova.providers.base import StreamChunk
 from opennova.runtime.agent import AgentRuntime
 from opennova.tools.base import ToolResult
 
-# Tool names whose results are not displayed (verbose file ops).
-_SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file", "execute_command"}
+# Tool names whose result outputs are not displayed (verbose file ops).
+_SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
+
+# Tool names where the "Result:" label is shown but raw stdout is hidden.
+_SUPPRESSED_RESULT_OUTPUT = {"execute_command"}
 
 
 class _MessagesLog(RichLog):
@@ -961,9 +964,10 @@ class OpenNovaTUI(App):
                     log.write("[green]Result:[/green]")
                 else:
                     log.write("[red]Result:[/red]")
-                output = (result.output or "")[:500]
-                if output:
-                    log.write(output)
+                if _current_tool["name"] not in _SUPPRESSED_RESULT_OUTPUT:
+                    output = (result.output or "")[:500]
+                    if output:
+                        log.write(output)
                 if result.error:
                     log.write(f"[red]Error: {result.error}[/red]")
                 diff = result.metadata.get("diff") if result.success else None
