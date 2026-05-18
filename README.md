@@ -1,6 +1,6 @@
 # OpenNova
 
-OpenNova v0.2.0 is a lightweight CLI AI coding agent built from scratch in Python.
+OpenNova v0.2.3 is a lightweight CLI AI coding agent built from scratch in Python.
 
 **English** | **[简体中文](README.zh-CN.md)**
 
@@ -10,22 +10,28 @@ OpenNova v0.2.0 is a lightweight CLI AI coding agent built from scratch in Pytho
 
 OpenNova runs in your terminal and combines a small core with practical coding-agent workflows:
 - **Multi-provider runtime** for OpenAI, Anthropic, and DeepSeek
-- **Interactive REPL** with slash commands, history, and streamed output
+- **Dual interface**: prompt_toolkit REPL and Textual TUI with split-pane chat
+- **Session management**: save, resume, and list sessions (JSONL persistence)
+- **Context compression**: LLM-driven summarization for long conversations
 - **Plan + act workflows** for decomposing larger tasks before execution
-- **Tool + skill extensibility** for local tools and user-defined plugins
+- **Tool + skill extensibility** for local tools and user-defined plugins (17 built-in tools)
 - **MCP integration** for external tool servers
 - **Built-in safety guardrails** for risky commands and protected paths
 
-## What’s in v0.2.0
+## What’s in v0.2.3
 
-The 0.2.0 release reflects the now-complete core surface:
+The 0.2.3 release adds session management, context compression, and Textual TUI:
+- **Session management**: `/resume <id>`, `/sessions` — conversations persist to JSONL
+- **Context compression**: LLM summarizes old messages when context exceeds 55% token utilization, keeping long conversations within budget
+- **Textual TUI**: Split-pane chat interface with copy overlay, history navigation, and real-time streaming
+- **17 built-in tools**: file ops, shell execution, git, task tracking, plan mode, sub-agents, skills, web
 - ReAct runtime with streaming responses and tool execution
-- Plan mode with approval flow inside the REPL
+- Plan mode with approval flow inside the REPL and TUI
 - Diff/patch editing pipeline
 - Context, working memory, and project memory components
 - MCP stdio and SSE transport support
 - Skill auto-discovery and bundled example skills
-- Interactive user-question prompts in REPL runs
+- Interactive user-question prompts in REPL and TUI runs
 - Real HTTP-backed `web_fetch` behavior
 
 Note: `web_search` is present as a tool surface, but in this runtime it reports that search is not configured instead of fabricating results.
@@ -77,6 +83,11 @@ agent:
   max_iterations: 20
   auto_confirm: false
   show_thinking: true
+  compression:
+    enabled: true
+    threshold: 0.55
+    keep_last_pairs: 6
+    max_tool_result_tokens: 8000
 
 mcp:
   enabled: true
@@ -102,10 +113,24 @@ export DEEPSEEK_API_KEY=your_key_here
 
 ## Usage
 
-### Interactive mode
+### Interactive modes
 
 ```bash
+# REPL mode (prompt_toolkit, default)
 uv run opennova
+
+# Textual TUI mode (split-pane chat interface)
+uv run opennova tui
+```
+
+### Session management
+
+```bash
+# Resume a previous session
+uv run opennova resume <session_id>
+
+# List all sessions
+uv run opennova sessions
 ```
 
 ### Single task mode
@@ -131,13 +156,16 @@ Inside the interactive REPL:
 | `/act <task>` | Execute directly (default mode) |
 | `/tools` | List available tools |
 | `/skills` | List loaded skills |
+| `/skill <name> [args]` | Invoke a loaded skill directly |
 | `/reload-skills` | Reload skills from disk |
 | `/model` | Show current model info |
 | `/config` | Show current configuration |
 | `/history [n]` | Show recent conversation history |
+| `/resume <id>` | Resume a previous session |
+| `/sessions` | List saved sessions |
 | `/clear` | Clear current conversation state |
 | `/help` | Show help message |
-| `/exit` | Exit the REPL |
+| `/exit` | Exit |
 
 ## Built-in tools
 
@@ -151,6 +179,22 @@ OpenNova ships with a broader tool surface than the original README listed.
 | `delete_file` | Delete a file with confirmation |
 | `list_directory` | List directory contents |
 | `execute_command` | Execute shell commands through guardrails |
+| `git_commit` | Create a git commit with staged changes |
+| `git_status` | Show working tree status |
+| `git_diff` | Show changes between commits or working tree |
+| `git_log` | Show commit history |
+| `git_branch` | List or manage branches |
+| `task_create` | Create a new task in the task list |
+| `task_list` | List all tracked tasks |
+| `task_get` | Get task details by ID |
+| `task_update` | Update task status or properties |
+| `task_stop` | Stop a running background task |
+| `task_output` | Get output from a completed task |
+| `enter_plan_mode` | Enter plan mode for architectural design |
+| `exit_plan_mode` | Exit plan mode after plan approval |
+| `agent` | Delegate work to a sub-agent |
+| `send_message` | Send a message to a running sub-agent |
+| `skill` | Invoke a loaded skill by name |
 | `ask_user_question` | Ask the user to choose from 2-4 options during a run |
 | `web_fetch` | Fetch a real HTTP/HTTPS page and return extracted content |
 | `web_search` | Search interface placeholder; reports unconfigured when no backend is available |
@@ -212,18 +256,43 @@ Supported transports:
 - **stdio**: launch a subprocess and communicate over stdin/stdout
 - **sse**: connect to an HTTP SSE endpoint
 
+## Context compression
+
+OpenNova automatically compresses conversation context when token usage exceeds 55% of the model's context window:
+
+- **LLM-driven summarization**: Old messages are summarized into a concise paragraph using the active LLM provider
+- **Safe cut points**: Compression never splits incomplete assistant+tool pairs
+- **Session persistence**: Compression markers are saved to JSONL, enabling compact session resume
+- **Tool result truncation**: Large tool outputs (>8000 tokens) are truncated (head 20% + tail 80%)
+- **Configurable**: Adjust threshold, keep-last-pairs count, and truncation limits in config
+
+When a session resumes, only messages after the last compression boundary are loaded — older context is replaced by the summary.
+
+## Session management
+
+Conversations are automatically persisted to `~/.opennova/sessions/` as JSONL files:
+
+```bash
+# Inside REPL or TUI
+/resume <session_id>   # Resume a previous session
+/sessions              # List all saved sessions
+```
+
+Each session file records every message, tool call, and compression boundary. When resuming, compression markers allow the agent to restore context compactly.
+
 ## Architecture
 
 ```text
 opennova/
 ├── providers/         # LLM provider implementations
-├── tools/             # Built-in tools and tool registry
+├── tools/             # Built-in tools and tool registry (17 tools)
 ├── runtime/           # Agent runtime, loop, and state
-├── cli/               # REPL and terminal rendering
+├── cli/               # REPL (prompt_toolkit) and TUI (Textual)
 ├── diff/              # Diff/patch system
-├── memory/            # Context and memory management
+├── memory/            # Context management, compression, working/project memory
 ├── planning/          # Plan data structures and planner
 ├── security/          # Guardrails and sandboxing
+├── session/           # Session persistence (JSONL)
 ├── mcp/               # MCP transports and connectors
 ├── skills/            # Skill system and examples
 └── main.py            # CLI entry point
