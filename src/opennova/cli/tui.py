@@ -493,7 +493,7 @@ class OpenNovaTUI(App):
         self._add_to_history(text)
 
         log = self.query_one("#messages")
-        log.write(f"[bold]You:[/bold] {text}")
+        log.write(f"[bold bright_cyan]You:[/bold bright_cyan] [bright_cyan]{text}[/bright_cyan]")
         log.scroll_end(animate=False)
 
         # Fast commands: handle synchronously (they return quickly).
