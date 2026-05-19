@@ -517,34 +517,72 @@ class ReActLoop:
                 metadata={**result.metadata, "interaction_unresolved": True},
             )
 
-        prompt_payload = result.metadata.get("prompt_payload", {})
-        question = prompt_payload.get("question", "")
+        all_answers = interaction_result.get("all_answers", [])
         skipped = interaction_result.get("skipped", False)
 
-        if skipped:
+        # Legacy callback format (single question, no all_answers)
+        if not all_answers:
+            prompt_payload = result.metadata.get("prompt_payload", {})
+            question = prompt_payload.get("question", "")
+            if skipped:
+                return ToolResult(
+                    success=True,
+                    output=f"Question: {question}\n"
+                           "User did not provide an answer. Please make the best decision.",
+                    metadata={
+                        **result.metadata,
+                        "interaction_required": False,
+                        "skipped": True,
+                        "skipped_question": question,
+                    },
+                )
             return ToolResult(
                 success=True,
-                output=(
-                    f"Question: {question}\n"
-                    "User did not provide an answer. Please make the best decision."
-                ),
+                output=f"Answer to: {question}\n{interaction_result.get('display', '')}".strip(),
+                metadata={
+                    **result.metadata,
+                    "interaction_required": False,
+                    "answers": interaction_result.get("answers", {}),
+                    "answer": interaction_result.get("answer"),
+                    "selected_options": interaction_result.get("selected_options", []),
+                },
+            )
+
+        # New multi-question format
+        if skipped and all(a.get("skipped") for a in all_answers):
+            questions = result.metadata.get("questions", [])
+            first_q = questions[0].get("question", "") if questions else ""
+            return ToolResult(
+                success=True,
+                output=f"Question: {first_q}\n"
+                       "User did not provide an answer. Please make the best decision.",
                 metadata={
                     **result.metadata,
                     "interaction_required": False,
                     "skipped": True,
-                    "skipped_question": question,
+                    "skipped_question": first_q,
                 },
             )
 
+        # Build Claude Code-style output: 'User has answered your questions: "q"="a". ...'
+        answer_parts = [
+            f'"{a.get("question", "")}"="{a.get("answer", "(skipped)")}"'
+            for a in all_answers
+        ]
+        output = (
+            f"User has answered your questions: {'; '.join(answer_parts)}. "
+            "You can now continue with the user's answers in mind."
+        )
+
         return ToolResult(
             success=True,
-            output=f"Answer to: {question}\n{interaction_result.get('display', '')}".strip(),
+            output=output,
             metadata={
                 **result.metadata,
                 "interaction_required": False,
                 "answers": interaction_result.get("answers", {}),
-                "answer": interaction_result.get("answer"),
-                "selected_options": interaction_result.get("selected_options", []),
+                "all_answers": all_answers,
+                "display": interaction_result.get("display", ""),
             },
         )
 
@@ -584,13 +622,25 @@ class ReActLoop:
             )
         )
 
-        # When user skips a free-text question, give the LLM explicit permission to decide.
+        # When user skips a question, give the LLM explicit permission to decide.
         if result.metadata.get("skipped"):
             question = result.metadata.get("skipped_question", "")
+            if question:
+                self.add_message(
+                    Message(
+                        role="user",
+                        content=f"I'll let you decide on this: {question}",
+                    )
+                )
+        # For partially-skipped multi-question: tell LLM which were skipped.
+        all_answers = result.metadata.get("all_answers", [])
+        skipped_questions = [a for a in all_answers if a.get("skipped")]
+        if skipped_questions and not result.metadata.get("skipped"):
+            skipped_texts = [f'"{a.get("question", "")}"' for a in skipped_questions]
             self.add_message(
                 Message(
                     role="user",
-                    content=f"I'll let you decide on this: {question}",
+                    content=f"I'll let you decide on: {', '.join(skipped_texts)}",
                 )
             )
 

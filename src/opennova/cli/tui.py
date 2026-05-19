@@ -37,6 +37,12 @@ _SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 # Tool names where the "Result:" label is shown but raw stdout is hidden.
 _SUPPRESSED_RESULT_OUTPUT = {"execute_command"}
 
+# Parameter names whose values are hidden in the action display (too long/unreadable).
+_REDACTED_ACTION_PARAMS = {"content"}
+
+# Max diff lines shown per tool; fallback is 120.
+_MAX_DIFF_LINES: dict[str, int] = {"write_file": 30}
+
 
 class _MessagesLog(RichLog):
     """RichLog that shows a selectable TextArea overlay when clicked."""
@@ -511,6 +517,14 @@ class OpenNovaTUI(App):
         self._last_submitted_text = text
         self._last_submitted_time = now
 
+        # Interaction mode: answer is routed to the pending future.
+        # Must be checked BEFORE _is_agent_running() because during
+        # ask_user_question the agent task is suspended awaiting this future.
+        if self._interaction_mode:
+            if self._interaction_future and not self._interaction_future.done():
+                self._interaction_future.set_result(text)
+            return
+
         # Don't process new tasks while agent is running.
         if self._is_agent_running():
             self._set_status("[yellow]Agent is busy, please wait...[/yellow]")
@@ -520,12 +534,6 @@ class OpenNovaTUI(App):
         input_widget = self.query_one("#input", Input)
         input_widget.value = ""
         self._clear_suggestions()
-
-        # Interaction mode: answer is routed to the pending future.
-        if self._interaction_mode:
-            if self._interaction_future and not self._interaction_future.done():
-                self._interaction_future.set_result(text)
-            return
 
         self._add_to_history(text)
 
@@ -895,9 +903,12 @@ class OpenNovaTUI(App):
         """Block until the user types a response in the input box.
 
         Used for plan approval and agent interaction prompts.
+        Clears the input widget each time so multi-question dialogs
+        start with a fresh input field.
         """
         self._interaction_mode = True
         input_widget = self.query_one("#input", Input)
+        input_widget.value = ""
         input_widget.disabled = False
         input_widget.placeholder = placeholder
         input_widget.focus()
@@ -992,7 +1003,16 @@ class OpenNovaTUI(App):
             _current_tool["name"] = tool_name
             try:
                 log = self.query_one("#messages")
-                args_str = ", ".join(f"{k}={repr(v)}" for k, v in args.items())
+                parts = []
+                for k, v in args.items():
+                    if k in _REDACTED_ACTION_PARAMS:
+                        if isinstance(v, str):
+                            parts.append(f"{k}=<{len(v)} chars>")
+                        else:
+                            parts.append(f"{k}=<redacted>")
+                    else:
+                        parts.append(f"{k}={repr(v)}")
+                args_str = ", ".join(parts)
                 log.write(f"[cyan]Executing:[/cyan] {tool_name}({args_str})")
             except Exception:
                 pass
@@ -1014,7 +1034,8 @@ class OpenNovaTUI(App):
                     log.write(f"[red]Error: {result.error}[/red]")
                 diff = result.metadata.get("diff") if result.success else None
                 if diff:
-                    self._write_diff(log, diff)
+                    max_lines = _MAX_DIFF_LINES.get(_current_tool["name"], 120)
+                    self._write_diff(log, diff, max_lines=max_lines)
             except Exception:
                 pass
 
@@ -1049,100 +1070,171 @@ class OpenNovaTUI(App):
     # ── interaction ──────────────────────────────────────────────
 
     async def _handle_interaction(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        payload = metadata.get("prompt_payload", {})
-        question = payload.get("question", "")
-        options = payload.get("options", [])
-        free_text = payload.get("free_text", False)
-        header = payload.get("header")
+        """Handle ask_user_question interaction with multi-question support.
+
+        Renders each question as a dialog panel and collects answers one at a time.
+        All answers are batched and returned together, matching Claude Code's behavior.
+        """
+        questions = metadata.get("questions", [])
+        if not questions:
+            # Fallback to prompt_payload for backward compat
+            payload = metadata.get("prompt_payload", {})
+            questions = [payload] if payload.get("question") else []
+
+        if not questions:
+            return {"skipped": True, "answers": {}, "all_answers": [], "display": "(no questions)"}
 
         log = self.query_one("#messages")
-        dialog_lines = [f"[bold]{question}[/bold]"]
-        if header:
-            dialog_lines.insert(0, f"[cyan][{header}][/cyan]")
-        if free_text:
-            dialog_lines.append("[dim](Press Enter to skip — model will decide)[/dim]")
-        else:
-            for opt in options:
-                idx = opt.get("index", "?")
-                label = opt.get("label", "")
-                desc = opt.get("description", "")
-                line = f"  [[{idx}]] [yellow]{label}[/yellow]"
-                if desc:
-                    line += f"\n      [dim]{desc}[/dim]"
-                dialog_lines.append(line)
+        all_answers: list[dict[str, Any]] = []
 
-        log.write(
-            Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2))
-        )
+        for qi, q in enumerate(questions):
+            question = q.get("question", "")
+            options = q.get("options", [])
+            free_text = q.get("free_text", False)
+            header = q.get("header")
+            multi_select = q.get("multiSelect", False)
+            total = len(questions)
 
-        placeholder = (
-            "Your answer (Enter to skip): "
-            if free_text
-            else f"Select option{'s' if payload.get('multi_select') else ''}: "
-        )
-        answer = await self._ask_user(placeholder=placeholder)
+            # Build dialog panel
+            dialog_lines: list[str] = []
+            if total > 1:
+                dialog_lines.append(f"[dim]Question {qi + 1}/{total}[/dim]")
+            if header:
+                dialog_lines.append(f"[cyan][{header}][/cyan]")
+            dialog_lines.append(f"[bold]{question}[/bold]")
 
-        answer = answer.strip()
-        if free_text:
-            if not answer:
-                return {
-                    "answer": None,
-                    "skipped": True,
-                    "answers": {question: None},
-                    "display": "(skipped — model will decide)",
-                }
-            return {
-                "answer": answer,
-                "skipped": False,
-                "answers": {question: answer},
-                "display": answer,
-            }
+            if free_text:
+                dialog_lines.append("[dim](Enter to skip — model will decide)[/dim]")
+            else:
+                for opt in options:
+                    idx = opt.get("index", "?")
+                    label = opt.get("label", "")
+                    desc = opt.get("description", "")
+                    line = f"  [[{idx}]] [yellow]{label}[/yellow]"
+                    if desc:
+                        line += f"\n      [dim]{desc}[/dim]"
+                    dialog_lines.append(line)
+                if multi_select:
+                    dialog_lines.append("[dim](Comma-separated for multiple, e.g. 1,3)[/dim]")
 
-        # Choice mode
-        chosen = [opt for opt in options if opt.get("label", "") == answer]
-        if not chosen:
-            # Try numeric index
-            try:
-                idx = int(answer)
-                chosen = [opt for opt in options if opt.get("index") == idx]
-            except ValueError:
-                pass
-        if not chosen:
-            return {
-                "answer": answer,
-                "skipped": True,
-                "answers": {question: None},
-                "display": answer,
-            }
+            log.write(
+                Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2))
+            )
 
-        opt = chosen[0]
+            sel_hint = "s" if multi_select else ""
+            placeholder = (
+                f"Q{qi + 1}/{total} — Your answer (Enter to skip): "
+                if free_text
+                else f"Q{qi + 1}/{total} — Select option{sel_hint}: "
+            )
+            answer = await self._ask_user(placeholder=placeholder)
+            answer = answer.strip()
+
+            if free_text:
+                if not answer:
+                    all_answers.append({
+                        "question": question,
+                        "answer": None,
+                        "skipped": True,
+                        "header": header,
+                    })
+                else:
+                    all_answers.append({
+                        "question": question,
+                        "answer": answer,
+                        "skipped": False,
+                        "header": header,
+                    })
+                continue
+
+            # Choice mode
+            if multi_select:
+                indices = [x.strip() for x in answer.replace(",", " ").split() if x.strip().isdigit()]
+                chosen = []
+                for idx_str in indices:
+                    try:
+                        idx = int(idx_str)
+                        matched = [opt for opt in options if opt.get("index") == idx]
+                        if matched:
+                            chosen.append(matched[0])
+                    except ValueError:
+                        pass
+                if not chosen:
+                    all_answers.append({
+                        "question": question,
+                        "answer": answer or None,
+                        "skipped": True,
+                        "header": header,
+                    })
+                else:
+                    labels = [opt.get("label", "") for opt in chosen]
+                    all_answers.append({
+                        "question": question,
+                        "answer": ", ".join(labels),
+                        "selected_options": chosen,
+                        "skipped": False,
+                        "header": header,
+                    })
+            else:
+                chosen = [opt for opt in options if opt.get("label", "") == answer]
+                if not chosen:
+                    try:
+                        idx = int(answer)
+                        chosen = [opt for opt in options if opt.get("index") == idx]
+                    except ValueError:
+                        pass
+                if not chosen:
+                    all_answers.append({
+                        "question": question,
+                        "answer": answer or None,
+                        "skipped": True,
+                        "header": header,
+                    })
+                else:
+                    opt = chosen[0]
+                    all_answers.append({
+                        "question": question,
+                        "answer": opt.get("label", answer),
+                        "selected_options": [opt],
+                        "skipped": False,
+                        "header": header,
+                    })
+
+        # Build return dict
+        all_skipped = all(a.get("skipped") for a in all_answers)
+        answers_map = {a["question"]: a.get("answer") for a in all_answers}
+        display_parts = []
+        for a in all_answers:
+            q_text = a["question"]
+            ans = a.get("answer")
+            if a.get("skipped"):
+                display_parts.append(f"Q: {q_text} → (skipped)")
+            else:
+                display_parts.append(f"Q: {q_text} → {ans}")
+
         return {
-            "answer": opt.get("label", answer),
-            "skipped": False,
-            "answers": {question: opt.get("label", answer)},
-            "selected_options": [opt],
-            "display": opt.get("label", answer),
+            "skipped": all_skipped,
+            "answers": answers_map,
+            "all_answers": all_answers,
+            "display": "\n".join(display_parts),
         }
 
     # ── diff display ─────────────────────────────────────────────
 
-    def _write_diff(self, log: _MessagesLog, diff_text: str) -> None:
+    def _write_diff(self, log: _MessagesLog, diff_text: str, max_lines: int = 120) -> None:
         lines = diff_text.splitlines()
-        if len(lines) > 120:
-            lines = lines[:120]
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
             truncated = True
         else:
             truncated = False
 
         log.write("")
         for line in lines:
-            if line.startswith("+") or line.startswith("-") or line.startswith("@@"):
-                log.write(line)
-            else:
-                log.write(line)
+            log.write(line)
 
         if truncated:
-            log.write("[dim]... (diff truncated)[/dim]")
+            log.write(f"[dim]... (diff truncated, {max_lines}/{len(diff_text.splitlines())} lines)[/dim]")
         log.write("")
 
     # ── status bar ───────────────────────────────────────────────

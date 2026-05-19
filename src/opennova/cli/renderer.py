@@ -112,12 +112,19 @@ class Renderer:
 
     def print_action(self, tool_name: str, args: dict[str, Any]) -> None:
         """Display tool action."""
+        _REDACTED = {"content"}
         args_preview = []
         for k, v in args.items():
-            v_str = str(v)
-            if len(v_str) > 50:
-                v_str = v_str[:47] + "..."
-            args_preview.append(f"[dim]{k}[/dim]={repr(v_str)}")
+            if k in _REDACTED:
+                if isinstance(v, str):
+                    args_preview.append(f"[dim]{k}[/dim]=<{len(v)} chars>")
+                else:
+                    args_preview.append(f"[dim]{k}[/dim]=<redacted>")
+            else:
+                v_str = str(v)
+                if len(v_str) > 50:
+                    v_str = v_str[:47] + "..."
+                args_preview.append(f"[dim]{k}[/dim]={repr(v_str)}")
 
         args_str = ", ".join(args_preview)
 

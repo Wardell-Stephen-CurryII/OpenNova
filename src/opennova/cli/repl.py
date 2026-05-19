@@ -821,89 +821,118 @@ class REPL:
         self.running = False
 
     async def _handle_interaction(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        """Handle interactive tool prompts during REPL runs.
+        """Handle ask_user_question interaction with multi-question support.
 
-        Two modes:
-        - Choice mode (2+ options): numbered selection dialog
-        - Free-text mode (0-1 options): text input, empty = skipped
+        Renders each question as a dialog and collects answers one at a time.
+        All answers are batched and returned together.
         """
-        payload = metadata.get("prompt_payload", {})
-        question = payload.get("question", "")
-        options = payload.get("options", [])
-        multi_select = payload.get("multi_select", False)
-        free_text = payload.get("free_text", False)
-        header = payload.get("header")
+        questions = metadata.get("questions", [])
+        if not questions:
+            payload = metadata.get("prompt_payload", {})
+            questions = [payload] if payload.get("question") else []
 
-        # Dialog box with Rich Panel
-        dialog_lines = [f"[bold]{question}[/bold]"]
-        if header:
-            dialog_lines.insert(0, f"[cyan][{header}][/cyan]")
-        if free_text:
-            dialog_lines.append("[dim](Press Enter to skip — model will decide)[/dim]")
-        else:
-            for option in options:
-                idx = option["index"]
-                label = option["label"]
-                desc = option.get("description", "")
-                line = f"  [[{idx}]] [yellow]{label}[/yellow]"
-                if desc:
-                    line += f"\n      [dim]{desc}[/dim]"
-                dialog_lines.append(line)
+        if not questions:
+            return {"skipped": True, "answers": {}, "all_answers": [], "display": "(no questions)"}
 
-        self.renderer.print("")
-        self.renderer.print(Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2)))
+        all_answers: list[dict[str, Any]] = []
 
-        # Free-text mode
-        if free_text:
-            response = await self.session.prompt_async("Your answer: ")
-            answer = response.strip()
-            if not answer:
-                # User skipped — let the model decide
-                return {
-                    "answer": None,
-                    "skipped": True,
-                    "answers": {question: None},
-                    "display": "(skipped — model will decide)",
-                }
-            return {
-                "answer": answer,
-                "skipped": False,
-                "answers": {question: answer},
-                "display": answer,
-            }
+        for qi, q in enumerate(questions):
+            question = q.get("question", "")
+            options = q.get("options", [])
+            multi_select = q.get("multiSelect", False)
+            free_text = q.get("free_text", False)
+            header = q.get("header")
+            total = len(questions)
 
-        # Choice mode
-        prompt = "Select option(s): " if multi_select else "Select option: "
-        while True:
-            response = await self.session.prompt_async(prompt)
-            selected = [part.strip() for part in response.split(",") if part.strip()]
-            if not selected:
-                self.renderer.print("[yellow]Please choose at least one option.[/yellow]")
-                continue
-            if not multi_select and len(selected) != 1:
-                self.renderer.print("[yellow]Please choose exactly one option.[/yellow]")
-                continue
+            dialog_lines = [f"[bold]{question}[/bold]"]
+            if total > 1:
+                dialog_lines.insert(0, f"[dim]Question {qi + 1}/{total}[/dim]")
+            if header:
+                dialog_lines.insert(0 if total == 1 else 1, f"[cyan][{header}][/cyan]")
+            if free_text:
+                dialog_lines.append("[dim](Press Enter to skip — model will decide)[/dim]")
+            else:
+                for option in options:
+                    idx = option["index"]
+                    label = option["label"]
+                    desc = option.get("description", "")
+                    line = f"  [[{idx}]] [yellow]{label}[/yellow]"
+                    if desc:
+                        line += f"\n      [dim]{desc}[/dim]"
+                    dialog_lines.append(line)
+                if multi_select:
+                    dialog_lines.append("[dim](Comma-separated for multiple, e.g. 1,3)[/dim]")
 
-            try:
-                indexes = [int(value) for value in selected]
-            except ValueError:
-                self.renderer.print("[yellow]Please enter numeric option values.[/yellow]")
+            self.renderer.print("")
+            self.renderer.print(Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2)))
+
+            if free_text:
+                prompt = f"Q{qi + 1}/{total} — Your answer: " if total > 1 else "Your answer: "
+                response = await self.session.prompt_async(prompt)
+                answer = response.strip()
+                if not answer:
+                    all_answers.append({
+                        "question": question, "answer": None,
+                        "skipped": True, "header": header,
+                    })
+                else:
+                    all_answers.append({
+                        "question": question, "answer": answer,
+                        "skipped": False, "header": header,
+                    })
                 continue
 
-            option_map = {option["index"]: option for option in options}
-            if any(index not in option_map for index in indexes):
-                self.renderer.print("[yellow]Selection out of range.[/yellow]")
-                continue
+            # Choice mode
+            prompt = f"Q{qi + 1}/{total} — Select option: " if total > 1 else "Select option: "
+            while True:
+                response = await self.session.prompt_async(prompt)
+                selected = [part.strip() for part in response.split(",") if part.strip()]
+                if not selected:
+                    self.renderer.print("[yellow]Please choose at least one option.[/yellow]")
+                    continue
+                if not multi_select and len(selected) != 1:
+                    self.renderer.print("[yellow]Please choose exactly one option.[/yellow]")
+                    continue
 
-            chosen = [option_map[index] for index in indexes]
-            labels = [item["label"] for item in chosen]
-            return {
-                "answer": labels if multi_select else labels[0],
-                "skipped": False,
-                "answers": {question: labels if multi_select else labels[0]},
-                "selected_options": chosen,
-                "display": ", ".join(labels),
-            }
+                try:
+                    indexes = [int(value) for value in selected]
+                except ValueError:
+                    self.renderer.print("[yellow]Please enter numeric option values.[/yellow]")
+                    continue
+
+                option_map = {option["index"]: option for option in options}
+                if any(index not in option_map for index in indexes):
+                    self.renderer.print("[yellow]Selection out of range.[/yellow]")
+                    continue
+
+                chosen = [option_map[index] for index in indexes]
+                labels = [item["label"] for item in chosen]
+                all_answers.append({
+                    "question": question,
+                    "answer": labels if multi_select else labels[0],
+                    "selected_options": chosen,
+                    "skipped": False,
+                    "header": header,
+                })
+                break
+
+        all_skipped = all(a.get("skipped") for a in all_answers)
+        answers_map = {a["question"]: a.get("answer") for a in all_answers}
+        display_parts = []
+        for a in all_answers:
+            q_text = a["question"]
+            ans = a.get("answer")
+            if a.get("skipped"):
+                display_parts.append(f"Q: {q_text} → (skipped)")
+            else:
+                display_parts.append(f"Q: {q_text} → {ans}")
+
+        return {
+            "skipped": all_skipped,
+            "answers": answers_map,
+            "all_answers": all_answers,
+            "display": "\n".join(display_parts),
+        }
 
     async def _run_with_spinner(self, coro):
         """Run a coroutine while showing a spinner with elapsed time."""
