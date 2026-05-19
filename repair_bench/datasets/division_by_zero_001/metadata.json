@@ -1,0 +1,7 @@
+{
+  "bug_type": "division_by_zero",
+  "difficulty": "easy",
+  "description": "divide(): no check for zero divisor; average(): no check for empty list; calculate_rate(): divides by zero when reference equals 100",
+  "expected_fix_line": 2,
+  "known_fix_description": "Add zero checks before division operations"
+}

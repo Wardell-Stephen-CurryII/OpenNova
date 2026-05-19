@@ -1,0 +1,7 @@
+{
+  "bug_type": "off_by_one",
+  "difficulty": "easy",
+  "description": "process_all() uses range(len(items)-1), missing the last element; split_pairs() uses range(0, len(items)-1, 2), skipping last pair for odd-length lists",
+  "expected_fix_line": 3,
+  "known_fix_description": "Change loop bounds to range(len(items)) and range(0, len(items), 2)"
+}

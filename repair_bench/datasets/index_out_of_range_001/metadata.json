@@ -1,0 +1,7 @@
+{
+  "bug_type": "index_out_of_range",
+  "difficulty": "easy",
+  "description": "get_last() uses len(items) instead of len(items)-1; get_middle() fails on empty list",
+  "expected_fix_line": 2,
+  "known_fix_description": "Use len(items)-1 for last element; guard empty list in get_middle"
+}

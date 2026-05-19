@@ -1,0 +1,7 @@
+{
+  "bug_type": "index_out_of_range",
+  "difficulty": "easy",
+  "description": "first_n() does not check if n exceeds list length before iterating",
+  "expected_fix_line": 9,
+  "known_fix_description": "Add bounds check or use min(n, len(items))"
+}

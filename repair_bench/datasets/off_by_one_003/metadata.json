@@ -1,0 +1,7 @@
+{
+  "bug_type": "off_by_one",
+  "difficulty": "easy",
+  "description": "count_to() uses <= instead of <, counting one extra element; search_range upper bound exclusive when should be inclusive",
+  "expected_fix_line": 4,
+  "known_fix_description": "Change <= to < in count_to; change range(lo, hi) to range(lo, hi+1)"
+}

@@ -1,0 +1,7 @@
+{
+  "bug_type": "resource_leak",
+  "difficulty": "easy",
+  "description": "SQLite connections never closed after queries",
+  "expected_fix_line": 6,
+  "known_fix_description": "Use with-statement for database connections"
+}

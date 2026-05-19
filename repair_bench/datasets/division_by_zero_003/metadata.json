@@ -1,0 +1,7 @@
+{
+  "bug_type": "division_by_zero",
+  "difficulty": "medium",
+  "description": "compute_ratio() falls through to division when total <= 0; compute_diff_ratio() divides by zero when a == -b",
+  "expected_fix_line": 5,
+  "known_fix_description": "Guard total <= 0 case; guard a + b == 0 case"
+}

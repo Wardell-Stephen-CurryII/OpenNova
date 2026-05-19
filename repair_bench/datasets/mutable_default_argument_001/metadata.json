@@ -1,0 +1,7 @@
+{
+  "bug_type": "mutable_default_argument",
+  "difficulty": "easy",
+  "description": "Mutable default list and dict accumulate state across function calls \u2014 classic Python gotcha",
+  "expected_fix_line": 1,
+  "known_fix_description": "Use lst=None and cache=None as defaults, create new list/dict inside function"
+}

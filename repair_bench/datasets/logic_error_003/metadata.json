@@ -1,0 +1,7 @@
+{
+  "bug_type": "logic_error",
+  "difficulty": "medium",
+  "description": "is_prime() returns True when a divisor is found (should be False), and returns False when no divisor found (should be True) - the boolean logic is completely inverted",
+  "expected_fix_line": 18,
+  "known_fix_description": "Swap True/False return values in is_prime"
+}

@@ -1,0 +1,7 @@
+{
+  "bug_type": "logic_error",
+  "difficulty": "medium",
+  "description": "discount_price uses OR when AND is intended; can_retry has inverted admin logic",
+  "expected_fix_line": 2,
+  "known_fix_description": "Change OR to AND; fix retry logic for admins"
+}

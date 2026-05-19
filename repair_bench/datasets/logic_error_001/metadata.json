@@ -1,0 +1,7 @@
+{
+  "bug_type": "logic_error",
+  "difficulty": "easy",
+  "description": "is_valid_password() condition inverted (< 8 instead of >=8); all_even() checks for odd instead of even",
+  "expected_fix_line": 2,
+  "known_fix_description": "Flip comparison to >= 8; change n%2==1 to n%2==0"
+}

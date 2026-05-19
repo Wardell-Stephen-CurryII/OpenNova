@@ -1,0 +1,7 @@
+{
+  "bug_type": "mutable_default_argument",
+  "difficulty": "medium",
+  "description": "init_config() mutates shared defaults dict; build_url() accumulates path parts across calls",
+  "expected_fix_line": 1,
+  "known_fix_description": "Initialize defaults/path_parts inside the function when None is passed"
+}

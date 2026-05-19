@@ -1,0 +1,7 @@
+{
+  "bug_type": "missing_return",
+  "difficulty": "easy",
+  "description": "get_status() has no return or else for unhandled codes; is_positive() has no return for x <= 0",
+  "expected_fix_line": 5,
+  "known_fix_description": "Add else/return for unhandled cases; add return False for non-positive branch"
+}

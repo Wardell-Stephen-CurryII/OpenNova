@@ -1,0 +1,7 @@
+{
+  "bug_type": "missing_return",
+  "difficulty": "easy",
+  "description": "find_item() returns None implicitly when item not found (no explicit return); validate_and_get() returns None when value is None (no explicit return)",
+  "expected_fix_line": 4,
+  "known_fix_description": "Add explicit return None after loop; add explicit return in each branch"
+}

@@ -1,0 +1,7 @@
+{
+  "bug_type": "none_dereference",
+  "difficulty": "medium",
+  "description": "get_content() calls .strip() on potentially missing 'text' key returning None; get_first_key() fails on empty dict",
+  "expected_fix_line": 2,
+  "known_fix_description": "Check for None or missing key before string operations; guard empty dict"
+}

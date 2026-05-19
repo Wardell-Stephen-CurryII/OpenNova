@@ -1,0 +1,7 @@
+{
+  "bug_type": "none_dereference",
+  "difficulty": "easy",
+  "description": "config.get() returns None for missing keys, then .upper() raises AttributeError; users.get() returns None then subscript fails",
+  "expected_fix_line": 3,
+  "known_fix_description": "Check for None before calling .upper() or subscripting"
+}

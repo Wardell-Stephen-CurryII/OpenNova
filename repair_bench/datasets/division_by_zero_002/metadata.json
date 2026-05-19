@@ -1,0 +1,7 @@
+{
+  "bug_type": "division_by_zero",
+  "difficulty": "easy",
+  "description": "safe_divide() checks for negative divisor but misses zero case — both b<0 and b==0 lead to division",
+  "expected_fix_line": 3,
+  "known_fix_description": "Change condition from b < 0 to b <= 0, or add separate b == 0 check"
+}

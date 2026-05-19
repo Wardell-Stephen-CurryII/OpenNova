@@ -1,0 +1,7 @@
+{
+  "bug_type": "off_by_one",
+  "difficulty": "medium",
+  "description": "last_n slice end index is off by one for empty n=0 case",
+  "expected_fix_line": 7,
+  "known_fix_description": "Fix slice end bounds for last_n"
+}

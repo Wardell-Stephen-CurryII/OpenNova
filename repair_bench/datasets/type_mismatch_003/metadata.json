@@ -1,0 +1,7 @@
+{
+  "bug_type": "type_mismatch",
+  "difficulty": "easy",
+  "description": "iterate() tries to iterate over an int; n should be a range or sequence",
+  "expected_fix_line": 3,
+  "known_fix_description": "Accept n as count and use range(n), or check isinstance(n, int)"
+}

@@ -1,0 +1,7 @@
+{
+  "bug_type": "resource_leak",
+  "difficulty": "medium",
+  "description": "write_log() never closes file; copy_file() leaks fout handle",
+  "expected_fix_line": 2,
+  "known_fix_description": "Use with-statements or .close() for all file handles"
+}

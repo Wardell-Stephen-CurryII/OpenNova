@@ -1,4 +1,6 @@
 .opennova/
+!.opennova/skills/
+repair_bench/reports/
 .env
 __pycache__/
 *.pyc

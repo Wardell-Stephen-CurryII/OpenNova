@@ -1,0 +1,7 @@
+{
+  "bug_type": "missing_return",
+  "difficulty": "medium",
+  "description": "safe_parse() has no return in except block; get_first_positive() has no return after loop when no positive found",
+  "expected_fix_line": 6,
+  "known_fix_description": "Add return None in except block and after the loop"
+}

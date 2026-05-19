@@ -1,0 +1,7 @@
+{
+  "bug_type": "none_dereference",
+  "difficulty": "easy",
+  "description": "get_city() dereferences person.address.city without checking if address is None",
+  "expected_fix_line": 12,
+  "known_fix_description": "Add None check before accessing .city"
+}

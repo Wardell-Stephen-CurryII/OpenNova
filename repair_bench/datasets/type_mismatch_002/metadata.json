@@ -1,0 +1,7 @@
+{
+  "bug_type": "type_mismatch",
+  "difficulty": "medium",
+  "description": "parse_and_sum() sums strings instead of numbers (sum('abc'...) fails); join_numbers() tries to join ints",
+  "expected_fix_line": 3,
+  "known_fix_description": "Convert string parts to int/float: [int(p) for p in parts]; convert ints to str for join"
+}

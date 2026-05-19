@@ -1,0 +1,7 @@
+{
+  "bug_type": "mutable_default_argument",
+  "difficulty": "easy",
+  "description": "Tracker class uses mutable default list in __init__, causing all default instances to share the same list",
+  "expected_fix_line": 2,
+  "known_fix_description": "Use events=None as default and initialize self.events = events if events is not None else []"
+}

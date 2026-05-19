@@ -1,0 +1,7 @@
+{
+  "bug_type": "type_mismatch",
+  "difficulty": "easy",
+  "description": "String concatenation with integer causes TypeError",
+  "expected_fix_line": 2,
+  "known_fix_description": "Convert count/score to string: str(count), str(score)"
+}

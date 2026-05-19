@@ -1,0 +1,7 @@
+{
+  "bug_type": "index_out_of_range",
+  "difficulty": "medium",
+  "description": "consecutive_diffs() iterates to len(data) but accesses data[i+1], causing out-of-bounds on last iteration",
+  "expected_fix_line": 3,
+  "known_fix_description": "Change range(len(data)) to range(len(data) - 1)"
+}
