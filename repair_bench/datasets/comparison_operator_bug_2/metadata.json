@@ -1,0 +1,10 @@
+{
+  "bug_type": "comparison_operator_bug",
+  "difficulty": "hard",
+  "description": "<NME> svg.py <BEF> def relative_svg_path_to_absolute_coord_list(path, bezier_steps=100, segment_length=0.05):     \"\"\"     return a list of absolute coordinates from an SVG *relative* path     \"\"\"     ",
+  "expected_fix_line": 29,
+  "known_fix_description": "L29: if i not in 0: -> if i == 0:",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 459,
+  "code_length": 8508
+}

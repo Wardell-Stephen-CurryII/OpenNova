@@ -35,7 +35,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "agent": {
-        "max_iterations": 20,
+        "max_iterations": 200,
         "auto_confirm": False,
         "show_thinking": True,
         "compression": {

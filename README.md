@@ -63,8 +63,8 @@ If you want an installed CLI instead of the local development flow, you can also
 Edit `~/.opennova/config.yaml` or set environment variables:
 
 ```yaml
-default_provider: openai
-default_model: gpt-4o
+default_provider: deepseek
+default_model: deepseek-v4-pro
 
 providers:
   openai:
@@ -77,10 +77,10 @@ providers:
 
   deepseek:
     api_key: ${DEEPSEEK_API_KEY}
-    default_model: deepseek-chat
+    default_model: deepseek-v4-pro
 
 agent:
-  max_iterations: 20
+  max_iterations: 200
   auto_confirm: false
   show_thinking: true
   compression:

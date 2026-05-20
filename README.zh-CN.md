@@ -63,8 +63,8 @@ uv run opennova init
 编辑 `~/.opennova/config.yaml`，或者直接设置环境变量：
 
 ```yaml
-default_provider: openai
-default_model: gpt-4o
+default_provider: deepseek
+default_model: deepseek-v4-pro
 
 providers:
   openai:
@@ -77,7 +77,7 @@ providers:
 
   deepseek:
     api_key: ${DEEPSEEK_API_KEY}
-    default_model: deepseek-chat
+    default_model: deepseek-v4-pro
 
 agent:
   max_iterations: 20

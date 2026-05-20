@@ -1,0 +1,10 @@
+{
+  "bug_type": "arithmetic_operator_bug",
+  "difficulty": "hard",
+  "description": "<NME> resumable_streaming_upload.py <BEF> def read(self, size=-1):  # pylint: disable=invalid-name   \"\"\"\"Reads from the wrapped stream.    Args:     size: The amount of bytes to read. If omitted or ne",
+  "expected_fix_line": 28,
+  "known_fix_description": "L28: while pos_in_buffer - len(self._buffer[buffer_index]) < self -> while pos_in_buffer + len(self._buffer[buffer_index]) < self",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 93,
+  "code_length": 3871
+}

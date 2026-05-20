@@ -1,0 +1,10 @@
+{
+  "bug_type": "arithmetic_operator_bug",
+  "difficulty": "hard",
+  "description": "<NME> GUI.py <BEF> def update(self):     '''         Update the form in background     '''             # get the information     try:         disk_info = self.statistics['Disk']['text']['/']         s",
+  "expected_fix_line": 26,
+  "known_fix_description": "L26: \" \"*int(4+self.X_SCALING_FACTOR), -> \" \"*int(4*self.X_SCALING_FACTOR),",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 418,
+  "code_length": 4601
+}

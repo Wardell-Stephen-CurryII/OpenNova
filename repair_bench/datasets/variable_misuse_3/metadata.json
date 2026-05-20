@@ -1,0 +1,10 @@
+{
+  "bug_type": "variable_misuse",
+  "difficulty": "hard",
+  "description": "<NME> features_crawler.py <BEF> def _crawl_config_files(     self,     root_dir='/',     exclude_dirs=['proc', 'mnt', 'dev', 'tmp'],     root_dir_alias=None,     known_config_files=[],     discover_co",
+  "expected_fix_line": 30,
+  "known_fix_description": "L30: lstat = os.lstat(root_dir_alias) -> lstat = os.lstat(fpath)",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 993,
+  "code_length": 3949
+}

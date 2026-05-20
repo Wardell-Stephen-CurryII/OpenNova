@@ -1,0 +1,10 @@
+{
+  "bug_type": "variable_misuse",
+  "difficulty": "hard",
+  "description": "<NME> abstractJobStore.py <BEF> def clean(self, jobCache=None):     \"\"\"     Function to cleanup the state of a job store after a restart.     Fixes jobs that might have been partially updated. Resets ",
+  "expected_fix_line": 16,
+  "known_fix_description": "L16: if reachableFromRoot is None: -> if jobCache is None:",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 526,
+  "code_length": 6996
+}

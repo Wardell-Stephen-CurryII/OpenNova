@@ -48,6 +48,9 @@ def test_all_bug_types_covered():
         "off_by_one",
         "logic_error",
         "resource_leak",
+        "arithmetic_operator_bug",
+        "comparison_operator_bug",
+        "variable_misuse",
     }
     found_types = set()
     for d in sorted(DATASETS.iterdir()):
@@ -75,9 +78,9 @@ def test_buggy_code_has_at_least_one_failing_test():
 
 
 def test_sample_count():
-    """Should have exactly 27 samples."""
+    """Should have at least 27 samples (original 27 + extended dataset)."""
     samples = [d for d in DATASETS.iterdir() if d.is_dir() and (d / "buggy.py").exists()]
-    assert len(samples) == 27, f"Expected 27 samples, got {len(samples)}"
+    assert len(samples) >= 27, f"Expected at least 27 samples, got {len(samples)}"
 
 
 # --- Script Tests ---
@@ -99,7 +102,7 @@ def test_pure_llm_mock_runs():
     assert output_file.exists(), "pure_llm_results.json not created"
 
     data = json.loads(output_file.read_text())
-    assert len(data) == 27
+    assert len(data) >= 27, f"Expected at least 27 results, got {len(data)}"
     assert all("sample" in r for r in data)
     assert all("bug_type" in r for r in data)
 
@@ -120,7 +123,7 @@ def test_repair_mock_runs():
     assert output_file.exists(), "opennova_repair_results.json not created"
 
     data = json.loads(output_file.read_text())
-    assert len(data) == 27
+    assert len(data) >= 27, f"Expected at least 27 results, got {len(data)}"
     assert all("sample" in r for r in data)
     # Repair results should have validation field
     for r in data:

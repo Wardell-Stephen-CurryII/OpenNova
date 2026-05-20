@@ -67,7 +67,7 @@ class AgentRuntime:
         self.enable_skills = enable_skills
 
         agent_config = config.get("agent", {})
-        self.max_iterations = agent_config.get("max_iterations", 20)
+        self.max_iterations = agent_config.get("max_iterations", 200)
         self.show_thinking = agent_config.get("show_thinking", True)
         self.auto_confirm = agent_config.get("auto_confirm", False)
 

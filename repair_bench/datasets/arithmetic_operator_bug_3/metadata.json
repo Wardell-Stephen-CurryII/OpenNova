@@ -1,0 +1,10 @@
+{
+  "bug_type": "arithmetic_operator_bug",
+  "difficulty": "hard",
+  "description": "<NME> arguments.py <BEF> def getcallargs(func, *positional, **named):     \"\"\"Get the mapping of arguments to values.      A dict is returned, with keys the function argument names (including the     n",
+  "expected_fix_line": 40,
+  "known_fix_description": "L40: num_total = num_pos * len(named) -> num_total = num_pos + len(named)",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 105,
+  "code_length": 3748
+}

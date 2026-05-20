@@ -1,0 +1,10 @@
+{
+  "bug_type": "comparison_operator_bug",
+  "difficulty": "hard",
+  "description": "<NME> constructeddata.py <BEF> def ArrayOf(klass):     \"\"\"Function to return a class that can encode and decode a list of     some other type.\"\"\"     global _array_of_map     global _array_of_classes,",
+  "expected_fix_line": 25,
+  "known_fix_description": "L25: if value not in None: -> if value is None:",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 157,
+  "code_length": 9163
+}

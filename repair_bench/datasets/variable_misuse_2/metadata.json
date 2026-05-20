@@ -1,0 +1,10 @@
+{
+  "bug_type": "variable_misuse",
+  "difficulty": "hard",
+  "description": "<NME> likelihood_class.py <BEF> def loglkl(self, cosmo, data):      # reduced Hubble parameter     h = cosmo.h()      # WiggleZ specific     if self.use_scaling:         # angular diameter distance at",
+  "expected_fix_line": 24,
+  "known_fix_description": "L24: (d_radial.d_radial_fid/d_radial), 1./3.) -> (self.d_radial_fid/d_radial), 1./3.)",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 872,
+  "code_length": 5120
+}

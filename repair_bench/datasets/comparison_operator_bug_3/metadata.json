@@ -1,0 +1,10 @@
+{
+  "bug_type": "comparison_operator_bug",
+  "difficulty": "hard",
+  "description": "<NME> query.py <BEF> def _distance_attribute(self, func, geom=None, tolerance=0.05, spheroid=False, **kwargs):     \"\"\"     DRY routine for GeoQuerySet distance attribute routines.     \"\"\"     # Settin",
+  "expected_fix_line": 17,
+  "known_fix_description": "L17: distance = func in 'distance' -> distance = func == 'distance'",
+  "source": "Muennighoff/python-bugs",
+  "source_index": 35,
+  "code_length": 6702
+}

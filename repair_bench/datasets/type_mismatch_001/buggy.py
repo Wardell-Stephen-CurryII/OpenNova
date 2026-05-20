@@ -1,6 +1,6 @@
 def format_result(count, label):
-    return label + ': ' + count
+    return label + ': ' + str(count)
 
 
 def add_score(score):
-    return 'Score: ' + score
+    return 'Score: ' + str(score)

@@ -5,7 +5,7 @@ intelligent model-driven repair workflow (static analysis -> test feedback ->
 classification -> planning -> patch -> validation).
 
 Usage:
-    python repair_bench/scripts/run_opennova_repair.py [--model gpt-4o] [--mock]
+    python repair_bench/scripts/run_opennova_repair.py [--model deepseek-v4-pro] [--mock]
     python repair_bench/scripts/run_opennova_repair.py --dataset division_by_zero_001
 """
 
@@ -62,7 +62,7 @@ MOCK_RESULT_TEMPLATE = {
 }
 
 
-def run_repair_cli(sample_dir: str, model: str | None = None) -> dict:
+def run_repair_cli(sample_dir: str, model: str | None = None, provider: str = "deepseek") -> dict:
     """Run OpenNova repair via CLI subprocess on a single sample."""
     import subprocess
 
@@ -71,6 +71,10 @@ def run_repair_cli(sample_dir: str, model: str | None = None) -> dict:
         return {"sample": sample_dir, "error": "buggy.py not found", "bug_detected": False}
 
     task = f"/skill code_repair {target}"
+
+    # Save original buggy.py to restore after repair
+    buggy_path = target / "buggy.py"
+    original_code = buggy_path.read_text()
 
     # Ensure auto_confirm is enabled via project-local config
     config_path = _PROJECT_ROOT / ".opennova" / "config.yaml"
@@ -82,12 +86,13 @@ def run_repair_cli(sample_dir: str, model: str | None = None) -> dict:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         import yaml
 
-        config_data = {"agent": {"auto_confirm": True, "max_iterations": 30}}
+        config_data = {"agent": {"auto_confirm": True, "max_iterations": 200}}
         config_path.write_text(yaml.dump(config_data))
 
-        cmd = ["uv", "run", "opennova", "run", "--no-tui", task]
+        cmd = ["uv", "run", "opennova", "run", "--no-tui", "--provider", provider]
         if model:
             cmd.extend(["-m", model])
+        cmd.append(task)
 
         start = time.time()
         result = subprocess.run(
@@ -95,14 +100,14 @@ def run_repair_cli(sample_dir: str, model: str | None = None) -> dict:
             cwd=str(_PROJECT_ROOT),
             capture_output=True,
             text=True,
-            timeout=300,  # 5 min per sample
+            timeout=600,  # 10 min per sample
         )
         elapsed = time.time() - start
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start
         return {
             "sample": sample_dir,
-            "error": "timeout after 300s",
+            "error": "timeout after 600s",
             "bug_detected": False,
             "method": "opennova_repair",
             "runtime_seconds": round(elapsed, 2),
@@ -113,6 +118,8 @@ def run_repair_cli(sample_dir: str, model: str | None = None) -> dict:
             config_path.write_text(config_backup)
         else:
             config_path.unlink(missing_ok=True)
+        # Restore original buggy code
+        buggy_path.write_text(original_code)
 
     # Try to read the generated repair_result.json
     result_path = target / "repair_result.json"
@@ -165,6 +172,7 @@ def run_repair_mock(sample_dir: str) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="OpenNova Model-Driven Repair")
     parser.add_argument("--model", default=None, help="LLM model override")
+    parser.add_argument("--provider", default="deepseek", help="LLM provider (openai, anthropic, deepseek)")
     parser.add_argument("--mock", action="store_true", help="Use mock responses (no API calls)")
     parser.add_argument("--dataset", help="Run on a specific dataset sample only")
     parser.add_argument(
@@ -180,6 +188,7 @@ def main():
         )
 
     print(f"Running OpenNova Repair on {len(samples)} samples...")
+    print(f"Provider: {args.provider}, Model: {args.model or 'default'}")
     if args.mock:
         print("[MOCK MODE] No API calls will be made.")
 
@@ -190,7 +199,7 @@ def main():
         if args.mock:
             r = run_repair_mock(sample)
         else:
-            r = run_repair_cli(sample, model=args.model)
+            r = run_repair_cli(sample, model=args.model, provider=args.provider)
 
         bug = "BUG" if r.get("bug_detected") else "OK" if "error" not in r else "ERR"
         bug_type = r.get("bug_type", "?")
