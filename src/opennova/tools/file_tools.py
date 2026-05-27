@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from opennova.diff.engine import DiffEngine
+from opennova.security.sandbox import Sandbox, SandboxConfig
 from opennova.tools.base import BaseTool, ToolResult
 
 
@@ -106,6 +107,21 @@ def _truncate_output(output: str, max_size: int = MAX_OUTPUT_SIZE) -> str:
     return output
 
 
+def _build_sandbox(tool_config: dict[str, Any] | None = None) -> Sandbox:
+    """Create a sandbox from tool config."""
+    config = tool_config or {}
+    sandbox_config = SandboxConfig(
+        working_dir=str(config.get("working_dir", os.getcwd())),
+        allowed_paths=config.get("allowed_paths", []),
+        denied_paths=config.get("denied_paths"),
+        max_file_size=int(config.get("max_file_size", MAX_FILE_SIZE)),
+        allow_network=bool(config.get("allow_network", False)),
+        read_only=bool(config.get("read_only", False)),
+        temp_dir=config.get("temp_dir"),
+    )
+    return Sandbox(sandbox_config)
+
+
 class ReadFileTool(BaseTool):
     """Read file contents with optional line range support."""
 
@@ -115,6 +131,10 @@ class ReadFileTool(BaseTool):
         "Returns file content with line numbers. "
         "Optionally specify start_line and end_line to read a range."
     )
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.sandbox = _build_sandbox(config)
 
     def execute(
         self,
@@ -133,9 +153,10 @@ class ReadFileTool(BaseTool):
         Returns:
             ToolResult with file content
         """
-        is_valid, resolved_path, error = _validate_path(file_path)
-        if not is_valid:
-            return ToolResult(success=False, output="", error=error)
+        is_allowed, reason = self.sandbox.is_path_allowed(file_path)
+        if not is_allowed:
+            return ToolResult(success=False, output="", error=reason)
+        resolved_path = str(Path(file_path).resolve())
 
         if _is_binary_file(resolved_path):
             return ToolResult(
@@ -145,16 +166,14 @@ class ReadFileTool(BaseTool):
             )
 
         try:
-            file_size = os.path.getsize(resolved_path)
-            if file_size > MAX_FILE_SIZE:
-                return ToolResult(
-                    success=False,
-                    output="",
-                    error=f"File too large: {file_size} bytes (max: {MAX_FILE_SIZE})",
-                )
+            ok, content_or_error = self.sandbox.safe_read(resolved_path)
+            if not ok:
+                return ToolResult(success=False, output="", error=str(content_or_error))
 
-            with open(resolved_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+            raw_content = content_or_error if isinstance(content_or_error, bytes) else b""
+            file_size = len(raw_content)
+            text_content = raw_content.decode("utf-8", errors="replace")
+            lines = text_content.splitlines(keepends=True)
 
             total_lines = len(lines)
 
@@ -215,6 +234,10 @@ class WriteFileTool(BaseTool):
         "Use with caution as this operation is destructive."
     )
 
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.sandbox = _build_sandbox(config)
+
     def execute(self, file_path: str, content: str) -> ToolResult:
         """
         Write content to a file.
@@ -226,21 +249,27 @@ class WriteFileTool(BaseTool):
         Returns:
             ToolResult indicating success or failure
         """
-        try:
-            path = Path(file_path).resolve()
-        except Exception as e:
-            return ToolResult(success=False, output="", error=f"Invalid path: {e}")
+        is_allowed, reason = self.sandbox.is_path_allowed(file_path)
+        if not is_allowed:
+            return ToolResult(success=False, output="", error=reason)
+        path = Path(file_path).resolve()
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-
             old_content = ""
             file_existed = path.exists()
             if file_existed:
-                old_content = path.read_text(encoding="utf-8")
+                read_ok, read_result = self.sandbox.safe_read(path)
+                if not read_ok:
+                    return ToolResult(success=False, output="", error=str(read_result))
+                old_content = (
+                    read_result.decode("utf-8", errors="replace")
+                    if isinstance(read_result, bytes)
+                    else ""
+                )
 
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            write_ok, write_result = self.sandbox.safe_write(path, content.encode("utf-8"))
+            if not write_ok:
+                return ToolResult(success=False, output="", error=str(write_result))
 
             diff_engine = DiffEngine()
             diff_text = diff_engine.generate_diff(old_content, content, str(path))
@@ -283,6 +312,10 @@ class CreateFileTool(BaseTool):
         "Fails if file already exists."
     )
 
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.sandbox = _build_sandbox(config)
+
     def execute(self, file_path: str, content: str = "") -> ToolResult:
         """
         Create a new file.
@@ -294,10 +327,10 @@ class CreateFileTool(BaseTool):
         Returns:
             ToolResult indicating success or failure
         """
-        try:
-            path = Path(file_path).resolve()
-        except Exception as e:
-            return ToolResult(success=False, output="", error=f"Invalid path: {e}")
+        is_allowed, reason = self.sandbox.is_path_allowed(file_path)
+        if not is_allowed:
+            return ToolResult(success=False, output="", error=reason)
+        path = Path(file_path).resolve()
 
         if path.exists():
             return ToolResult(
@@ -307,10 +340,9 @@ class CreateFileTool(BaseTool):
             )
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            write_ok, write_result = self.sandbox.safe_write(path, content.encode("utf-8"))
+            if not write_ok:
+                return ToolResult(success=False, output="", error=str(write_result))
 
             metadata: dict[str, Any] = {
                 "file_path": str(path),
@@ -353,6 +385,10 @@ class DeleteFileTool(BaseTool):
         "Use with extreme caution."
     )
 
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.sandbox = _build_sandbox(config)
+
     def execute(self, file_path: str, confirm: bool = False) -> ToolResult:
         """
         Delete a file.
@@ -372,9 +408,10 @@ class DeleteFileTool(BaseTool):
                 metadata={"requires_confirmation": True},
             )
 
-        is_valid, resolved_path, error = _validate_path(file_path)
-        if not is_valid:
-            return ToolResult(success=False, output="", error=error)
+        is_allowed, reason = self.sandbox.is_path_allowed(file_path)
+        if not is_allowed:
+            return ToolResult(success=False, output="", error=reason)
+        resolved_path = str(Path(file_path).resolve())
 
         try:
             path = Path(resolved_path)
@@ -385,7 +422,9 @@ class DeleteFileTool(BaseTool):
                     error=f"Not a file: {file_path}",
                 )
 
-            path.unlink()
+            ok, delete_result = self.sandbox.safe_delete(path)
+            if not ok:
+                return ToolResult(success=False, output="", error=str(delete_result))
 
             return ToolResult(
                 success=True,
@@ -415,6 +454,10 @@ class ListDirectoryTool(BaseTool):
         "List the contents of a directory. "
         "Returns files and subdirectories with their types."
     )
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.sandbox = _build_sandbox(config)
 
     def execute(
         self,
@@ -451,6 +494,9 @@ class ListDirectoryTool(BaseTool):
                 output="",
                 error=f"Not a directory: {directory}",
             )
+        is_allowed, reason = self.sandbox.is_path_allowed(path)
+        if not is_allowed:
+            return ToolResult(success=False, output="", error=reason)
 
         def format_entry(entry: Path, depth: int = 0) -> str:
             """Format a single directory entry."""
@@ -471,6 +517,9 @@ class ListDirectoryTool(BaseTool):
             entries = []
             try:
                 for entry in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name)):
+                    entry_allowed, _ = self.sandbox.is_path_allowed(entry)
+                    if not entry_allowed:
+                        continue
                     entries.append(format_entry(entry, depth))
                     if entry.is_dir() and recursive and not entry.name.startswith("."):
                         entries.extend(list_recursive(entry, depth + 1))
@@ -486,6 +535,9 @@ class ListDirectoryTool(BaseTool):
             else:
                 lines = [f"Directory: {directory}\n"]
                 for entry in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name)):
+                    entry_allowed, _ = self.sandbox.is_path_allowed(entry)
+                    if not entry_allowed:
+                        continue
                     lines.append(format_entry(entry))
 
             output = "\n".join(lines)

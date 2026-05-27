@@ -259,7 +259,11 @@ summary = memory.get_summary()
 ```python
 from opennova.security.guardrails import Guardrails
 
-guard = Guardrails(sandbox_mode=True)
+guard = Guardrails(
+    sandbox_mode=True,
+    allow_network=True,
+    auto_confirm_safe=True,
+)
 result = guard.check_command("rm -rf /")
 print(result.allowed)
 print(result.risk_level)

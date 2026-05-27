@@ -89,6 +89,17 @@ agent:
     keep_last_pairs: 6
     max_tool_result_tokens: 8000
 
+security:
+  sandbox_mode: true
+  command_timeout: 30
+  allow_network: true
+  auto_confirm_safe: true
+  allowed_paths: []
+  blocked_commands: []
+  strict_shell_parsing: false
+  read_only: false
+  max_file_size: 104857600
+
 mcp:
   enabled: true
   servers:
@@ -310,6 +321,8 @@ OpenNova includes several safety mechanisms:
 - **Protected paths** for system directories such as `/etc` and `/usr`
 - **Confirmation prompts** for risky operations
 - **Sensitive file detection** for files like `.env` and `.pem`
+- **Optional network policy** (`security.allow_network`) to block tool/network access
+- **Strict shell parsing mode** (`security.strict_shell_parsing`) to reject shell syntax fallback
 
 ## Development
 

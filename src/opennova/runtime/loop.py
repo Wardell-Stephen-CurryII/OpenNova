@@ -27,6 +27,7 @@ from opennova.providers.base import (
     ToolSchema,
 )
 from opennova.runtime.state import AgentState, Plan
+from opennova.security.guardrails import GuardResult, Guardrails, RiskLevel
 from opennova.skills.registry import SkillRegistry
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 
@@ -81,6 +82,8 @@ class ReActLoop:
         skill_registry: SkillRegistry | None = None,
         context_manager: ContextManager | None = None,
         working_memory: WorkingMemory | None = None,
+        guardrails: Guardrails | None = None,
+        working_dir: str | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -103,6 +106,8 @@ class ReActLoop:
         self.skill_registry = skill_registry
         self.context_manager = context_manager if context_manager is not None else ContextManager(model=llm.model)
         self.working_memory = working_memory
+        self.guardrails = guardrails
+        self.working_dir = working_dir
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
@@ -488,6 +493,37 @@ class ReActLoop:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
 
         try:
+            guard_result = self._check_tool_guard(action)
+            if not guard_result.allowed:
+                if self.working_memory and action_record:
+                    self.working_memory.update_action(
+                        action_record.id,
+                        ActionStatus.FAILED,
+                        error=guard_result.reason,
+                    )
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=guard_result.reason,
+                    metadata={
+                        "guard_blocked": True,
+                        "risk_level": guard_result.risk_level.value,
+                        "requires_confirmation": guard_result.requires_confirmation,
+                        "suggestions": guard_result.suggestions,
+                    },
+                )
+
+            if guard_result.requires_confirmation and guard_result.risk_level == RiskLevel.WARN:
+                confirm_result = await self._confirm_warn_action(action, guard_result)
+                if not confirm_result.success:
+                    if self.working_memory and action_record:
+                        self.working_memory.update_action(
+                            action_record.id,
+                            ActionStatus.FAILED,
+                            error=confirm_result.error or "User declined action",
+                        )
+                    return confirm_result
+
             if hasattr(tool, "async_execute"):
                 result = await tool.async_execute(**action.arguments)
             else:
@@ -517,6 +553,97 @@ class ReActLoop:
                 output="",
                 error=f"Tool execution failed: {e}",
             )
+
+    def _check_tool_guard(self, action: ParsedAction) -> GuardResult:
+        """Run guardrails for a pending tool action."""
+        if not self.guardrails:
+            return GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.SAFE,
+                reason="Guardrails disabled",
+                requires_confirmation=False,
+            )
+        return self.guardrails.check_tool_call(
+            action.tool_name,
+            action.arguments,
+            working_dir=self.working_dir,
+        )
+
+    async def _confirm_warn_action(self, action: ParsedAction, guard_result: GuardResult) -> ToolResult:
+        """Request user confirmation for WARN-level operations."""
+        prompt_result = ToolResult(
+            success=True,
+            output=(
+                f"Confirmation required: {guard_result.reason}\n"
+                "Proceed only if this is intentional."
+            ),
+            metadata={
+                "interaction_required": True,
+                "interaction_type": "ask_user_question",
+                "questions": [
+                    {
+                        "question": (
+                            f"{guard_result.reason}\n"
+                            f"Tool: {action.tool_name}\n"
+                            "Do you want to proceed?"
+                        ),
+                        "header": "Confirm",
+                        "options": [
+                            {
+                                "index": 1,
+                                "label": "Proceed",
+                                "description": "Execute this action now.",
+                            },
+                            {
+                                "index": 2,
+                                "label": "Cancel",
+                                "description": "Skip this action and continue safely.",
+                            },
+                        ],
+                        "multiSelect": False,
+                        "free_text": False,
+                    }
+                ],
+                "prompt_payload": {
+                    "question": (
+                        f"{guard_result.reason}\n"
+                        f"Tool: {action.tool_name}\n"
+                        "Do you want to proceed?"
+                    ),
+                    "header": "Confirm",
+                    "options": [
+                        {"index": 1, "label": "Proceed", "description": "Execute this action now."},
+                        {"index": 2, "label": "Cancel", "description": "Skip this action and continue safely."},
+                    ],
+                    "multi_select": False,
+                    "free_text": False,
+                },
+            },
+        )
+        resolved = await self._resolve_interaction(prompt_result)
+        if not resolved.success:
+            return ToolResult(
+                success=False,
+                output="",
+                error=resolved.error or "Confirmation failed",
+                metadata={**resolved.metadata, "guard_confirmation_failed": True},
+            )
+
+        all_answers = resolved.metadata.get("all_answers", [])
+        selected_answer = ""
+        if all_answers:
+            selected_answer = str(all_answers[0].get("answer") or "")
+        if not selected_answer:
+            selected_answer = str(resolved.metadata.get("answer") or "")
+        if selected_answer.strip().lower() not in {"proceed", "yes", "y", "1"}:
+            return ToolResult(
+                success=False,
+                output="Action cancelled by user confirmation policy.",
+                error="User declined confirmation",
+                metadata={"guard_confirmation_declined": True},
+            )
+
+        return ToolResult(success=True, output="User confirmed action")
     async def _resolve_interaction(self, result: ToolResult) -> ToolResult:
         """Resolve an interactive tool result through the registered runtime callback."""
         if not self.interaction_callback:

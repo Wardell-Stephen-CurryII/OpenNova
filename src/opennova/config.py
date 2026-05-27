@@ -48,6 +48,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "security": {
         "sandbox_mode": True,
         "command_timeout": 30,
+        "allow_network": True,
+        "auto_confirm_safe": True,
+        "allowed_paths": [],
+        "blocked_commands": [],
+        "strict_shell_parsing": False,
+        "read_only": False,
+        "max_file_size": 104857600,
     },
     "mcp": {
         "enabled": True,
