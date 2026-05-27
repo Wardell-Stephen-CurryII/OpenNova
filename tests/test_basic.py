@@ -932,6 +932,7 @@ def test_repl_command_completer_suggests_slash_commands():
 
     assert _completion_texts(repl, "/pl") == ["/plan"]
     assert "/skills" in _completion_texts(repl, "/")
+    assert "/init" in _completion_texts(repl, "/")
 
 
 def test_repl_command_completer_normalizes_underscore_prefix():
@@ -980,6 +981,30 @@ def test_repl_config_command_handles_missing_config():
     asyncio.run(repl._cmd_config(""))
 
     assert errors == ["No configuration object available."]
+
+
+def test_repl_init_command_passes_force_flag():
+    """REPL /init should call runtime initializer with optional --force."""
+    from opennova.cli.repl import REPL
+
+    calls = []
+    runtime = AgentRuntime.__new__(AgentRuntime)
+
+    async def _init_project_guide_async(force=False):
+        calls.append(force)
+        return ToolResult(success=True, output="ok")
+
+    runtime.init_project_guide_async = _init_project_guide_async
+
+    repl = REPL(runtime, config=None)
+    messages = []
+    repl.renderer.print_success = lambda message: messages.append(message)
+
+    asyncio.run(repl._cmd_init(""))
+    asyncio.run(repl._cmd_init("--force"))
+
+    assert calls == [False, True]
+    assert messages == ["ok", "ok"]
 
 
 def test_repl_history_command_shows_empty_state():

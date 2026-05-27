@@ -149,6 +149,7 @@ class AgentRuntime:
             ExitPlanModeTool,
         )
         from opennova.tools.web_tools import WebFetchTool, WebSearchTool
+        from opennova.tools.project_guide_tool import InitProjectGuideTool
         from opennova.tools.git_tools import (
             GitBranchTool,
             GitCommitTool,
@@ -188,6 +189,9 @@ class AgentRuntime:
         # Web tools
         self.tool_registry.register(WebSearchTool())
         self.tool_registry.register(WebFetchTool())
+        self.tool_registry.register(
+            InitProjectGuideTool(config={"working_dir": os.getcwd(), "runtime": self})
+        )
 
         # Git tools
         self.tool_registry.register(GitCommitTool())
@@ -396,6 +400,20 @@ class AgentRuntime:
                 for decision in relevant_decisions
             ]
             memory_parts.append("Relevant prior decisions:\n" + "\n".join(decision_lines))
+
+        try:
+            from opennova.memory.project_guide import ProjectGuideManager
+
+            project_path = getattr(self.project_memory, "project_path", Path(os.getcwd()))
+            guide_manager = ProjectGuideManager(project_path=project_path)
+            guide_text = guide_manager.load_for_context(max_chars=5000)
+            if guide_text:
+                memory_parts.append(
+                    "Project guide (OPENNOVA.md) — follow these project-specific conventions when relevant:\n"
+                    + guide_text
+                )
+        except Exception:
+            pass
 
         memory_text = "\n\n".join(part for part in memory_parts if part)
         if not memory_text.strip():
@@ -717,6 +735,86 @@ class AgentRuntime:
     def get_tools(self) -> list[str]:
         """Get list of registered tool names."""
         return self.tool_registry.list_names()
+
+    async def init_project_guide_async(self, force: bool = False) -> ToolResult:
+        """Initialize OPENNOVA.md using LLM-driven project understanding."""
+        from opennova.memory.project_guide import ProjectGuideManager
+
+        project_memory = getattr(self, "project_memory", None)
+        project_path = getattr(project_memory, "project_path", Path(os.getcwd()))
+        manager = ProjectGuideManager(project_path=project_path)
+
+        if manager.exists() and not force:
+            result = manager.create_or_skip(force=False)
+            return ToolResult(
+                success=True,
+                output=result.message,
+                metadata={
+                    "status": result.status,
+                    "file_path": str(result.path),
+                    "overwritten": result.overwritten,
+                    "force": force,
+                    "source": "skip",
+                },
+            )
+
+        brief = manager.build_generation_brief()
+        messages = [
+            Message(
+                role="system",
+                content=(
+                    "You are generating an OPENNOVA.md project guide for an AI coding assistant. "
+                    "Analyze the provided project facts and write a practical, high-signal guide in Markdown. "
+                    "Do not output code fences around the whole document."
+                ),
+            ),
+            Message(
+                role="user",
+                content=(
+                    "Write OPENNOVA.md for this repository.\n\n"
+                    "Required coverage (you decide structure/detail):\n"
+                    "- project overview and goals\n"
+                    "- tech stack and architecture conventions\n"
+                    "- directory structure highlights\n"
+                    "- common development commands\n"
+                    "- coding standards and workflow preferences\n"
+                    "- testing expectations\n"
+                    "- environment variables and third-party services\n"
+                    "- known issues / risks / forbidden operations\n"
+                    "- practical collaboration guidance for the AI assistant\n\n"
+                    "Requirements:\n"
+                    "1. Be specific to the current repository, avoid generic filler.\n"
+                    "2. If facts are unknown, explicitly mark as TODO rather than inventing.\n"
+                    "3. Keep it concise but actionable.\n"
+                    "4. Write in Chinese by default.\n\n"
+                    f"Project facts:\n{brief}"
+                ),
+            ),
+        ]
+
+        try:
+            response = await self.llm.chat(messages, temperature=0.2)
+            content = ProjectGuideManager.normalize_generated_markdown(response.content)
+            if not content.strip():
+                raise ValueError("LLM returned empty content")
+            result = manager.create_or_skip(force=force, content=content + "\n")
+            source = "llm"
+        except Exception:
+            # Fallback only when LLM generation fails.
+            result = manager.create_or_skip(force=force)
+            source = "fallback_template"
+
+        return ToolResult(
+            success=True,
+            output=result.message,
+            metadata={
+                "status": result.status,
+                "file_path": str(result.path),
+                "overwritten": result.overwritten,
+                "force": force,
+                "source": source,
+            },
+        )
 
     def get_model_info(self) -> dict[str, Any]:
         """Get information about the current LLM model."""

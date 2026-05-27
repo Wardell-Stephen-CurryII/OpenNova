@@ -280,6 +280,7 @@ class Renderer:
 - `/skill <name> [args]` - Invoke a loaded skill directly
 - `/reload-skills` - Reload skills from disk
 - `/model` - Show current model info
+- `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation state
@@ -409,6 +410,7 @@ class REPL:
             "/skill": self._cmd_skill,
             "/reload-skills": self._cmd_reload_skills,
             "/model": self._cmd_model,
+            "/init": self._cmd_init,
             "/config": self._cmd_config,
             "/clear": self._cmd_clear,
             "/exit": self._cmd_exit,
@@ -724,6 +726,23 @@ class REPL:
             table.add_row(key, str(value))
 
         self.renderer.print(table)
+
+    async def _cmd_init(self, args: str) -> None:
+        """Initialize OPENNOVA.md project guide."""
+        force = False
+        tokens = [token for token in args.split() if token.strip()]
+        if tokens:
+            if len(tokens) == 1 and tokens[0] in {"--force", "-f"}:
+                force = True
+            else:
+                self.renderer.print_error("Usage: /init [--force]")
+                return
+
+        result = await self.agent.init_project_guide_async(force=force)
+        if result.success:
+            self.renderer.print_success(result.output)
+        else:
+            self.renderer.print_error(result.error or "Failed to initialize OPENNOVA.md")
 
     async def _cmd_config(self, args: str) -> None:
         """Show current configuration."""

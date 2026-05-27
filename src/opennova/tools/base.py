@@ -313,6 +313,7 @@ def register_builtin_tools(registry: ToolRegistry | None = None) -> ToolRegistry
         ListDirectoryTool,
     )
     from opennova.tools.shell_tools import ExecuteCommandTool
+    from opennova.tools.project_guide_tool import InitProjectGuideTool
 
     registry.register(ReadFileTool())
     registry.register(WriteFileTool())
@@ -320,5 +321,6 @@ def register_builtin_tools(registry: ToolRegistry | None = None) -> ToolRegistry
     registry.register(DeleteFileTool())
     registry.register(ListDirectoryTool())
     registry.register(ExecuteCommandTool())
+    registry.register(InitProjectGuideTool())
 
     return registry

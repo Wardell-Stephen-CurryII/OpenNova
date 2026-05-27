@@ -110,6 +110,7 @@ class ReActLoop:
         self._errors: list[str] = []
         self._skill_listing_sent: bool = False
         self._skill_routed: bool = False
+        self._project_init_routed: bool = False
 
     @property
     def messages(self) -> list[Message]:
@@ -186,7 +187,9 @@ class ReActLoop:
 
         self.add_message(Message(role="user", content=f"Task: {task}"))
         self._report_progress(activity=f"Started task: {task}")
-        pending_routed_action: ParsedAction | None = self._route_task_to_skill(task)
+        pending_routed_action: ParsedAction | None = self._route_task_to_project_init(task)
+        if pending_routed_action is None:
+            pending_routed_action = self._route_task_to_skill(task)
 
         while (
             not self.state.is_complete
@@ -364,12 +367,39 @@ class ReActLoop:
             action = self._parse_skill_invocation(action, content)
 
         if response.finish_reason == FinishReason.STOP and not response.tool_calls and not action.tool_name:
-            routed_action = self._route_task_to_skill(task)
+            routed_action = self._route_task_to_project_init(task)
+            if not routed_action:
+                routed_action = self._route_task_to_skill(task)
             if routed_action:
                 return routed_action
             action.is_final = True
 
         return action
+
+    def _route_task_to_project_init(self, task: str) -> ParsedAction | None:
+        """Route obvious project-initialization requests to init_project_guide."""
+        if self._project_init_routed:
+            return None
+        if "init_project_guide" not in self.tool_registry:
+            return None
+
+        from opennova.memory.project_guide import ProjectGuideManager
+
+        guide_manager = ProjectGuideManager(project_path=".")
+        if guide_manager.exists():
+            return None
+        if not guide_manager.is_high_confidence_init_request(task):
+            return None
+
+        self._project_init_routed = True
+        return ParsedAction(
+            tool_name="init_project_guide",
+            arguments={"force": False},
+            thought=(
+                "The user asked to initialize project onboarding context, "
+                "so I will create OPENNOVA.md first."
+            ),
+        )
 
     def _route_task_to_skill(self, task: str) -> ParsedAction | None:
         """Route obvious natural-language skill requests before accepting prose answers."""

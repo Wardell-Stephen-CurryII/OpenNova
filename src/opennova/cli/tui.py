@@ -568,6 +568,7 @@ class OpenNovaTUI(App):
         "/skill": "_cmd_skill",
         "/reload-skills": "_cmd_reload_skills",
         "/model": "_cmd_model",
+        "/init": "_cmd_init",
         "/config": "_cmd_config",
         "/clear": "_cmd_clear",
         "/exit": "_cmd_exit",
@@ -579,7 +580,7 @@ class OpenNovaTUI(App):
 
     # Commands that return quickly and can be awaited synchronously
     _SYNC_COMMANDS: set[str] = {
-        "/help", "/tools", "/skills", "/model", "/config",
+        "/help", "/tools", "/skills", "/model", "/init", "/config",
         "/clear", "/exit", "/quit", "/history", "/reload-skills",
         "/resume", "/sessions",
     }
@@ -622,6 +623,7 @@ class OpenNovaTUI(App):
 - `/skill <name> [args]` - Invoke a skill directly
 - `/reload-skills` - Reload skills from disk
 - `/model` - Show current model info
+- `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation (starts a new session)
@@ -730,6 +732,23 @@ class OpenNovaTUI(App):
         for key, value in info.items():
             table.add_row(key, str(value))
         log.write(table)
+
+    async def _cmd_init(self, args: str) -> None:
+        log = self.query_one("#messages")
+        force = False
+        tokens = [token for token in args.split() if token.strip()]
+        if tokens:
+            if len(tokens) == 1 and tokens[0] in {"--force", "-f"}:
+                force = True
+            else:
+                log.write("[red]Usage: /init [--force][/red]")
+                return
+
+        result = await self.agent.init_project_guide_async(force=force)
+        if result.success:
+            log.write(f"[green]{result.output}[/green]")
+        else:
+            log.write(f"[red]{result.error or 'Failed to initialize OPENNOVA.md'}[/red]")
 
     async def _cmd_config(self, args: str) -> None:
         import yaml
