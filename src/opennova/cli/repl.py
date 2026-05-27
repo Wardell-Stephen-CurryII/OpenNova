@@ -738,7 +738,7 @@ class REPL:
                 self.renderer.print_error("Usage: /init [--force]")
                 return
 
-        result = await self.agent.init_project_guide_async(force=force)
+        result = await self._run_with_spinner(self.agent.init_project_guide_async(force=force))
         if result.success:
             self.renderer.print_success(result.output)
         else:

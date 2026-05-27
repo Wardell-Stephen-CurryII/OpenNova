@@ -580,7 +580,7 @@ class OpenNovaTUI(App):
 
     # Commands that return quickly and can be awaited synchronously
     _SYNC_COMMANDS: set[str] = {
-        "/help", "/tools", "/skills", "/model", "/init", "/config",
+        "/help", "/tools", "/skills", "/model", "/config",
         "/clear", "/exit", "/quit", "/history", "/reload-skills",
         "/resume", "/sessions",
     }
@@ -744,7 +744,9 @@ class OpenNovaTUI(App):
                 log.write("[red]Usage: /init [--force][/red]")
                 return
 
-        result = await self.agent.init_project_guide_async(force=force)
+        result = await self._run_agent_task(self.agent.init_project_guide_async(force=force))
+        if result is None:
+            return
         if result.success:
             log.write(f"[green]{result.output}[/green]")
         else:
@@ -976,7 +978,7 @@ class OpenNovaTUI(App):
 
             result = self._agent_task.result()
             self._set_status("")
-            if result:
+            if isinstance(result, str) and result:
                 log.write(Markdown(result))
                 log.scroll_end(animate=False)
             return result

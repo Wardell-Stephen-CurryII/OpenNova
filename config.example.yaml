@@ -2,7 +2,7 @@
 # Copy this file to ~/.opennova/config.yaml and fill in your API keys
 
 # Default LLM provider to use
-default_provider: openai
+default_provider: deepseek
 
 # Provider configurations
 providers:
@@ -19,12 +19,12 @@ providers:
   deepseek:
     api_key: ${DEEPSEEK_API_KEY}
     base_url: https://api.deepseek.com/v1
-    default_model: deepseek-chat
+    default_model: deepseek-v4-pro
 
 # Agent behavior configuration
 agent:
   # Maximum iterations in ReAct loop
-  max_iterations: 20
+  max_iterations: 200
   
   # Auto-confirm dangerous operations (not recommended)
   auto_confirm: false
