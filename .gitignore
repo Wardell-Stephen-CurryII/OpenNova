@@ -12,3 +12,5 @@ build/
 .mypy_cache/
 .ruff_cache/
 .claude/
+repair_bench
+test.py
