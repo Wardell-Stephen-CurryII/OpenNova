@@ -93,6 +93,28 @@ SENSITIVE_FILE_PATTERNS = [
     r"\.htpasswd$",
 ]
 
+NETWORK_COMMAND_PATTERNS = [
+    (r"\bcurl\b", "Network command: curl"),
+    (r"\bwget\b", "Network command: wget"),
+    (r"\bpip(?:3)?\s+(install|download)\b", "Python package download/install"),
+    (r"\buv\s+(sync|add|pip|tool\s+install)\b", "uv dependency/network operation"),
+    (r"\bnpm\s+(install|i|update|add)\b", "npm package install/update"),
+    (r"\byarn\s+(add|install)\b", "yarn package install"),
+    (r"\bpnpm\s+(add|install)\b", "pnpm package install"),
+    (r"\bgit\s+(clone|fetch|pull)\b", "git network operation"),
+]
+
+SHELL_FEATURE_PATTERNS = [
+    r"\|",
+    r">>",
+    r"(?<!\d)>",
+    r"<",
+    r"\$\(",
+    r"`[^`]+`",
+    r"\*",
+    r"\?",
+]
+
 
 class Guardrails:
     """
@@ -110,6 +132,7 @@ class Guardrails:
         allowed_paths: list[str] | None = None,
         blocked_commands: list[str] | None = None,
         auto_confirm_safe: bool = True,
+        allow_network: bool = True,
     ):
         """
         Initialize guardrails.
@@ -124,6 +147,15 @@ class Guardrails:
         self.allowed_paths = allowed_paths or []
         self.blocked_commands = blocked_commands or []
         self.auto_confirm_safe = auto_confirm_safe
+        self.allow_network = allow_network
+
+    @staticmethod
+    def command_uses_shell_features(command: str) -> bool:
+        """Return whether command uses shell-specific syntax."""
+        stripped = command.strip()
+        if not stripped:
+            return False
+        return any(re.search(pattern, stripped) for pattern in SHELL_FEATURE_PATTERNS)
 
     def check_command(self, command: str) -> GuardResult:
         """
@@ -159,6 +191,16 @@ class Guardrails:
                     ],
                 )
 
+        if not self.allow_network:
+            for pattern, description in NETWORK_COMMAND_PATTERNS:
+                if re.search(pattern, command_stripped, re.IGNORECASE):
+                    return GuardResult(
+                        allowed=False,
+                        risk_level=RiskLevel.BLOCK,
+                        reason=f"Network access is disabled by policy: {description}",
+                        requires_confirmation=False,
+                    )
+
         destructive_patterns = [
             (r"rm\s+", "File deletion"),
             (r"rmdir", "Directory removal"),
@@ -181,6 +223,18 @@ class Guardrails:
                         "Double-check the target",
                     ],
                 )
+
+        if self.command_uses_shell_features(command_stripped):
+            return GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.WARN,
+                reason="Command uses shell syntax and requires shell fallback parsing",
+                requires_confirmation=True,
+                suggestions=[
+                    "Prefer argument-based commands without shell operators",
+                    "Confirm shell fallback execution if this is intentional",
+                ],
+            )
 
         return GuardResult(
             allowed=True,
@@ -294,6 +348,14 @@ class Guardrails:
                 reason=f"Unsupported URL scheme: {parsed.scheme}",
             )
 
+        if not self.allow_network:
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason="Network access is disabled by policy",
+                requires_confirmation=False,
+            )
+
         internal_hosts = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "192.168.", "10.", "172.")
         is_internal = any(
             parsed.hostname and parsed.hostname.startswith(h)
@@ -374,11 +436,17 @@ class Guardrails:
         elif tool_name == "delete_file":
             file_path = arguments.get("file_path", "")
             return self.check_file_path(file_path, "delete", working_dir)
+        elif tool_name == "list_directory":
+            directory = arguments.get("directory", ".")
+            return self.check_file_path(directory, "read", working_dir)
 
         elif tool_name == "http_request":
             url = arguments.get("url", "")
             method = arguments.get("method", "GET")
             return self.check_http_request(url, method)
+        elif tool_name == "web_fetch":
+            url = arguments.get("url", "")
+            return self.check_http_request(url, "GET")
 
         return GuardResult(
             allowed=True,

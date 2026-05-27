@@ -65,6 +65,14 @@ class WebFetchTool(BaseTool):
 
     async def async_execute(self, url: str, **kwargs: Any) -> ToolResult:
         try:
+            if not bool(self.config.get("allow_network", True)):
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error="Network access is disabled by security.allow_network=false",
+                    metadata={"guard_blocked": True, "risk_level": "block"},
+                )
+
             parsed = urlparse(url)
             if not all([parsed.scheme, parsed.netloc]):
                 return ToolResult(

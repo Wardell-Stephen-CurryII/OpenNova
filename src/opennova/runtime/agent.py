@@ -70,6 +70,7 @@ class AgentRuntime:
         self.max_iterations = agent_config.get("max_iterations", 20)
         self.show_thinking = agent_config.get("show_thinking", True)
         self.auto_confirm = agent_config.get("auto_confirm", False)
+        self.security_config = config.get("security", {})
 
         self.llm = ProviderFactory.create_provider(config)
         self.project_memory = ProjectMemory(project_path=os.getcwd())
@@ -103,6 +104,15 @@ class AgentRuntime:
         self.mcp_manager = None
         self._mcp_server_configs = []
         self.skill_registry = None
+        from opennova.security.guardrails import Guardrails
+
+        self.guardrails = Guardrails(
+            sandbox_mode=self.security_config.get("sandbox_mode", True),
+            allowed_paths=self.security_config.get("allowed_paths", []),
+            blocked_commands=self.security_config.get("blocked_commands", []),
+            auto_confirm_safe=self.security_config.get("auto_confirm_safe", True),
+            allow_network=self.security_config.get("allow_network", True),
+        )
 
         # Set global task manager for task tools
         from opennova.tools.task_tools import set_global_task_manager
@@ -123,6 +133,14 @@ class AgentRuntime:
         tool_config = {
             "command_timeout": security_config.get("command_timeout", 30),
             "working_dir": os.getcwd(),
+            "sandbox_mode": security_config.get("sandbox_mode", True),
+            "allowed_paths": security_config.get("allowed_paths", []),
+            "blocked_commands": security_config.get("blocked_commands", []),
+            "auto_confirm_safe": security_config.get("auto_confirm_safe", True),
+            "allow_network": security_config.get("allow_network", True),
+            "strict_shell_parsing": security_config.get("strict_shell_parsing", False),
+            "read_only": security_config.get("read_only", False),
+            "max_file_size": security_config.get("max_file_size", 100 * 1024 * 1024),
         }
 
         from opennova.tools.file_tools import (
@@ -159,11 +177,11 @@ class AgentRuntime:
         )
 
         # File and shell tools
-        self.tool_registry.register(ReadFileTool())
-        self.tool_registry.register(WriteFileTool())
-        self.tool_registry.register(CreateFileTool())
-        self.tool_registry.register(DeleteFileTool())
-        self.tool_registry.register(ListDirectoryTool())
+        self.tool_registry.register(ReadFileTool(config=tool_config))
+        self.tool_registry.register(WriteFileTool(config=tool_config))
+        self.tool_registry.register(CreateFileTool(config=tool_config))
+        self.tool_registry.register(DeleteFileTool(config=tool_config))
+        self.tool_registry.register(ListDirectoryTool(config=tool_config))
         self.tool_registry.register(ExecuteCommandTool(config=tool_config))
 
         # Task management tools (Claude Code-style)
@@ -187,8 +205,8 @@ class AgentRuntime:
         self.tool_registry.register(ExitPlanModeTool(config={"state": self.state}))
 
         # Web tools
-        self.tool_registry.register(WebSearchTool())
-        self.tool_registry.register(WebFetchTool())
+        self.tool_registry.register(WebSearchTool(config=tool_config))
+        self.tool_registry.register(WebFetchTool(config=tool_config))
         self.tool_registry.register(
             InitProjectGuideTool(config={"working_dir": os.getcwd(), "runtime": self})
         )
@@ -598,6 +616,8 @@ class AgentRuntime:
             skill_registry=getattr(self, "skill_registry", None),
             context_manager=self.context_manager,
             working_memory=self.working_memory,
+            guardrails=getattr(self, "guardrails", None),
+            working_dir=os.getcwd(),
         )
         started_at = perf_counter()
         if not preserve_context:

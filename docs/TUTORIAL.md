@@ -365,9 +365,15 @@ OpenNova 当前支持：
 security:
   sandbox_mode: true
   command_timeout: 30
+  allow_network: true
+  auto_confirm_safe: true
   allowed_paths:
     - "./src"
     - "./tests"
+  blocked_commands: []
+  strict_shell_parsing: false
+  read_only: false
+  max_file_size: 104857600
 ```
 
 ---

@@ -39,3 +39,24 @@ security:
   
   # Timeout for shell commands (seconds)
   command_timeout: 30
+
+  # Allow tools/commands to access network
+  allow_network: true
+
+  # Auto-confirm operations Guardrails marks as SAFE
+  auto_confirm_safe: true
+
+  # Extra allowed paths outside project root
+  allowed_paths: []
+
+  # Additional blocked command substrings
+  blocked_commands: []
+
+  # If true, reject shell-only syntax (|, >, *, $()) instead of fallback shell execution
+  strict_shell_parsing: false
+
+  # If true, deny file write/delete operations
+  read_only: false
+
+  # Maximum readable/writable file size (bytes)
+  max_file_size: 104857600
