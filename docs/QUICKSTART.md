@@ -1,6 +1,6 @@
 # OpenNova 快速开始指南
 
-5 分钟快速上手 OpenNova v0.2.0。
+5 分钟快速上手当前版本的 OpenNova。
 
 > 本文档以仓库开发者视角为主，默认使用 `uv run opennova ...`。如果你已经通过 `uv tool install .` 安装了全局 CLI，可以把命令里的 `uv run` 去掉。
 
@@ -14,33 +14,73 @@ cd OpenNova
 # 安装依赖
 uv sync
 
-# 初始化配置
+# 初始化全局配置（生成 ~/.opennova/config.yaml）
 uv run opennova init
 ```
 
-## 第二步：配置 API Key
+## 第二步：配置模型
 
-选择一种方式：
+当前默认配置：
 
-**方式 A - 环境变量（推荐）：**
-```bash
-export OPENAI_API_KEY="sk-your-key"
+```yaml
+default_provider: deepseek
+default_model: deepseek-v4-pro
 ```
 
-**方式 B - 配置文件：**
+推荐直接使用环境变量提供 API Key：
+
 ```bash
-nano ~/.opennova/config.yaml
-# 将 api_key: "${OPENAI_API_KEY}" 改为你的实际 key
+export DEEPSEEK_API_KEY="sk-your-deepseek-key"
+```
+
+如果你想改成其他 provider，也可以编辑 `~/.opennova/config.yaml`：
+
+```yaml
+default_provider: deepseek
+default_model: deepseek-v4-pro
+
+providers:
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    default_model: gpt-4o
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    default_model: claude-sonnet-4
+
+  deepseek:
+    api_key: ${DEEPSEEK_API_KEY}
+    base_url: https://api.deepseek.com/v1
+    default_model: deepseek-v4-pro
 ```
 
 ## 第三步：开始使用
 
 ```bash
-# 启动交互模式
+# 启动交互模式（默认进入 TUI）
 uv run opennova
 
-# 或直接执行任务
+# 使用经典 REPL
+uv run opennova run --no-tui
+
+# 直接执行单个任务
 uv run opennova run "读取 README.md"
+```
+
+## 第四步：初始化项目记忆
+
+进入项目后，可以让 OpenNova 为当前仓库生成一份长期项目说明：
+
+```text
+/init
+```
+
+它会在项目根目录创建 `OPENNOVA.md`。这个文件会被模型自动读取，用来帮助后续任务更快理解代码库、目录结构、工作流和注意事项。
+
+如果文件已经存在但你想重建：
+
+```text
+/init --force
 ```
 
 ## 示例任务
@@ -59,18 +99,23 @@ opennova> 运行 pytest tests/
 
 # 计划模式
 opennova> /plan 重构认证模块
+
+# 项目初始化
+opennova> /init
 ```
 
 ## 常用命令
 
 | 命令 | 说明 |
 |------|------|
-| `uv run opennova` | 启动 REPL |
+| `uv run opennova` | 启动交互模式 |
 | `uv run opennova run "task"` | 执行单次任务 |
+| `uv run opennova run --no-tui` | 使用经典 REPL |
 | `uv run opennova --version` | 查看版本 |
-| `uv run opennova init` | 初始化配置 |
-| `/help` | REPL 内帮助 |
-| `/exit` | 退出 REPL |
+| `uv run opennova init` | 初始化全局配置 |
+| `/init [--force]` | 生成或重建 `OPENNOVA.md` |
+| `/help` | 查看交互命令帮助 |
+| `/exit` | 退出当前会话 |
 
 ## 获取帮助
 
