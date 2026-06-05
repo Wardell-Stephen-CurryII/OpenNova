@@ -1,6 +1,6 @@
 # OpenNova API 参考
 
-本文档描述 OpenNova v0.2.0 的核心 API 和主要扩展点。
+本文档描述当前版本 OpenNova 的核心 API 和主要扩展点。
 
 > 说明：OpenNova 仍处于 Alpha 阶段，部分 API 仍可能演进；本文更适合作为当前代码结构与扩展入口的实用参考。
 
@@ -92,11 +92,13 @@ class MyTool(BaseTool):
 - `ask_user_question`
 - `web_fetch`
 - `web_search`
+- `init_project_guide`
 
 说明：
 - `web_fetch` 会发起真实 HTTP 请求。
 - `web_search` 如果没有配置后端，会明确返回未配置错误。
 - `ask_user_question` 在 REPL 环境下可通过 interaction callback 收集用户选择。
+- `init_project_guide` 会驱动模型分析仓库并生成 `OPENNOVA.md`，供后续任务作为项目长期记忆使用。
 
 ## Provider API
 
@@ -216,7 +218,7 @@ MCP 相关模块负责：
 ```python
 from opennova.memory.context import ContextManager
 
-ctx = ContextManager(model="gpt-4o")
+ctx = ContextManager(model="deepseek-v4-pro")
 ctx.add_user_message("Hello")
 ctx.add_assistant_message("Hi there!")
 stats = ctx.get_stats()
@@ -269,6 +271,12 @@ print(result.allowed)
 print(result.risk_level)
 ```
 
+`Guardrails` 当前主要负责：
+- 在工具执行前统一检查高风险命令和路径访问
+- 对 shell fallback、删除操作、敏感 URL 等返回 `WARN`
+- 在 `allow_network=False` 时阻断 `web_fetch` 和常见联网命令
+- 配合运行时交互机制，在需要时请求用户确认
+
 ### Sandbox
 
 执行沙盒。
@@ -287,6 +295,12 @@ success, content = sandbox.safe_read("test.txt")
 success, msg = sandbox.safe_write("output.txt", b"data")
 sandbox.rollback()
 ```
+
+`Sandbox` 当前用于文件工具统一接线，负责：
+- 把文件访问限制在工作目录与允许路径内
+- 拒绝受保护路径访问
+- 支持 `read_only`、`max_file_size` 等配置
+- 跟踪写入/删除并支持回滚
 
 ## Diff API
 
@@ -320,6 +334,7 @@ changeset = ChangeSet(task="重构")
 2. 新 Skill：新增 `~/.opennova/skills/<skill-name>/SKILL.md` 或项目级 `<skill-name>/SKILL.md`
 3. 新 Provider：实现 `BaseLLMProvider`，接入 `ProviderFactory`
 4. 新 MCP 集成：通过 `MCPServerConfig` 与 connector 接入
+5. 新项目初始化能力：优先复用 `ProjectGuideManager` / `init_project_guide` 这类统一入口，而不是把逻辑散在 CLI 或工具里
 
 ## 参考源码入口
 

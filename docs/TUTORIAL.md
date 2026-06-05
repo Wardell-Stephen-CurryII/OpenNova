@@ -1,6 +1,6 @@
 # OpenNova 用户安装和使用指南
 
-本教程将帮助你快速上手 OpenNova CLI AI Coding Agent（v0.2.0）。
+本教程将帮助你快速上手当前版本的 OpenNova CLI AI Coding Agent。
 
 ---
 
@@ -104,15 +104,17 @@ uv tool install .
 
 ## 3. 配置 API Key
 
-你有两种方式配置 API Key：
+你有两种方式配置 API Key。当前默认 provider 是 `deepseek`，默认模型是 `deepseek-v4-pro`。
 
 ### 方式一：环境变量（推荐）
 
 ```bash
 # 在 ~/.zshrc 或 ~/.bashrc 中添加
+export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
+
+# 如果你计划切换 provider，也可以额外配置
 export OPENAI_API_KEY="sk-your-openai-api-key"
 export ANTHROPIC_API_KEY="sk-ant-your-anthropic-api-key"
-export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
 ```
 
 然后重新加载配置：
@@ -165,10 +167,10 @@ uv run opennova --version
 
 输出：
 ```text
-OpenNova v0.2.0
+OpenNova v0.2.3
 ```
 
-### 4.2 交互式 REPL 模式
+### 4.2 交互式模式
 
 启动交互式会话：
 
@@ -176,7 +178,13 @@ OpenNova v0.2.0
 uv run opennova
 ```
 
-你会看到欢迎界面：
+默认会进入 Textual TUI；如果你想使用经典 REPL，可以执行：
+
+```bash
+uv run opennova run --no-tui
+```
+
+你会看到类似欢迎界面：
 ```text
 ╭────────────────────────────────────────╮
 │ OpenNova - AI Coding Agent            │
@@ -188,7 +196,7 @@ opennova>
 
 ### 4.3 你的第一个任务
 
-在 REPL 中输入：
+在交互界面中输入：
 ```text
 opennova> 读取 README.md 文件
 ```
@@ -222,7 +230,7 @@ opennova> 列出当前目录结构
 
 ### 4.5 单次任务模式
 
-不进入 REPL，直接执行单个任务：
+不进入交互界面，直接执行单个任务：
 
 ```bash
 # 直接执行任务
@@ -247,12 +255,32 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/act <task>` | 直接执行 | `/act 读取文件` |
 | `/tools` | 列出可用工具 | `/tools` |
 | `/skills` | 列出已加载技能 | `/skills` |
+| `/skill <name> [args]` | 直接调用一个技能 | `/skill analyze_project src` |
 | `/reload-skills` | 从磁盘重新加载技能 | `/reload-skills` |
 | `/model` | 显示当前模型 | `/model` |
+| `/init [--force]` | 生成或重建 `OPENNOVA.md` | `/init --force` |
 | `/config` | 显示配置 | `/config` |
 | `/history [n]` | 显示最近会话历史 | `/history 5` |
+| `/resume [id]` | 恢复历史会话 | `/resume abc123` |
+| `/sessions` | 列出历史会话 | `/sessions` |
 | `/clear` | 清空当前会话状态 | `/clear` |
 | `/exit` | 退出 REPL | `/exit` |
+
+### 4.7 初始化项目记忆
+
+如果你希望 OpenNova 更快理解当前项目，可以在项目根目录执行：
+
+```text
+opennova> /init
+```
+
+这会生成 `OPENNOVA.md`。该文件会被模型在后续任务中自动读取，用作长期项目记忆。
+
+如果文件已经存在但你希望重新生成：
+
+```text
+opennova> /init --force
+```
 
 ---
 
@@ -300,7 +328,7 @@ default_model: deepseek-v4-pro
 opennova> 使用 code_review 技能审查 main.py
 ```
 
-**内置技能：**
+**内置示例技能：**
 - `code_review` - 代码审查
 - `generate_docs` - 生成文档
 - `git_helper` - Git 辅助
@@ -380,6 +408,13 @@ security:
   max_file_size: 104857600
 ```
 
+安全策略说明：
+- 文件工具会统一经过 Sandbox 检查，限制工作目录、保护路径和只读模式。
+- `execute_command` 默认优先使用 `shell=False` 执行普通命令。
+- 当命令包含管道、重定向等 shell 特性时，会进入兼容 fallback，并通过 Guardrails 走确认逻辑。
+- `allow_network: false` 时，HTTP 工具和常见联网命令会被阻断。
+- `strict_shell_parsing: true` 时，包含 shell 特性的命令会直接拒绝，不再 fallback。
+
 ---
 
 ## 6. 常见问题
@@ -389,13 +424,13 @@ security:
 **问题：**
 ```text
 Configuration errors:
-  • API key not configured for provider 'openai'
+  • API key not configured for provider 'deepseek'
 ```
 
 **解决：**
 ```bash
 # 检查环境变量
-echo $OPENAI_API_KEY
+echo $DEEPSEEK_API_KEY
 
 # 或编辑配置文件
 nano ~/.opennova/config.yaml
