@@ -38,7 +38,7 @@ class DeepSeekProvider(OpenAIProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v4-pro",
         base_url: str | None = None,
         **kwargs: Any,
     ):
@@ -47,7 +47,7 @@ class DeepSeekProvider(OpenAIProvider):
 
         Args:
             api_key: DeepSeek API key
-            model: Model identifier (default: deepseek-chat)
+            model: Model identifier (default: deepseek-v4-pro)
             base_url: Optional API base URL override
             **kwargs: Additional options passed to OpenAI client
         """
