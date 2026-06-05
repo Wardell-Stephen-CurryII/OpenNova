@@ -17,7 +17,7 @@ import yaml
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "default_provider": "openai",
+    "default_provider": "deepseek",
     "providers": {
         "openai": {
             "api_key": "${OPENAI_API_KEY}",
@@ -31,7 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "deepseek": {
             "api_key": "${DEEPSEEK_API_KEY}",
             "base_url": "https://api.deepseek.com/v1",
-            "default_model": "deepseek-chat",
+            "default_model": "deepseek-v4-pro",
         },
     },
     "agent": {

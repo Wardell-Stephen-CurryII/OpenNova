@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 import pytest
 
+from opennova.config import DEFAULT_CONFIG
+from opennova.providers.factory import ProviderFactory
 from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
 from opennova.tools.agent_tools import AgentTool, SendMessageTool
 from opennova.tools.ask_question_tool import AskUserQuestionTool
@@ -82,6 +84,29 @@ def test_tool_schema():
     assert schema.name == "mock_tool"
     assert schema.description == "A mock tool for testing"
     assert "properties" in schema.parameters
+
+
+def test_default_config_uses_deepseek_v4_pro():
+    """Default configuration should prefer DeepSeek v4 Pro."""
+    assert DEFAULT_CONFIG["default_provider"] == "deepseek"
+    assert DEFAULT_CONFIG["providers"]["deepseek"]["default_model"] == "deepseek-v4-pro"
+
+
+def test_provider_factory_falls_back_to_deepseek_v4_pro_when_model_missing():
+    """ProviderFactory should use DeepSeek v4 Pro as the default DeepSeek fallback model."""
+    provider = ProviderFactory.create_provider(
+        {
+            "default_provider": "deepseek",
+            "providers": {
+                "deepseek": {
+                    "api_key": "test-key",
+                    "base_url": "https://api.deepseek.com/v1",
+                }
+            },
+        }
+    )
+
+    assert provider.model == "deepseek-v4-pro"
 
 
 def test_task_manager_progress_updates():

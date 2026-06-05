@@ -128,8 +128,8 @@ nano ~/.opennova/config.yaml
 
 修改为：
 ```yaml
-default_provider: openai
-default_model: gpt-4o
+default_provider: deepseek
+default_model: deepseek-v4-pro
 
 providers:
   openai:
@@ -139,6 +139,10 @@ providers:
   anthropic:
     api_key: "sk-ant-your-actual-anthropic-api-key"
     default_model: claude-sonnet-4
+
+  deepseek:
+    api_key: "sk-your-actual-deepseek-api-key"
+    default_model: deepseek-v4-pro
 ```
 
 ### 获取 API Key
@@ -228,7 +232,7 @@ uv run opennova run "读取 README.md"
 uv run opennova run --plan "重构 authentication 模块"
 
 # 指定模型
-uv run opennova run -m claude-sonnet-4 "分析项目结构"
+uv run opennova run -m deepseek-v4-pro "分析项目结构"
 
 # 使用 DeepSeek
 uv run opennova run --provider deepseek "写一个测试用例"
@@ -284,8 +288,8 @@ uv run opennova run --provider deepseek "任务"
 
 或在配置中设置默认：
 ```yaml
-default_provider: anthropic
-default_model: claude-sonnet-4
+default_provider: deepseek
+default_model: deepseek-v4-pro
 ```
 
 ### 5.3 使用 Skills（技能）

@@ -94,7 +94,7 @@ def run(
 
         opennova run --plan "Refactor the authentication module"
 
-        opennova run -m gpt-4o "Create a new Python module"
+        opennova run -m deepseek-v4-pro "Create a new Python module"
     """
     config = _load_and_validate_config(ctx.obj.get("config_path"), provider, model)
 

@@ -65,7 +65,7 @@ class ProviderFactory:
             ValueError: If provider is unsupported or configuration is invalid
         """
         providers_config = provider_config.get("providers", {})
-        default_provider = provider_name or provider_config.get("default_provider", "openai")
+        default_provider = provider_name or provider_config.get("default_provider", "deepseek")
 
         if default_provider not in providers_config:
             raise ValueError(
@@ -99,7 +99,7 @@ class ProviderFactory:
             default_models = {
                 "openai": "gpt-4o",
                 "anthropic": "claude-sonnet-4",
-                "deepseek": "deepseek-chat",
+                "deepseek": "deepseek-v4-pro",
             }
             model = default_models.get(provider_type, "")
             if not model:
