@@ -9,6 +9,8 @@ This module provides the foundation for OpenNova's tool system:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import types
+from typing import Union, get_args, get_origin
 from typing import Any
 
 from opennova.providers.base import ToolSchema
@@ -181,14 +183,16 @@ class BaseTool(ABC):
             dict: "object",
         }
 
-        if hasattr(python_type, "__origin__"):
-            origin = python_type.__origin__
+        origin = get_origin(python_type)
+        if origin is not None:
             if origin is list:
                 return "array"
             if origin is dict:
                 return "object"
-            if origin is str | type(None):
-                return "string"
+            if origin in (Union, types.UnionType):
+                non_none_args = [arg for arg in get_args(python_type) if arg is not type(None)]
+                if len(non_none_args) == 1:
+                    return BaseTool._python_type_to_json(non_none_args[0])
 
         return type_mapping.get(python_type, "string")
 

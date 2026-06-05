@@ -19,6 +19,7 @@ from opennova.tools.git_tools import (
     GitLogTool,
     GitStatusTool,
 )
+from opennova.tools.shell_tools import ExecuteCommandTool
 from opennova.tools.task_tools import (
     TaskGetTool,
     TaskListTool,
@@ -84,6 +85,13 @@ def test_tool_schema():
     assert schema.name == "mock_tool"
     assert schema.description == "A mock tool for testing"
     assert "properties" in schema.parameters
+
+
+def test_execute_command_schema_exposes_timeout_as_integer():
+    """Optional integer params should remain integers in tool schema."""
+    schema = ExecuteCommandTool().get_schema()
+
+    assert schema.parameters["properties"]["timeout"]["type"] == "integer"
 
 
 def test_default_config_uses_deepseek_v4_pro():
