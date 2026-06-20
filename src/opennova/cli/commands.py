@@ -42,7 +42,7 @@ class SlashCommandRegistry:
             SlashCommand("/exit", "_cmd_exit", "Exit"),
             SlashCommand("/quit", "_cmd_exit", "Exit"),
             SlashCommand("/history", "_cmd_history", "Show history", "/history [n]"),
-            SlashCommand("/resume", "_cmd_resume", "Resume a session", "/resume [id]"),
+            SlashCommand("/resume", "_cmd_resume", "Resume a session", "/resume [id]", sync=False),
             SlashCommand("/sessions", "_cmd_sessions", "List sessions"),
             SlashCommand("/permissions", "_cmd_permissions", "Show or update permission rules"),
             SlashCommand("/plugins", "_cmd_plugins", "List or trust local plugins"),

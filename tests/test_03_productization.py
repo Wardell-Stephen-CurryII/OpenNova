@@ -810,6 +810,37 @@ def test_tui_tool_execution_line_uses_solid_circle_icon():
     assert "Executing:" in _format_tool_execution("read_file", "path='README.md'")
 
 
+def test_tui_truncates_tool_output_to_20_lines():
+    from opennova.cli.tui import _truncate_tool_output
+
+    output = "\n".join(f"line {index}" for index in range(1, 26))
+
+    truncated = _truncate_tool_output("search_code", output)
+
+    assert truncated.splitlines()[:20] == [f"line {index}" for index in range(1, 21)]
+    assert truncated.splitlines()[-1] == "... (output truncated, 20/25 lines)"
+
+
+def test_tui_hides_read_file_and_list_directory_outputs():
+    from opennova.cli.tui import _truncate_tool_output
+
+    assert _truncate_tool_output("read_file", "secret") == ""
+    assert _truncate_tool_output("list_directory", "secret") == ""
+
+
+def test_tui_truncates_create_file_diff_to_20_lines():
+    from opennova.cli.tui import OpenNovaTUI
+
+    writes: list[str] = []
+    log = type("Log", (), {"write": lambda self, value: writes.append(value)})()
+    diff = "\n".join(f"+line {index}" for index in range(1, 26))
+
+    OpenNovaTUI._write_diff(object(), log, diff, max_lines=20)
+
+    assert writes[1:21] == [f"+line {index}" for index in range(1, 21)]
+    assert writes[21] == "[dim]... (diff truncated, 20/25 lines)[/dim]"
+
+
 def test_tui_stream_callback_does_not_duplicate_final_answer():
     from opennova.cli.tui import OpenNovaTUI
     from opennova.providers.base import StreamChunk
@@ -848,6 +879,73 @@ def test_tui_stream_callback_does_not_duplicate_final_answer():
     assert log.writes == []
 
 
+def test_tui_canonical_tool_result_hides_read_file_output():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.events import ToolEvent
+
+    class Agent:
+        def __init__(self):
+            self.callbacks = {}
+
+        def register_callback(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    class Progress:
+        def __init__(self):
+            self.waiting_for_interaction = False
+            self.interaction_label = ""
+            self.current_tool_name = ""
+            self.current_tool_id = ""
+            self.current_args = {}
+            self.started_at = 0.0
+
+        def clear_interaction(self):
+            self.waiting_for_interaction = False
+            self.interaction_label = ""
+
+    writes: list[tuple[str, Any]] = []
+
+    class Log:
+        def write(self, value):
+            writes.append(("write", value))
+
+    tool_cards = type("Cards", (), {"apply_event": lambda self, event: None})()
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "_tool_progress": Progress(),
+            "_tool_cards": tool_cards,
+            "query_one": lambda self, selector: Log(),
+            "_write_tool_start": lambda self, log, tool_name, detail: writes.append(
+                ("start", tool_name, detail)
+            ),
+            "_write_tool_result": lambda self, log, **kwargs: writes.append(
+                ("result", kwargs["tool_name"], kwargs["output"])
+            ),
+        },
+    )()
+
+    OpenNovaTUI._register_callbacks(app)
+
+    app.agent.callbacks["tool_event"](
+        ToolEvent(type="tool_start", tool_id="tool_1", tool_name="read_file")
+    )
+    app.agent.callbacks["tool_event"](
+        ToolEvent(
+            type="tool_result",
+            tool_id="tool_1",
+            tool_name="read_file",
+            success=True,
+            output="1: hidden content",
+            duration_ms=12,
+        )
+    )
+
+    assert ("result", "read_file", "") in writes
+
+
 def test_tui_resume_without_args_uses_picker():
     from opennova.cli.tui import OpenNovaTUI
 
@@ -875,6 +973,77 @@ def test_tui_resume_without_args_uses_picker():
     asyncio.run(OpenNovaTUI._cmd_resume(app, ""))
 
     assert calls == [True]
+
+
+def test_slash_command_registry_marks_resume_as_async():
+    from opennova.cli.commands import SlashCommandRegistry
+
+    registry = SlashCommandRegistry.default()
+
+    assert registry.get("/resume").sync is False
+
+
+@pytest.mark.asyncio
+async def test_tui_input_submission_launches_resume_picker_in_background():
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Event:
+        def __init__(self, value: str):
+            self.value = value
+
+        def stop(self) -> None:
+            return None
+
+    class InputWidget:
+        def __init__(self) -> None:
+            self.value = "/resume"
+
+    class Log:
+        def __init__(self) -> None:
+            self.writes = []
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def scroll_end(self, animate=False):
+            return None
+
+    input_widget = InputWidget()
+    log = Log()
+    launched = []
+
+    async def fail_if_called_directly(self, text: str) -> None:
+        raise AssertionError("/resume should not be awaited directly from on_input_submitted")
+
+    def launch_task(self, coro) -> None:
+        launched.append(coro)
+        coro.close()
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_SYNC_COMMANDS": OpenNovaTUI._SYNC_COMMANDS,
+            "_interaction_mode": False,
+            "_interaction_future": None,
+            "_last_submitted_text": "",
+            "_last_submitted_time": 0.0,
+            "_clear_suggestions": lambda self: None,
+            "_add_to_history": lambda self, text: None,
+            "_write_user_message": lambda self, log, text: log.write(("user", text)),
+            "_focus_input": lambda self: None,
+            "_is_agent_running": lambda self: False,
+            "_handle_command": fail_if_called_directly,
+            "_launch_agent_task": launch_task,
+            "query_one": lambda self, selector, *args: input_widget if selector == "#input" else log,
+        },
+    )()
+
+    await OpenNovaTUI.on_input_submitted(app, Event("/resume"))
+
+    assert launched
+    assert input_widget.value == ""
+    assert ("user", "/resume") in log.writes
 
 
 def test_tui_startup_continue_restores_newest_session():

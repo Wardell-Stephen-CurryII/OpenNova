@@ -52,8 +52,11 @@ _SUPPRESSED_RESULT_OUTPUT = {"execute_command"}
 # Parameter names whose values are hidden in the action display (too long/unreadable).
 _REDACTED_ACTION_PARAMS = {"content"}
 
-# Max diff lines shown per tool; fallback is 120.
-_MAX_DIFF_LINES: dict[str, int] = {"write_file": 30}
+# Max tool output lines shown in-session; fallback is 20.
+_MAX_OUTPUT_LINES = 20
+
+# Max diff lines shown per tool; fallback is 20.
+_MAX_DIFF_LINES: dict[str, int] = {}
 
 # 2a2a2a 001a1a
 _USER_MESSAGE_STYLE = "bright_cyan on #001a1a"
@@ -72,6 +75,20 @@ def _format_tool_execution(tool_name: str, detail: str) -> str:
     """Render a tool execution line with a leading marker."""
     suffix = f" {detail}" if detail else ""
     return f"{_TOOL_ICON} [cyan]Executing:[/cyan] {tool_name}{suffix}"
+
+
+def _truncate_tool_output(tool_name: str, output: str, max_lines: int = _MAX_OUTPUT_LINES) -> str:
+    """Trim verbose tool output for the chat transcript."""
+    if not output or tool_name in _SUPPRESSED_RESULT_TOOLS:
+        return ""
+
+    lines = output.splitlines()
+    if len(lines) <= max_lines:
+        return output
+
+    visible = lines[:max_lines]
+    visible.append(f"... (output truncated, {max_lines}/{len(lines)} lines)")
+    return "\n".join(visible)
 
 
 class _MessagesLog(RichLog):
@@ -477,7 +494,7 @@ class OpenNovaTUI(App):
         output: str = "",
         error: str = "",
         diff: str = "",
-        diff_max_lines: int = 120,
+        diff_max_lines: int = _MAX_OUTPUT_LINES,
         record: bool = True,
     ) -> None:
         log.write(summary_markup)
@@ -576,7 +593,7 @@ class OpenNovaTUI(App):
                 output=str(event.get("output") or ""),
                 error=str(event.get("error") or ""),
                 diff=str(event.get("diff") or ""),
-                diff_max_lines=int(event.get("diff_max_lines") or 120),
+                diff_max_lines=int(event.get("diff_max_lines") or _MAX_OUTPUT_LINES),
                 record=False,
             )
             return
@@ -1452,8 +1469,6 @@ class OpenNovaTUI(App):
                 return
             event = self._tool_progress.finish_tool(result)
             summary = event["summary"]
-            if _current_tool["name"] in _SUPPRESSED_RESULT_TOOLS:
-                return
             try:
                 log = self.query_one("#messages")
                 summary_markup = (
@@ -1463,7 +1478,10 @@ class OpenNovaTUI(App):
                 )
                 output = ""
                 if _current_tool["name"] not in _SUPPRESSED_RESULT_OUTPUT:
-                    output = (event.get("output_preview") or "")[:500]
+                    output = _truncate_tool_output(
+                        _current_tool["name"],
+                        str(event.get("output_preview") or ""),
+                    )
                 diff = result.metadata.get("diff") if result.success else None
                 self._write_tool_result(
                     log,
@@ -1472,7 +1490,7 @@ class OpenNovaTUI(App):
                     output=output,
                     error=result.error or "",
                     diff=diff or "",
-                    diff_max_lines=_MAX_DIFF_LINES.get(_current_tool["name"], 120),
+                    diff_max_lines=_MAX_DIFF_LINES.get(_current_tool["name"], _MAX_OUTPUT_LINES),
                 )
             except Exception:
                 pass
@@ -1510,9 +1528,9 @@ class OpenNovaTUI(App):
                     summary_markup = (
                         f"[{color}]Result:[/{color}] [dim]{tool_name} in {duration or 0}ms[/dim]"
                     )
-                    output = str(data.get("output") or "")[:500]
-                    if tool_name in _SUPPRESSED_RESULT_OUTPUT:
-                        output = ""
+                    output = ""
+                    if tool_name not in _SUPPRESSED_RESULT_OUTPUT:
+                        output = _truncate_tool_output(tool_name, str(data.get("output") or ""))
                     self._write_tool_result(
                         log,
                         tool_name=tool_name,
@@ -1520,7 +1538,7 @@ class OpenNovaTUI(App):
                         output=output,
                         error=str(data.get("error") or ""),
                         diff=str(data.get("diff") or ""),
-                        diff_max_lines=_MAX_DIFF_LINES.get(tool_name, 120),
+                        diff_max_lines=_MAX_DIFF_LINES.get(tool_name, _MAX_OUTPUT_LINES),
                     )
                 except Exception:
                     pass
@@ -1634,7 +1652,7 @@ class OpenNovaTUI(App):
 
     # ── diff display ─────────────────────────────────────────────
 
-    def _write_diff(self, log: _MessagesLog, diff_text: str, max_lines: int = 120) -> None:
+    def _write_diff(self, log: _MessagesLog, diff_text: str, max_lines: int = _MAX_OUTPUT_LINES) -> None:
         lines = diff_text.splitlines()
         if len(lines) > max_lines:
             lines = lines[:max_lines]
