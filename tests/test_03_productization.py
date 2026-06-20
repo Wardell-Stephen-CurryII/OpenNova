@@ -352,6 +352,125 @@ def test_no_tui_still_disables_tui_on_windows():
     assert _use_tui_for_interactive(no_tui=True, force_tui=False, platform="win32") is False
 
 
+def test_tui_system_clipboard_uses_native_platform_commands():
+    from opennova.cli.tui import _copy_to_system_clipboard
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return type("Result", (), {"returncode": 0})()
+
+    assert _copy_to_system_clipboard("hello", system_name="Darwin", run=run) is True
+    assert calls[-1][0] == ["pbcopy"]
+    assert calls[-1][1]["input"] == "hello"
+
+    assert _copy_to_system_clipboard("hello", system_name="Windows", run=run) is True
+    assert calls[-1][0] == ["clip"]
+
+
+def test_tui_system_clipboard_prefers_wayland_then_xclip_on_linux():
+    from opennova.cli.tui import _copy_to_system_clipboard
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return type("Result", (), {"returncode": 0})()
+
+    assert (
+        _copy_to_system_clipboard(
+            "hello",
+            system_name="Linux",
+            run=run,
+            which=lambda command: "/usr/bin/wl-copy" if command == "wl-copy" else None,
+        )
+        is True
+    )
+    assert commands[-1] == ["wl-copy"]
+
+    assert (
+        _copy_to_system_clipboard(
+            "hello",
+            system_name="Linux",
+            run=run,
+            which=lambda command: "/usr/bin/xclip" if command == "xclip" else None,
+        )
+        is True
+    )
+    assert commands[-1] == ["xclip", "-selection", "clipboard"]
+
+
+def test_tui_system_clipboard_returns_false_on_command_failure():
+    from opennova.cli.tui import _copy_to_system_clipboard
+
+    def run(command, **kwargs):
+        raise OSError("clipboard unavailable")
+
+    assert _copy_to_system_clipboard("hello", system_name="Darwin", run=run) is False
+
+
+def test_tui_copy_selection_copies_current_screen_selection(monkeypatch):
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Screen:
+        cleared = False
+
+        def get_selected_text(self):
+            return "selected text"
+
+        def clear_selection(self):
+            self.cleared = True
+
+    copied = []
+    statuses = []
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "screen": Screen(),
+            "copy_to_clipboard": copied.append,
+            "_set_status": statuses.append,
+        },
+    )()
+    monkeypatch.setattr("opennova.cli.tui._copy_to_system_clipboard", lambda text: True)
+
+    OpenNovaTUI.action_copy_selection(app)
+
+    assert copied == ["selected text"]
+    assert app.screen.cleared is True
+    assert "Copied selection" in statuses[-1]
+
+
+def test_tui_copy_selection_without_selection_prompts_user(monkeypatch):
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Screen:
+        def get_selected_text(self):
+            return ""
+
+        def clear_selection(self):
+            raise AssertionError("should not clear an empty selection")
+
+    statuses = []
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "screen": Screen(),
+            "copy_to_clipboard": lambda self, text: (_ for _ in ()).throw(
+                AssertionError("should not copy without selection")
+            ),
+            "_set_status": lambda self, text: statuses.append(text),
+        },
+    )()
+    monkeypatch.setattr("opennova.cli.tui._copy_to_system_clipboard", lambda text: False)
+
+    OpenNovaTUI.action_copy_selection(app)
+
+    assert "Select text" in statuses[-1]
+
+
 def test_ask_question_dialog_options_always_include_custom_answer():
     from opennova.cli.ask_question_dialog import CUSTOM_OPTION_ID, options_with_custom_answer
 

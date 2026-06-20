@@ -10,6 +10,9 @@ Textual TUI for OpenNova — split-pane chat interface.
 """
 
 import asyncio
+import platform
+import shutil
+import subprocess
 import sys
 import time
 from contextlib import suppress
@@ -21,11 +24,10 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
-from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import Header, Input, Label, RichLog, TextArea
+from textual.widgets import Header, Input, Label, RichLog
 
 from opennova.cli.ask_question_dialog import AskQuestionDialog
 from opennova.cli.commands import SlashCommandRegistry
@@ -49,7 +51,7 @@ _MAX_DIFF_LINES: dict[str, int] = {"write_file": 30}
 
 
 class _MessagesLog(RichLog):
-    """RichLog that shows a selectable TextArea overlay when clicked."""
+    """RichLog that stores plain text alongside rich renderables."""
 
     can_focus = False
 
@@ -68,83 +70,44 @@ class _MessagesLog(RichLog):
     def get_plain_text(self) -> str:
         return "\n".join(self._plain_lines)
 
-    def on_click(self) -> None:
-        """Show the selectable text overlay when user clicks the message area."""
-        with suppress(Exception):
-            self.app._show_copy_overlay()
 
+def _copy_to_system_clipboard(
+    text: str,
+    *,
+    system_name: str | None = None,
+    run: Any = None,
+    which: Any = None,
+) -> bool:
+    """Copy text to the OS clipboard using native command-line tools."""
+    if not text:
+        return False
 
-class _CopyOverlay(TextArea):
-    """Selectable text overlay for copying message content."""
+    system = system_name or platform.system()
+    run = run or subprocess.run
+    which = which or shutil.which
 
-    can_focus = True
-
-    async def _on_key(self, event: events.Key) -> None:
-        if event.key == "escape":
-            event.stop()
-            self._dismiss()
-            return
-        if event.key == "ctrl+c":
-            event.stop()
-            self._copy_selected()
-            return
-        # Forward all other keys to TextArea for navigation and selection
-        await super()._on_key(event)
-
-    def _copy_selected(self) -> None:
-        """Copy selected text to system clipboard and auto-dismiss."""
-        selected = self.selected_text
-        if selected:
-            self._copy_to_clipboard(selected)
-            with suppress(Exception):
-                self.app._set_status("[green]Copied![/green]")
-        self._dismiss()
-
-    @staticmethod
-    def _copy_to_clipboard(text: str) -> None:
-        """Copy text to system clipboard via native shell commands."""
-        import platform
-        import subprocess
-
-        try:
-            system = platform.system()
-            if system == "Darwin":
-                subprocess.run(
-                    ["pbcopy"],
+    try:
+        if system == "Darwin":
+            result = run(["pbcopy"], input=text, text=True, check=False)
+            return getattr(result, "returncode", 1) == 0
+        if system == "Windows":
+            result = run(["clip"], input=text, text=True, check=False)
+            return getattr(result, "returncode", 1) == 0
+        if system == "Linux":
+            if which("wl-copy"):
+                result = run(["wl-copy"], input=text, text=True, check=False)
+                return getattr(result, "returncode", 1) == 0
+            if which("xclip"):
+                result = run(
+                    ["xclip", "-selection", "clipboard"],
                     input=text,
                     text=True,
                     check=False,
                 )
-            elif system == "Linux":
-                # Try wayland first, then x11
-                if subprocess.run(["which", "wl-copy"], capture_output=True).returncode == 0:
-                    subprocess.run(
-                        ["wl-copy"],
-                        input=text,
-                        text=True,
-                        check=False,
-                    )
-                else:
-                    subprocess.run(
-                        ["xclip", "-selection", "clipboard"],
-                        input=text,
-                        text=True,
-                        check=False,
-                    )
-            elif system == "Windows":
-                subprocess.run(
-                    ["clip"],
-                    input=text,
-                    text=True,
-                    check=False,
-                )
-        except Exception:
-            pass
-
-    def _dismiss(self) -> None:
-        """Dismiss overlay and return focus to input."""
-        with suppress(Exception):
-            self.app.action_focus_input()
+                return getattr(result, "returncode", 1) == 0
+    except Exception:
+        return False
+    return False
 
 
 def _to_plain(text: Any) -> str:
@@ -192,16 +155,6 @@ class OpenNovaTUI(App):
         overflow-y: auto;
     }
 
-    #copy-overlay {
-        display: none;
-        height: 1fr;
-        border: thick $accent;
-    }
-
-    #copy-overlay.visible {
-        display: block;
-    }
-
     #input-container {
         height: auto;
         padding: 0 1;
@@ -234,6 +187,7 @@ class OpenNovaTUI(App):
 
     BINDINGS = [
         Binding("ctrl+c", "cancel", "Cancel", show=True),
+        Binding("ctrl+shift+c", "copy_selection", "Copy", show=True),
         Binding("ctrl+d", "quit_app", "Quit", show=True),
         Binding("up", "history_prev", "Previous", show=False),
         Binding("down", "history_next", "Next", show=False),
@@ -283,12 +237,6 @@ class OpenNovaTUI(App):
                 markup=True,
                 wrap=True,
                 max_lines=10000,
-            )
-            yield _CopyOverlay(
-                id="copy-overlay",
-                read_only=True,
-                show_line_numbers=False,
-                soft_wrap=True,
             )
         with Container(id="status-bar"):
             yield Label(id="status-text", markup=False)
@@ -1481,33 +1429,33 @@ class OpenNovaTUI(App):
         input_widget.cursor_position = len(input_widget.value)
 
     def action_focus_input(self) -> None:
-        self._hide_copy_overlay()
-
-    def _show_copy_overlay(self) -> None:
-        """Populate the copy overlay with plain text and show it."""
-        try:
-            log = self.query_one("#messages", RichLog)
-            overlay = self.query_one("#copy-overlay", TextArea)
-            overlay.load_text(log.get_plain_text())
-            overlay.add_class("visible")
-            overlay.focus()
-            # Scroll to top so user sees the beginning
-            overlay.move_cursor((0, 0))
-            self._set_status(
-                "[dim]Select text with mouse or keyboard, then Ctrl+C to copy | Esc to exit[/dim]"
-            )
-        except Exception:
-            pass
-
-    def _hide_copy_overlay(self) -> None:
-        """Hide the copy overlay, return focus to Input, and clear hint."""
-        try:
-            overlay = self.query_one("#copy-overlay", TextArea)
-            overlay.remove_class("visible")
-        except Exception:
-            pass
-        self._set_status("")
         self._focus_input()
+
+    def action_copy_selection(self) -> None:
+        """Copy the current in-place TUI text selection."""
+        selected = ""
+        with suppress(Exception):
+            selected = self.screen.get_selected_text() or ""
+
+        if not selected:
+            self._set_status(
+                "[yellow]Select text in the messages area, then press Ctrl+Shift+C[/yellow]"
+            )
+            return
+
+        textual_clipboard_ok = False
+        with suppress(Exception):
+            self.copy_to_clipboard(selected)
+            textual_clipboard_ok = True
+        system_clipboard_ok = _copy_to_system_clipboard(selected)
+
+        if textual_clipboard_ok or system_clipboard_ok:
+            with suppress(Exception):
+                self.screen.clear_selection()
+            self._set_status("[green]Copied selection[/green]")
+            return
+
+        self._set_status("[yellow]Could not copy selection to clipboard[/yellow]")
 
 
 async def run_tui(config: Config) -> None:
