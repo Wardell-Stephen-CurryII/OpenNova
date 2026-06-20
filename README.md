@@ -127,10 +127,10 @@ export DEEPSEEK_API_KEY=your_key_here
 ### Interactive modes
 
 ```bash
-# Interactive mode (Textual TUI by default, REPL on Windows for IME support)
+# Interactive mode (Textual TUI by default, including Windows IME support)
 uv run opennova
 
-# Textual TUI mode (split-pane chat interface)
+# Explicit Textual TUI mode (split-pane chat interface)
 uv run opennova run --tui
 
 # REPL mode (prompt_toolkit)

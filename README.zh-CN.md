@@ -116,10 +116,10 @@ export DEEPSEEK_API_KEY=your_key_here
 ### 交互模式
 
 ```bash
-# 交互模式（默认使用 Textual TUI；Windows 为中文输入法兼容默认使用 REPL）
+# 交互模式（默认使用 Textual TUI，包含 Windows 中文输入法兼容处理）
 uv run opennova
 
-# Textual TUI 模式（分屏聊天界面）
+# 显式使用 Textual TUI 模式（分屏聊天界面）
 uv run opennova run --tui
 
 # REPL 模式（prompt_toolkit）

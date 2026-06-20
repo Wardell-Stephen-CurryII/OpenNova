@@ -260,16 +260,44 @@ def test_slash_command_registry_exposes_03_productization_commands():
     assert registry.get("/demo").plugin == "demo"
 
 
-def test_interactive_mode_defaults_to_repl_on_windows_for_ime_support():
+def test_interactive_mode_defaults_to_tui_on_windows():
     from opennova.main import _use_tui_for_interactive
 
-    assert _use_tui_for_interactive(no_tui=False, force_tui=False, platform="win32") is False
+    assert _use_tui_for_interactive(no_tui=False, force_tui=False, platform="win32") is True
 
 
-def test_interactive_mode_can_force_tui_on_windows():
+def test_windows_tui_keeps_ime_committed_unicode_chars():
+    from opennova.cli.windows_tui_driver import should_queue_console_key
+
+    assert (
+        should_queue_console_key(
+            key="中",
+            key_down=True,
+            control_key_state=0x0010,
+            virtual_key_code=0,
+        )
+        is True
+    )
+
+
+def test_windows_tui_ignores_control_only_virtual_key_events():
+    from opennova.cli.windows_tui_driver import should_queue_console_key
+
+    assert (
+        should_queue_console_key(
+            key="\x00",
+            key_down=True,
+            control_key_state=0x0010,
+            virtual_key_code=0,
+        )
+        is False
+    )
+
+
+def test_no_tui_still_disables_tui_on_windows():
     from opennova.main import _use_tui_for_interactive
 
-    assert _use_tui_for_interactive(no_tui=False, force_tui=True, platform="win32") is True
+    assert _use_tui_for_interactive(no_tui=True, force_tui=False, platform="win32") is False
 
 
 def test_todo_write_tool_replaces_structured_todos():

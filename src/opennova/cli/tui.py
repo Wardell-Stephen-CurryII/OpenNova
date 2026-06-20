@@ -1,4 +1,3 @@
-
 """
 Textual TUI for OpenNova — split-pane chat interface.
 
@@ -11,6 +10,7 @@ Textual TUI for OpenNova — split-pane chat interface.
 """
 
 import asyncio
+import sys
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -104,26 +104,38 @@ class _CopyOverlay(TextArea):
         """Copy text to system clipboard via native shell commands."""
         import platform
         import subprocess
+
         try:
             system = platform.system()
             if system == "Darwin":
                 subprocess.run(
-                    ["pbcopy"], input=text, text=True, check=False,
+                    ["pbcopy"],
+                    input=text,
+                    text=True,
+                    check=False,
                 )
             elif system == "Linux":
                 # Try wayland first, then x11
                 if subprocess.run(["which", "wl-copy"], capture_output=True).returncode == 0:
                     subprocess.run(
-                        ["wl-copy"], input=text, text=True, check=False,
+                        ["wl-copy"],
+                        input=text,
+                        text=True,
+                        check=False,
                     )
                 else:
                     subprocess.run(
                         ["xclip", "-selection", "clipboard"],
-                        input=text, text=True, check=False,
+                        input=text,
+                        text=True,
+                        check=False,
                     )
             elif system == "Windows":
                 subprocess.run(
-                    ["clip"], input=text, text=True, check=False,
+                    ["clip"],
+                    input=text,
+                    text=True,
+                    check=False,
                 )
         except Exception:
             pass
@@ -141,17 +153,29 @@ def _to_plain(text: Any) -> str:
             return text.plain
         if hasattr(text, "__rich_console__") or hasattr(text, "__rich__"):
             from rich.console import Console as RichConsole
+
             console = RichConsole(no_color=True, width=120, force_terminal=False)
             with console.capture() as capture:
                 console.print(text)
             import re
+
             # Strip any residual ANSI escape sequences
-            return re.sub(r'\x1b\[[0-9;]*m', '', capture.get()).rstrip("\n")
+            return re.sub(r"\x1b\[[0-9;]*m", "", capture.get()).rstrip("\n")
         if isinstance(text, str):
             return Text.from_markup(text).plain
         return str(text)
     except Exception:
         return str(text)
+
+
+def _get_driver_class() -> type[Any] | None:
+    """Return the Textual driver class OpenNova should use for this platform."""
+    if sys.platform != "win32":
+        return None
+
+    from opennova.cli.windows_tui_driver import get_ime_friendly_windows_driver_class
+
+    return get_ime_friendly_windows_driver_class()
 
 
 class OpenNovaTUI(App):
@@ -222,12 +246,10 @@ class OpenNovaTUI(App):
         config: Config | None = None,
         history_file: str | None = None,
     ):
-        super().__init__()
+        super().__init__(driver_class=_get_driver_class())
         self.agent = agent
         self.config = config
-        history_path = (
-            Path(history_file) if history_file else Path.home() / ".opennova" / "history"
-        )
+        history_path = Path(history_file) if history_file else Path.home() / ".opennova" / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
         self._history_path = history_path
         self._history_entries: list[str] = []
@@ -427,7 +449,7 @@ class OpenNovaTUI(App):
         """Complete slash command names and skill names after /skill."""
         # If after "/skill ", complete skill names
         if text.startswith("/skill ") or text == "/skill":
-            skill_prefix = text[len("/skill"):].lstrip()
+            skill_prefix = text[len("/skill") :].lstrip()
             skills = self.agent.get_skills()
             matches = [f"/skill {s}" for s in skills if s.startswith(skill_prefix)]
             if skill_prefix:
@@ -454,7 +476,11 @@ class OpenNovaTUI(App):
         matches: list[str] = []
         for entry in self._history_entries:
             entry_stripped = entry.strip()
-            if entry_stripped.startswith(text) and entry_stripped != text and entry_stripped not in seen:
+            if (
+                entry_stripped.startswith(text)
+                and entry_stripped != text
+                and entry_stripped not in seen
+            ):
                 seen.add(entry_stripped)
                 matches.append(entry_stripped)
         return matches
@@ -560,11 +586,13 @@ class OpenNovaTUI(App):
 
     def _launch_agent_task(self, coro) -> None:
         """Launch a coroutine as a background task so Textual can refresh UI."""
+
         async def _runner() -> None:
             try:
                 await coro
             except Exception:
                 self._reset_input_state()
+
         asyncio.create_task(_runner())
 
     async def _handle_command(self, text: str) -> None:
@@ -803,6 +831,7 @@ class OpenNovaTUI(App):
                 sid = f"[bold]{sid}[/bold]"
             prompt = (s.first_prompt or "—")[:80]
             from datetime import datetime
+
             date_str = datetime.fromtimestamp(s.modified).strftime("%m-%d %H:%M")
             table.add_row(sid, prompt, str(s.message_count), date_str)
         log.write(table)
@@ -899,7 +928,9 @@ class OpenNovaTUI(App):
             manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
             log.write(f"[green]Untrusted plugin: {tokens[1]}[/green]")
             return
-        plugins = manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+        plugins = manager.load_enabled_plugins(
+            self.agent.config, hook_manager=self.agent.hook_manager
+        )
         if not plugins:
             log.write("[yellow]No project plugins discovered.[/yellow]")
             return
@@ -908,7 +939,9 @@ class OpenNovaTUI(App):
         table.add_column("Trusted")
         table.add_column("Description")
         for plugin in plugins:
-            table.add_row(plugin.name, "yes" if manager.is_trusted(plugin.name) else "no", plugin.description)
+            table.add_row(
+                plugin.name, "yes" if manager.is_trusted(plugin.name) else "no", plugin.description
+            )
         log.write(table)
 
     async def _cmd_hooks(self, args: str) -> None:
@@ -936,7 +969,9 @@ class OpenNovaTUI(App):
         table.add_column("Enabled")
         table.add_column("Next Run")
         for task in tasks:
-            table.add_row(task.id[:8], task.name, "yes" if task.enabled else "no", str(task.next_run_at))
+            table.add_row(
+                task.id[:8], task.name, "yes" if task.enabled else "no", str(task.next_run_at)
+            )
         log.write(table)
 
     async def _cmd_diagnostics(self, args: str) -> None:
@@ -1123,7 +1158,8 @@ class OpenNovaTUI(App):
         """
         await self._run_agent_task(
             self.agent._run_act_mode(
-                task=task, stream=True,
+                task=task,
+                stream=True,
                 preserve_context=preserve_context,
             )
         )
@@ -1200,7 +1236,9 @@ class OpenNovaTUI(App):
                 self._tool_progress.started_at = float(data.get("started_at") or time.time())
                 try:
                     log = self.query_one("#messages")
-                    log.write(f"[cyan]Executing:[/cyan] {tool_name} [dim]{data.get('tool_id')}[/dim]")
+                    log.write(
+                        f"[cyan]Executing:[/cyan] {tool_name} [dim]{data.get('tool_id')}[/dim]"
+                    )
                 except Exception:
                     pass
             elif event_type == "permission_request":
@@ -1212,14 +1250,18 @@ class OpenNovaTUI(App):
                     success = data.get("success") is True
                     color = "green" if success else "red"
                     duration = data.get("duration_ms")
-                    log.write(f"[{color}]Result:[/{color}] [dim]{tool_name} in {duration or 0}ms[/dim]")
+                    log.write(
+                        f"[{color}]Result:[/{color}] [dim]{tool_name} in {duration or 0}ms[/dim]"
+                    )
                     output = str(data.get("output") or "")[:500]
                     if output and tool_name not in _SUPPRESSED_RESULT_OUTPUT:
                         log.write(output)
                     if data.get("error"):
                         log.write(f"[red]Error: {data['error']}[/red]")
                     if data.get("diff"):
-                        self._write_diff(log, str(data["diff"]), max_lines=_MAX_DIFF_LINES.get(tool_name, 120))
+                        self._write_diff(
+                            log, str(data["diff"]), max_lines=_MAX_DIFF_LINES.get(tool_name, 120)
+                        )
                 except Exception:
                     pass
                 self._tool_progress.clear_interaction()
@@ -1271,7 +1313,12 @@ class OpenNovaTUI(App):
                 questions = [payload] if payload.get("question") else []
 
             if not questions:
-                return {"skipped": True, "answers": {}, "all_answers": [], "display": "(no questions)"}
+                return {
+                    "skipped": True,
+                    "answers": {},
+                    "all_answers": [],
+                    "display": "(no questions)",
+                }
 
             log = self.query_one("#messages")
             all_answers: list[dict[str, Any]] = []
@@ -1305,9 +1352,7 @@ class OpenNovaTUI(App):
                     if multi_select:
                         dialog_lines.append("[dim](Comma-separated for multiple, e.g. 1,3)[/dim]")
 
-                log.write(
-                    Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2))
-                )
+                log.write(Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2)))
 
                 sel_hint = "s" if multi_select else ""
                 placeholder = (
@@ -1330,9 +1375,7 @@ class OpenNovaTUI(App):
 
                 if multi_select:
                     indices = [
-                        x.strip()
-                        for x in answer.replace(",", " ").split()
-                        if x.strip().isdigit()
+                        x.strip() for x in answer.replace(",", " ").split() if x.strip().isdigit()
                     ]
                     chosen = []
                     for idx_str in indices:
@@ -1428,7 +1471,9 @@ class OpenNovaTUI(App):
             log.write(line)
 
         if truncated:
-            log.write(f"[dim]... (diff truncated, {max_lines}/{len(diff_text.splitlines())} lines)[/dim]")
+            log.write(
+                f"[dim]... (diff truncated, {max_lines}/{len(diff_text.splitlines())} lines)[/dim]"
+            )
         log.write("")
 
     # ── status bar ───────────────────────────────────────────────
@@ -1526,6 +1571,7 @@ class OpenNovaTUI(App):
             pass
         self._set_status("")
         self._focus_input()
+
 
 async def run_tui(config: Config) -> None:
     """Launch the Textual TUI."""

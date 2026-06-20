@@ -90,8 +90,8 @@ def run(
     """
     Run OpenNova agent on a task.
 
-    If no task is provided, starts interactive mode. Windows defaults to the
-    prompt_toolkit REPL for IME compatibility; other platforms default to the TUI.
+    If no task is provided, starts interactive TUI mode. Use --no-tui to
+    start the prompt_toolkit REPL instead.
 
     Examples:
 
@@ -181,11 +181,7 @@ def init() -> None:
 
 def _use_tui_for_interactive(*, no_tui: bool, force_tui: bool, platform: str | None = None) -> bool:
     """Return whether the interactive command should launch the Textual TUI."""
-    if no_tui:
-        return False
-    if force_tui:
-        return True
-    return (platform or sys.platform) != "win32"
+    return not no_tui
 
 
 async def _run_single_task(

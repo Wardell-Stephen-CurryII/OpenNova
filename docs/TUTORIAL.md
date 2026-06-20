@@ -178,14 +178,14 @@ OpenNova v0.2.3
 uv run opennova
 ```
 
-默认交互模式会在 Windows 上使用经典 REPL 以兼容中文输入法，在其他平台进入 Textual TUI。
+默认交互模式会进入 Textual TUI。Windows 上会使用专门的 TUI 输入驱动，以兼容中文输入法提交的 Unicode 字符。
 如果你想显式使用经典 REPL，可以执行：
 
 ```bash
 uv run opennova run --no-tui
 ```
 
-如果你想在 Windows 上也强制进入 Textual TUI，可以执行：
+如果你想显式进入 Textual TUI，可以执行：
 
 ```bash
 uv run opennova run --tui
