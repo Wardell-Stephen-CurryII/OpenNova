@@ -191,6 +191,15 @@ uv run opennova run --no-tui
 uv run opennova run --tui
 ```
 
+Windows 上如果仍遇到中文输入法无法提交文字的问题，可以临时打开 TUI 输入诊断日志：
+
+```powershell
+$env:OPENNOVA_TUI_INPUT_DEBUG="$env:TEMP\opennova-tui-input.jsonl"
+uv run opennova
+```
+
+复现后退出，把这个 JSONL 文件用于排查。日志只记录键盘输入事件的字符、码点、虚拟键和控制键状态。
+
 你会看到类似欢迎界面：
 ```text
 ╭────────────────────────────────────────╮

@@ -10,8 +10,11 @@ printable Unicode characters.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 LEFT_ALT_PRESSED = 0x0002
@@ -74,6 +77,44 @@ def format_windows_virtual_key(virtual_key_code: int, control_key_state: int) ->
         modifiers.append("alt")
 
     return "+".join([*modifiers, key]) if modifiers else key
+
+
+def build_console_key_debug_record(
+    *,
+    key: str,
+    key_down: bool,
+    control_key_state: int,
+    virtual_key_code: int,
+    virtual_scan_code: int,
+) -> dict[str, Any]:
+    """Build a JSON-friendly diagnostic record for a Windows console key event."""
+    queued = should_queue_console_key(
+        key=key,
+        key_down=key_down,
+        control_key_state=control_key_state,
+        virtual_key_code=virtual_key_code,
+    )
+    return {
+        "key": key,
+        "repr": repr(key),
+        "codepoint": f"U+{ord(key):04X}" if len(key) == 1 and key != "\x00" else None,
+        "key_down": key_down,
+        "control_key_state": control_key_state,
+        "virtual_key_code": virtual_key_code,
+        "virtual_scan_code": virtual_scan_code,
+        "queued": queued,
+        "textual_key": None
+        if queued
+        else format_windows_virtual_key(virtual_key_code, control_key_state),
+    }
+
+
+def write_console_key_debug_record(path: str | Path, record: dict[str, Any]) -> None:
+    """Append a Windows TUI key diagnostic record as JSONL."""
+    debug_path = Path(path)
+    debug_path.parent.mkdir(parents=True, exist_ok=True)
+    with debug_path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def get_ime_friendly_windows_driver_class() -> type[Any]:
@@ -146,6 +187,7 @@ def _build_ime_friendly_windows_driver_class() -> type[Any]:
         def run(self) -> None:
             exit_requested = self.exit_event.is_set
             parser = XTermParser(debug=constants.DEBUG)
+            debug_path = os.environ.get("OPENNOVA_TUI_INPUT_DEBUG")
 
             try:
                 read_count = win32.wintypes.DWORD(0)
@@ -188,6 +230,17 @@ def _build_ime_friendly_windows_driver_class() -> type[Any]:
                             key = key_event.uChar.UnicodeChar
                             control_state = key_event.dwControlKeyState
                             virtual_key_code = key_event.wVirtualKeyCode
+                            if debug_path:
+                                write_console_key_debug_record(
+                                    debug_path,
+                                    build_console_key_debug_record(
+                                        key=key,
+                                        key_down=bool(key_event.bKeyDown),
+                                        control_key_state=control_state,
+                                        virtual_key_code=virtual_key_code,
+                                        virtual_scan_code=key_event.wVirtualScanCode,
+                                    ),
+                                )
 
                             if should_queue_console_key(
                                 key=key,

@@ -311,6 +311,41 @@ def test_windows_tui_maps_modified_navigation_keys_to_textual_names():
     assert format_windows_virtual_key(9, 0x0010) == "shift+tab"
 
 
+def test_windows_tui_debug_record_includes_unicode_key_details():
+    from opennova.cli.windows_tui_driver import build_console_key_debug_record
+
+    record = build_console_key_debug_record(
+        key="中",
+        key_down=True,
+        control_key_state=0x0010,
+        virtual_key_code=0,
+        virtual_scan_code=0,
+    )
+
+    assert record["key"] == "中"
+    assert record["codepoint"] == "U+4E2D"
+    assert record["queued"] is True
+    assert record["textual_key"] is None
+
+
+def test_windows_tui_debug_writer_appends_jsonl(tmp_path: Path):
+    import json
+
+    from opennova.cli.windows_tui_driver import write_console_key_debug_record
+
+    path = tmp_path / "keys.jsonl"
+    write_console_key_debug_record(
+        path,
+        {
+            "key": "中",
+            "codepoint": "U+4E2D",
+            "queued": True,
+        },
+    )
+
+    assert json.loads(path.read_text(encoding="utf-8"))["key"] == "中"
+
+
 def test_no_tui_still_disables_tui_on_windows():
     from opennova.main import _use_tui_for_interactive
 
