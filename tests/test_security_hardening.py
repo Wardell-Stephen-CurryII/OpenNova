@@ -213,6 +213,116 @@ def test_execute_command_rejects_shell_syntax_in_strict_mode():
 
 
 @pytest.mark.asyncio
+async def test_react_loop_normalizes_execute_command_model_aliases_before_guard(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.clear()
+    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+
+    loop = ReActLoop(
+        llm=DummyProvider(),
+        tool_registry=registry,
+        state=AgentState(),
+        stream=False,
+        guardrails=Guardrails(),
+        working_dir=str(tmp_path),
+    )
+
+    with patch("opennova.tools.shell_tools.subprocess.run") as mock_run:
+        mock_run.return_value = Completed(returncode=0, stdout="ok\n")
+        result = await loop._act(
+            ParsedAction(
+                tool_name="execute_command",
+                arguments={"cmd": "echo hi", "cwd": str(tmp_path)},
+            )
+        )
+
+    assert result.success is True
+    assert result.metadata["command"] == "echo hi"
+    assert result.metadata["working_dir"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_react_loop_checks_execute_command_aliases_for_dangerous_commands(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.clear()
+    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+
+    loop = ReActLoop(
+        llm=DummyProvider(),
+        tool_registry=registry,
+        state=AgentState(),
+        stream=False,
+        guardrails=Guardrails(),
+        working_dir=str(tmp_path),
+    )
+
+    result = await loop._act(
+        ParsedAction(tool_name="execute_command", arguments={"cmd": "rm -rf /"})
+    )
+
+    assert result.success is False
+    assert "dangerous" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_react_loop_normalizes_execute_command_array_commands(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.clear()
+    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+
+    loop = ReActLoop(
+        llm=DummyProvider(),
+        tool_registry=registry,
+        state=AgentState(),
+        stream=False,
+        guardrails=Guardrails(),
+        working_dir=str(tmp_path),
+    )
+
+    with patch("opennova.tools.shell_tools.subprocess.run") as mock_run:
+        mock_run.return_value = Completed(returncode=0, stdout="ok\n")
+        result = await loop._act(
+            ParsedAction(
+                tool_name="execute_command",
+                arguments={"command": ["echo", "hi"]},
+            )
+        )
+
+    assert result.success is True
+    assert result.metadata["command"] == "echo hi"
+    assert mock_run.call_args.args[0] == ["echo", "hi"]
+
+
+@pytest.mark.asyncio
+async def test_react_loop_normalizes_execute_command_args_field(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.clear()
+    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+
+    loop = ReActLoop(
+        llm=DummyProvider(),
+        tool_registry=registry,
+        state=AgentState(),
+        stream=False,
+        guardrails=Guardrails(),
+        working_dir=str(tmp_path),
+    )
+
+    with patch("opennova.tools.shell_tools.subprocess.run") as mock_run:
+        mock_run.return_value = Completed(returncode=0, stdout="ok\n")
+        result = await loop._act(
+            ParsedAction(
+                tool_name="execute_command",
+                arguments={"command": "echo", "args": ["hi"]},
+            )
+        )
+
+    assert result.success is True
+    assert result.metadata["command"] == "echo hi"
+    assert mock_run.call_args.args[0] == ["echo", "hi"]
+
+
+@pytest.mark.asyncio
 async def test_web_fetch_blocks_when_network_disabled():
     tool = WebFetchTool(config={"allow_network": False})
     result = await tool.async_execute("https://example.com")

@@ -559,6 +559,7 @@ class ReActLoop:
             Tool execution result
         """
         tool = self.tool_registry.get(action.tool_name)
+        action.arguments = self._normalize_tool_arguments(tool, action.arguments)
         action_record = None
         if self.working_memory:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
@@ -574,6 +575,7 @@ class ReActLoop:
                 if isinstance(hook_result, ToolResult):
                     return hook_result
                 action.arguments = dict(hook_result.get("arguments", action.arguments))
+                action.arguments = self._normalize_tool_arguments(tool, action.arguments)
 
             guard_result = self._check_tool_guard(action)
             if not guard_result.allowed:
@@ -648,6 +650,18 @@ class ReActLoop:
                 output="",
                 error=f"Tool execution failed: {e}",
             )
+
+    def _normalize_tool_arguments(
+        self,
+        tool: Any,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Let tools normalize common model argument variants before guards execute."""
+        normalizer = getattr(tool, "normalize_arguments", None)
+        if not callable(normalizer):
+            return arguments
+        normalized = normalizer(arguments)
+        return normalized if isinstance(normalized, dict) else arguments
 
     def _check_tool_guard(self, action: ParsedAction) -> GuardResult:
         """Run guardrails for a pending tool action."""

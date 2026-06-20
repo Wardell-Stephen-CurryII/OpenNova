@@ -95,6 +95,19 @@ def test_execute_command_schema_exposes_timeout_as_integer():
     assert schema.parameters["properties"]["timeout"]["type"] == "integer"
 
 
+def test_execute_command_schema_documents_arguments_for_model_use():
+    """Shell tool schema should tell models exactly how to call it."""
+    schema = ExecuteCommandTool().get_schema()
+    properties = schema.parameters["properties"]
+
+    assert schema.parameters["additionalProperties"] is False
+    assert schema.parameters["required"] == ["command"]
+    assert "single string" in properties["command"]["description"].lower()
+    assert "not an array" in properties["command"]["description"].lower()
+    assert "working directory" in properties["working_dir"]["description"].lower()
+    assert "seconds" in properties["timeout"]["description"].lower()
+
+
 def test_default_config_uses_deepseek_v4_pro():
     """Default configuration should prefer DeepSeek v4 Pro."""
     assert DEFAULT_CONFIG["default_provider"] == "deepseek"

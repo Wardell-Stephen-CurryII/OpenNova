@@ -40,9 +40,10 @@ class ExecuteCommandTool(BaseTool):
     name = "execute_command"
     search_hint = "Run tests, scripts, git commands, package managers, and shell commands"
     description = (
-        "Execute a shell command in a subprocess. "
-        "Commands have timeout limits and are monitored for dangerous patterns. "
-        "Use this for running tests, installing packages, git operations, etc."
+        "Execute a local shell command. Provide arguments as an object with a required "
+        '`command` string, for example {"command": "uv run pytest -q"}. '
+        "Do not pass command arrays or alternate keys such as `cmd`. Commands have "
+        "timeout limits and are monitored for dangerous patterns."
     )
 
     def __init__(self, config: dict[str, Any] | None = None):
@@ -61,6 +62,85 @@ class ExecuteCommandTool(BaseTool):
             always_deny_tools=self.config.get("always_deny_tools", []),
             always_ask_tools=self.config.get("always_ask_tools", []),
         )
+
+    def get_parameters_schema(self) -> dict[str, Any]:
+        """Return a model-facing schema with explicit shell command guidance."""
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": (
+                        "Required. The complete command as one single string, not an array "
+                        "or object. Examples: 'uv run pytest -q', 'git status --short'. "
+                        "Use shell operators like pipes or redirects only when necessary."
+                    ),
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": (
+                        "Optional timeout in seconds. Omit to use the configured default."
+                    ),
+                    "default": None,
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": (
+                        "Optional working directory for the command. Omit to use the "
+                        "current project working directory."
+                    ),
+                    "default": None,
+                },
+                "capture_stderr": {
+                    "type": "boolean",
+                    "description": "Whether stderr should be included in the tool output.",
+                    "default": True,
+                },
+            },
+            "required": ["command"],
+        }
+
+    def normalize_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Normalize common model aliases before guardrails and execution."""
+        normalized = dict(arguments)
+
+        command_aliases = ("cmd", "shell_command")
+        if "command" not in normalized:
+            for alias in command_aliases:
+                if alias in normalized:
+                    normalized["command"] = normalized[alias]
+                    break
+        for alias in command_aliases:
+            normalized.pop(alias, None)
+
+        working_dir_aliases = ("cwd", "workdir")
+        if "working_dir" not in normalized:
+            for alias in working_dir_aliases:
+                if alias in normalized:
+                    normalized["working_dir"] = normalized[alias]
+                    break
+        for alias in working_dir_aliases:
+            normalized.pop(alias, None)
+
+        extra_args = normalized.pop("args", None)
+        command = normalized.get("command")
+        if isinstance(command, list):
+            command_parts = [str(part) for part in command]
+        elif command is None:
+            command_parts = []
+        else:
+            command_parts = [str(command)]
+
+        if isinstance(extra_args, list):
+            command_parts.extend(str(part) for part in extra_args)
+
+        if len(command_parts) > 1:
+            normalized["command"] = shlex.join(command_parts)
+        elif command_parts:
+            normalized["command"] = command_parts[0]
+
+        return normalized
 
     def _prepare_command_execution(
         self,
