@@ -835,9 +835,9 @@ class REPL:
             session_id = sessions[0].session_id
 
         try:
-            messages = self.agent.resume_session(session_id)
+            loaded = self.agent.resume_session(session_id)
             self.renderer.print_success(
-                f"Resumed session {session_id[:8]} ({len(messages)} messages restored)."
+                f"Resumed session {session_id[:8]} ({len(loaded.messages)} messages restored)."
             )
         except Exception as e:
             self.renderer.print_error(f"Failed to resume session: {e}")

@@ -110,6 +110,7 @@ class AgentRuntime:
         from opennova.session import SessionManager
         self.session_manager = SessionManager(project_path=os.getcwd())
         self.session_manager.start_session()
+        self.session_transcript: list[dict[str, Any]] = []
 
         self.loop: ReActLoop | None = None
         self._callbacks: dict[str, Callable] = {}
@@ -783,6 +784,7 @@ class AgentRuntime:
         self.context_manager.clear()
         self.context_manager.set_compressed_summary(None)
         self.state.reset("")
+        self.session_transcript = []
         sm = getattr(self, "session_manager", None)
         if sm is not None:
             sm.clear_session()
@@ -792,36 +794,35 @@ class AgentRuntime:
         """Persist all context messages and compression markers to session JSONL."""
         try:
             summary = self.context_manager.get_compressed_summary()
-            if summary:
-                self.session_manager.save_compression_marker(
-                    summary=summary,
-                    message_count=len(self.context_manager.messages),
-                )
-            for msg in self.context_manager.messages:
-                self.session_manager.save_message(msg)
+            self.session_manager.save_snapshot(
+                self.context_manager.messages,
+                compression_summary=summary,
+                transcript_events=self.session_transcript,
+            )
         except Exception:
             pass
 
-    def resume_session(self, session_id: str) -> list[Any]:
+    def record_session_transcript_event(self, kind: str, **payload: Any) -> None:
+        """Record a replayable TUI transcript event for the active session."""
+        self.session_transcript.append({"kind": kind, **payload})
+
+    def resume_session(self, session_id: str) -> Any:
         """Load a past session's messages into the context manager.
 
         Restores compression state from session markers so the compact
         context view (summary + recent messages) is reconstructed.
         """
         loaded = self.session_manager.load_session_with_summary(session_id)
-        if loaded.compression_summary:
-            self.context_manager.set_compressed_summary(loaded.compression_summary)
-
-        messages = loaded.messages
         self.context_manager.clear()
-        for msg in messages:
+        self.context_manager.set_compressed_summary(loaded.compression_summary)
+        for msg in loaded.messages:
             self.context_manager.add_message(msg)
         # Re-start session with resumed messages
         self.session_manager.clear_session()
         self.session_manager.start_session()
-        for msg in messages:
-            self.session_manager.save_message(msg)
-        return messages
+        self.session_transcript = [dict(event.payload) for event in loaded.transcript_events]
+        self._save_session_messages()
+        return loaded
 
     def get_sessions(self) -> list[Any]:
         """List all saved sessions for the current project."""

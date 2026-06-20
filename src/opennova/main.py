@@ -45,8 +45,25 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     type=click.Path(exists=False),
     help="Path to configuration file.",
 )
+@click.option(
+    "--resume",
+    "resume_mode",
+    is_flag=True,
+    help="Open the TUI and choose a saved session to resume.",
+)
+@click.option(
+    "--continue",
+    "continue_mode",
+    is_flag=True,
+    help="Open the TUI and continue the most recent saved session.",
+)
 @click.pass_context
-def main(ctx: click.Context, config_path: str | None) -> None:
+def main(
+    ctx: click.Context,
+    config_path: str | None,
+    resume_mode: bool,
+    continue_mode: bool,
+) -> None:
     """
     OpenNova - A lightweight CLI AI Coding Agent.
 
@@ -54,6 +71,8 @@ def main(ctx: click.Context, config_path: str | None) -> None:
     """
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
+    ctx.obj["resume_mode"] = resume_mode
+    ctx.obj["continue_mode"] = continue_mode
 
     if ctx.invoked_subcommand is None:
         ctx.invoke(run, task=None)
@@ -102,6 +121,15 @@ def run(
         opennova run -m deepseek-v4-pro "Create a new Python module"
     """
     config = _load_and_validate_config(ctx.obj.get("config_path"), provider, model)
+    resume_mode = bool(ctx.obj.get("resume_mode"))
+    continue_mode = bool(ctx.obj.get("continue_mode"))
+
+    if resume_mode and continue_mode:
+        raise click.UsageError("Use only one of --resume or --continue.")
+    if (resume_mode or continue_mode) and task:
+        raise click.UsageError("--resume/--continue cannot be used with a direct task.")
+    if (resume_mode or continue_mode) and no_tui:
+        raise click.UsageError("--resume/--continue require the Textual TUI.")
 
     if task:
         asyncio.run(_run_single_task(config, task, plan, not no_stream))
@@ -110,7 +138,12 @@ def run(
     else:
         from opennova.cli.tui import run_tui
 
-        asyncio.run(run_tui(config))
+        startup_resume_mode = None
+        if resume_mode:
+            startup_resume_mode = "resume"
+        elif continue_mode:
+            startup_resume_mode = "continue"
+        asyncio.run(run_tui(config, startup_resume_mode=startup_resume_mode))
 
 
 @main.command()

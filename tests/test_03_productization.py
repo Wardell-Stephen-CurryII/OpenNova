@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
 
 from opennova.providers.base import BaseLLMProvider, FinishReason, LLMResponse, Message, ToolCall
 from opennova.runtime.state import AgentState
@@ -239,6 +241,126 @@ def test_utf8_environment_helper_provides_locale_overrides():
     assert env["PYTHONUTF8"] == "1"
 
 
+def test_session_title_snippet_formats_short_and_long_prompts():
+    from opennova.session import format_session_title_snippet
+
+    assert format_session_title_snippet("short prompt") == "short prompt"
+    assert format_session_title_snippet("12345678901234567890") == "12345678901234567890"
+    assert format_session_title_snippet("123456789012345678901") == "12345678901234567..."
+
+
+def test_session_manager_snapshot_persists_transcript_and_newest_sorting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import os
+
+    from opennova.session import SessionManager
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = SessionManager(project_path=str(project))
+
+    first_id = manager.start_session()
+    manager.save_snapshot(
+        [Message(role="user", content="first prompt")],
+        transcript_events=[{"kind": "user_message", "text": "first prompt"}],
+    )
+
+    second_id = manager.start_session()
+    manager.save_snapshot(
+        [Message(role="user", content="a much longer first prompt than twenty chars")],
+        transcript_events=[{"kind": "user_message", "text": "a much longer first prompt than twenty chars"}],
+    )
+
+    first_file = manager._sessions_dir / f"{first_id}.jsonl"
+    second_file = manager._sessions_dir / f"{second_id}.jsonl"
+    os.utime(first_file, (100.0, 100.0))
+    os.utime(second_file, (200.0, 200.0))
+
+    sessions = manager.list_sessions()
+    loaded = manager.load_session_with_summary(second_id)
+
+    assert [session.session_id for session in sessions] == [second_id, first_id]
+    assert loaded.transcript_events[0].payload["kind"] == "user_message"
+    assert loaded.messages[0].content == "a much longer first prompt than twenty chars"
+
+
+def test_session_manager_dedupes_legacy_appended_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opennova.session import SessionManager
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = SessionManager(project_path=str(project))
+    session_id = manager.start_session()
+
+    def legacy_message_line(message: dict[str, Any]) -> str:
+        return (
+            f'{{"type":"message","session_id":"{session_id}","message":'
+            f"{json.dumps(message, ensure_ascii=False)}}}"
+        )
+
+    first = Message(role="user", content="first").to_dict()
+    second = Message(role="assistant", content="second").to_dict()
+    third = Message(role="user", content="third").to_dict()
+    file_path = manager._sessions_dir / f"{session_id}.jsonl"
+    file_path.write_text(
+        "\n".join(
+            [
+                legacy_message_line(first),
+                legacy_message_line(second),
+                legacy_message_line(first),
+                legacy_message_line(second),
+                legacy_message_line(third),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = manager.load_session(session_id, apply_compression=False)
+
+    assert [message.content for message in loaded] == ["first", "second", "third"]
+
+
+def test_runtime_resume_session_restores_messages_summary_and_transcript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opennova.memory.context import ContextManager
+    from opennova.runtime.agent import AgentRuntime
+    from opennova.session import SessionManager
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    manager = SessionManager(project_path=str(tmp_path / "project"))
+    session_id = manager.start_session()
+    manager.save_snapshot(
+        [Message(role="user", content="hello"), Message(role="assistant", content="world")],
+        compression_summary="compressed summary",
+        transcript_events=[
+            {"kind": "user_message", "text": "hello"},
+            {"kind": "assistant_markdown", "content": "world"},
+        ],
+    )
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.context_manager = ContextManager(model="gpt-4o")
+    runtime.session_manager = manager
+    runtime.session_transcript = []
+
+    loaded = AgentRuntime.resume_session(runtime, session_id)
+
+    assert loaded.compression_summary == "compressed summary"
+    assert [message.content for message in loaded.messages] == ["hello", "world"]
+    assert runtime.context_manager.get_compressed_summary() == "compressed summary"
+    assert runtime.session_transcript[0]["kind"] == "user_message"
+
+
 def test_slash_command_registry_exposes_03_productization_commands():
     from opennova.cli.commands import SlashCommandRegistry
 
@@ -350,6 +472,54 @@ def test_no_tui_still_disables_tui_on_windows():
     from opennova.main import _use_tui_for_interactive
 
     assert _use_tui_for_interactive(no_tui=True, force_tui=False, platform="win32") is False
+
+
+def test_cli_resume_flag_launches_tui_in_picker_mode(monkeypatch):
+    from opennova.main import main
+
+    seen = []
+
+    async def fake_run_tui(config, startup_resume_mode=None):
+        seen.append(startup_resume_mode)
+
+    monkeypatch.setattr("opennova.main._load_and_validate_config", lambda *args, **kwargs: {})
+    monkeypatch.setattr("opennova.cli.tui.run_tui", fake_run_tui)
+
+    result = CliRunner().invoke(main, ["--resume"])
+
+    assert result.exit_code == 0
+    assert seen == ["resume"]
+
+
+def test_cli_continue_flag_launches_tui_in_continue_mode(monkeypatch):
+    from opennova.main import main
+
+    seen = []
+
+    async def fake_run_tui(config, startup_resume_mode=None):
+        seen.append(startup_resume_mode)
+
+    monkeypatch.setattr("opennova.main._load_and_validate_config", lambda *args, **kwargs: {})
+    monkeypatch.setattr("opennova.cli.tui.run_tui", fake_run_tui)
+
+    result = CliRunner().invoke(main, ["--continue"])
+
+    assert result.exit_code == 0
+    assert seen == ["continue"]
+
+
+def test_cli_resume_flag_rejects_task_and_no_tui(monkeypatch):
+    from opennova.main import main
+
+    monkeypatch.setattr("opennova.main._load_and_validate_config", lambda *args, **kwargs: {})
+
+    task_result = CliRunner().invoke(main, ["--resume", "run", "hello"])
+    no_tui_result = CliRunner().invoke(main, ["--resume", "run", "--no-tui"])
+
+    assert task_result.exit_code != 0
+    assert "--resume/--continue cannot be used with a direct task." in task_result.output
+    assert no_tui_result.exit_code != 0
+    assert "--resume/--continue require the Textual TUI." in no_tui_result.output
 
 
 def test_tui_system_clipboard_uses_native_platform_commands():
@@ -676,6 +846,156 @@ def test_tui_stream_callback_does_not_duplicate_final_answer():
     app.agent.callbacks["stream"](StreamChunk(content="", finish_reason="stop"))
 
     assert log.writes == []
+
+
+def test_tui_resume_without_args_uses_picker():
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Log:
+        def write(self, value):
+            raise AssertionError("picker path should not write directly")
+
+    calls = []
+
+    async def fake_resume_via_picker(self, exclude_current):
+        calls.append(exclude_current)
+        return True
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_resume_via_picker": fake_resume_via_picker,
+            "query_one": lambda self, selector: Log(),
+        },
+    )()
+
+    import asyncio
+
+    asyncio.run(OpenNovaTUI._cmd_resume(app, ""))
+
+    assert calls == [True]
+
+
+def test_tui_startup_continue_restores_newest_session():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.session import SessionMeta
+
+    calls = []
+
+    async def fake_resume(self, session_id):
+        calls.append(session_id)
+        return True
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_startup_resume_mode": "continue",
+            "_get_resumable_sessions": lambda self, exclude_current: [
+                SessionMeta(
+                    session_id="session-new",
+                    created=0.0,
+                    modified=20.0,
+                    first_prompt="new",
+                    message_count=2,
+                    file_size=1,
+                    file_path=Path("/tmp/new.jsonl"),
+                ),
+                SessionMeta(
+                    session_id="session-old",
+                    created=0.0,
+                    modified=10.0,
+                    first_prompt="old",
+                    message_count=1,
+                    file_size=1,
+                    file_path=Path("/tmp/old.jsonl"),
+                ),
+            ],
+            "_resume_session_by_id": fake_resume,
+            "_show_welcome": lambda self: (_ for _ in ()).throw(
+                AssertionError("should not show welcome when continue succeeds")
+            ),
+            "_focus_input": lambda self: None,
+            "query_one": lambda self, selector: type("Log", (), {"write": lambda self, value: None})(),
+        },
+    )()
+
+    import asyncio
+
+    asyncio.run(OpenNovaTUI._handle_startup_resume(app))
+
+    assert calls == ["session-new"]
+
+
+def test_tui_restore_loaded_session_replays_transcript_events():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.session import LoadedSession, SessionTranscriptEvent
+
+    class Log:
+        def __init__(self):
+            self.writes = []
+            self.cleared = False
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def clear_messages(self):
+            self.cleared = True
+            self.writes.clear()
+
+        def scroll_end(self, animate=False):
+            return None
+
+    log = Log()
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_replaying_transcript": False,
+            "_write_user_message": lambda self, log, text, record=False: log.write(("user", text)),
+            "_write_assistant_message": lambda self, log, text, record=False: log.write(("assistant", text)),
+            "_write_tool_start": lambda self, log, tool_name, detail, record=False: log.write(
+                ("tool_start", tool_name, detail)
+            ),
+            "_write_tool_result": lambda self, log, **kwargs: log.write(
+                ("tool_result", kwargs["tool_name"], kwargs["summary_markup"])
+            ),
+            "_replay_transcript_event": lambda self, log, event: OpenNovaTUI._replay_transcript_event(
+                self, log, event
+            ),
+            "_replay_legacy_message": lambda self, log, message: OpenNovaTUI._replay_legacy_message(
+                self, log, message
+            ),
+        },
+    )()
+
+    loaded = LoadedSession(
+        session_id="session-1",
+        messages=[],
+        transcript_events=[
+            SessionTranscriptEvent(kind="user_message", payload={"kind": "user_message", "text": "hello"}),
+            SessionTranscriptEvent(
+                kind="assistant_markdown",
+                payload={"kind": "assistant_markdown", "content": "world"},
+            ),
+            SessionTranscriptEvent(
+                kind="tool_start",
+                payload={"kind": "tool_start", "tool_name": "read_file", "detail": "(path='README.md')"},
+            ),
+        ],
+        compression_summary=None,
+        compression_markers=[],
+    )
+
+    OpenNovaTUI._restore_loaded_session(app, log, loaded)
+
+    assert log.cleared is True
+    assert log.writes == [
+        ("user", "hello"),
+        ("assistant", "world"),
+        ("tool_start", "read_file", "(path='README.md')"),
+    ]
 
 
 def test_ask_question_dialog_options_always_include_custom_answer():

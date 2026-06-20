@@ -34,11 +34,13 @@ from textual.widgets import Header, Input, Label, RichLog
 
 from opennova.cli.ask_question_dialog import AskQuestionDialog
 from opennova.cli.commands import SlashCommandRegistry
+from opennova.cli.session_picker_dialog import SessionPickerDialog
 from opennova.cli.tool_cards import ToolCardStore
 from opennova.cli.tool_progress import ToolProgressTracker
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
 from opennova.runtime.agent import AgentRuntime
+from opennova.session import LoadedSession, SessionMeta, format_session_title_snippet
 from opennova.tools.base import ToolResult
 
 # Tool names whose result outputs are not displayed (verbose file ops).
@@ -308,6 +310,7 @@ class OpenNovaTUI(App):
         agent: AgentRuntime,
         config: Config | None = None,
         history_file: str | None = None,
+        startup_resume_mode: str | None = None,
     ):
         super().__init__(driver_class=_get_driver_class())
         self.agent = agent
@@ -327,6 +330,8 @@ class OpenNovaTUI(App):
         self._start_time: float = 0.0
         self._tool_progress = ToolProgressTracker()
         self._tool_cards = ToolCardStore()
+        self._startup_resume_mode = startup_resume_mode
+        self._replaying_transcript = False
         self.command_registry = SlashCommandRegistry.default()
         for command in getattr(getattr(self.agent, "plugin_manager", None), "commands", []):
             self.command_registry.register_plugin_command(command)
@@ -358,8 +363,31 @@ class OpenNovaTUI(App):
 
     def on_mount(self) -> None:
         self._load_history()
+        self.call_after_refresh(self._after_mount)
+
+    def _after_mount(self) -> None:
+        if self._startup_resume_mode:
+            asyncio.create_task(self._handle_startup_resume())
+            return
         self._show_welcome()
-        self.call_after_refresh(self._focus_input)
+        self._focus_input()
+
+    async def _handle_startup_resume(self) -> None:
+        if self._startup_resume_mode == "continue":
+            sessions = self._get_resumable_sessions(exclude_current=False)
+            if sessions and await self._resume_session_by_id(sessions[0].session_id):
+                self._focus_input()
+                return
+            self._show_welcome()
+            log = self.query_one("#messages")
+            log.write("[yellow]No saved sessions available to continue.[/yellow]")
+            self._focus_input()
+            return
+
+        resumed = await self._resume_via_picker(exclude_current=False)
+        if not resumed:
+            self._show_welcome()
+        self._focus_input()
 
     def _focus_input(self) -> None:
         """Ensure input always has focus."""
@@ -401,6 +429,170 @@ class OpenNovaTUI(App):
             )
         )
         log.write("")
+
+    def _record_transcript_event(self, kind: str, **payload: Any) -> None:
+        if self._replaying_transcript:
+            return
+        with suppress(Exception):
+            self.agent.record_session_transcript_event(kind, **payload)
+
+    def _write_user_message(self, log: _MessagesLog, text: str, *, record: bool = True) -> None:
+        log.write(_format_user_message(text))
+        if record:
+            self._record_transcript_event("user_message", text=text)
+
+    def _write_assistant_message(
+        self,
+        log: _MessagesLog,
+        text: str,
+        *,
+        record: bool = True,
+    ) -> None:
+        log.write(Markdown(text))
+        if record:
+            self._record_transcript_event("assistant_markdown", content=text)
+
+    def _write_tool_start(
+        self,
+        log: _MessagesLog,
+        tool_name: str,
+        detail: str,
+        *,
+        record: bool = True,
+    ) -> None:
+        log.write(_format_tool_execution(tool_name, detail))
+        if record:
+            self._record_transcript_event(
+                "tool_start",
+                tool_name=tool_name,
+                detail=detail,
+            )
+
+    def _write_tool_result(
+        self,
+        log: _MessagesLog,
+        *,
+        tool_name: str,
+        summary_markup: str,
+        output: str = "",
+        error: str = "",
+        diff: str = "",
+        diff_max_lines: int = 120,
+        record: bool = True,
+    ) -> None:
+        log.write(summary_markup)
+        if output:
+            log.write(output)
+        if error:
+            log.write(f"[red]Error: {error}[/red]")
+        if diff:
+            self._write_diff(log, diff, max_lines=diff_max_lines)
+        if record:
+            self._record_transcript_event(
+                "tool_result",
+                tool_name=tool_name,
+                summary_markup=summary_markup,
+                output=output,
+                error=error,
+                diff=diff,
+                diff_max_lines=diff_max_lines,
+            )
+
+    def _get_resumable_sessions(self, *, exclude_current: bool) -> list[SessionMeta]:
+        sessions = self.agent.get_sessions()
+        if exclude_current:
+            current_id = self.agent.session_manager.session_id
+            sessions = [session for session in sessions if session.session_id != current_id]
+        return sessions
+
+    async def _pick_session(self, sessions: list[SessionMeta]) -> str | None:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str | None] = loop.create_future()
+
+        def _on_choice(session_id: str | None) -> None:
+            if not future.done():
+                future.set_result(session_id)
+
+        await self.push_screen(SessionPickerDialog(sessions), callback=_on_choice)
+        return await future
+
+    async def _resume_via_picker(self, *, exclude_current: bool) -> bool:
+        sessions = self._get_resumable_sessions(exclude_current=exclude_current)
+        log = self.query_one("#messages")
+        if not sessions:
+            log.write("[yellow]No saved sessions found for this project.[/yellow]")
+            return False
+        session_id = await self._pick_session(sessions)
+        if not session_id:
+            return False
+        return await self._resume_session_by_id(session_id)
+
+    async def _resume_session_by_id(self, session_id: str) -> bool:
+        log = self.query_one("#messages")
+        try:
+            loaded = self.agent.resume_session(session_id)
+        except Exception as exc:
+            log.write(f"[red]Failed to resume session: {exc}[/red]")
+            return False
+
+        self._restore_loaded_session(log, loaded)
+        return True
+
+    def _restore_loaded_session(self, log: _MessagesLog, loaded: LoadedSession) -> None:
+        self._replaying_transcript = True
+        try:
+            log.clear_messages()
+            if loaded.transcript_events:
+                for event in loaded.transcript_events:
+                    self._replay_transcript_event(log, event.payload)
+            else:
+                for message in loaded.messages:
+                    self._replay_legacy_message(log, message)
+        finally:
+            self._replaying_transcript = False
+        log.scroll_end(animate=False)
+
+    def _replay_transcript_event(self, log: _MessagesLog, event: dict[str, Any]) -> None:
+        kind = event.get("kind")
+        if kind == "user_message":
+            self._write_user_message(log, str(event.get("text") or ""), record=False)
+            return
+        if kind == "assistant_markdown":
+            self._write_assistant_message(log, str(event.get("content") or ""), record=False)
+            return
+        if kind == "tool_start":
+            self._write_tool_start(
+                log,
+                str(event.get("tool_name") or "tool"),
+                str(event.get("detail") or ""),
+                record=False,
+            )
+            return
+        if kind == "tool_result":
+            self._write_tool_result(
+                log,
+                tool_name=str(event.get("tool_name") or "tool"),
+                summary_markup=str(event.get("summary_markup") or ""),
+                output=str(event.get("output") or ""),
+                error=str(event.get("error") or ""),
+                diff=str(event.get("diff") or ""),
+                diff_max_lines=int(event.get("diff_max_lines") or 120),
+                record=False,
+            )
+            return
+        if kind == "system_markup":
+            log.write(str(event.get("content") or ""))
+            return
+        if kind == "plain_text":
+            log.write(str(event.get("content") or ""))
+
+    def _replay_legacy_message(self, log: _MessagesLog, message: Any) -> None:
+        if message.role == "user":
+            self._write_user_message(log, message.content, record=False)
+        elif message.role == "assistant":
+            self._write_assistant_message(log, message.content, record=False)
+        elif message.role == "tool" and message.content:
+            log.write(f"[dim]{message.content}[/dim]")
 
     # ── key bindings ─────────────────────────────────────────────
 
@@ -623,7 +815,7 @@ class OpenNovaTUI(App):
         self._add_to_history(text)
 
         log = self.query_one("#messages")
-        log.write(_format_user_message(text))
+        self._write_user_message(log, text)
         log.scroll_end(animate=False)
 
         # Fast commands: handle synchronously (they return quickly).
@@ -897,7 +1089,7 @@ class OpenNovaTUI(App):
             sid = s.session_id[:8]
             if s.session_id == current_id:
                 sid = f"[bold]{sid}[/bold]"
-            prompt = (s.first_prompt or "—")[:80]
+            prompt = format_session_title_snippet(s.first_prompt or "Untitled session", limit=20)
             from datetime import datetime
 
             date_str = datetime.fromtimestamp(s.modified).strftime("%m-%d %H:%M")
@@ -910,7 +1102,7 @@ class OpenNovaTUI(App):
         if args:
             session_id = args.strip()
             # Support partial ID matching
-            sessions = self.agent.get_sessions()
+            sessions = self._get_resumable_sessions(exclude_current=True)
             matched = [s for s in sessions if s.session_id.startswith(session_id)]
             if not matched:
                 log.write(f"[red]Session '{session_id}' not found.[/red]")
@@ -921,26 +1113,10 @@ class OpenNovaTUI(App):
                     log.write(f"  [dim]{s.session_id[:16]}...[/dim] - {s.first_prompt[:60]}")
                 return
             session_id = matched[0].session_id
-        else:
-            # No args: show picker (list recent sessions)
-            sessions = self.agent.get_sessions()
-            current_id = self.agent.session_manager.session_id
-            # Filter out current session
-            sessions = [s for s in sessions if s.session_id != current_id]
-            if not sessions:
-                log.write("[yellow]No past sessions to resume.[/yellow]")
-                return
-            # Auto-pick the most recent
-            session_id = sessions[0].session_id
+            await self._resume_session_by_id(session_id)
+            return
 
-        try:
-            messages = self.agent.resume_session(session_id)
-            log.write(
-                f"[green]Resumed session [bold]{session_id[:8]}[/bold] "
-                f"({len(messages)} messages restored).[/green]"
-            )
-        except Exception as e:
-            log.write(f"[red]Failed to resume session: {e}[/red]")
+        await self._resume_via_picker(exclude_current=True)
 
     async def _cmd_permissions(self, args: str) -> None:
         from opennova.security.permissions import PermissionDecision, PermissionStore
@@ -1209,7 +1385,7 @@ class OpenNovaTUI(App):
             result = self._agent_task.result()
             self._set_status("")
             if isinstance(result, str) and result:
-                log.write(Markdown(result))
+                self._write_assistant_message(log, result)
                 log.scroll_end(animate=False)
             return result
 
@@ -1267,7 +1443,7 @@ class OpenNovaTUI(App):
                     else:
                         parts.append(f"{k}={repr(v)}")
                 args_str = ", ".join(parts)
-                log.write(_format_tool_execution(tool_name, f"({args_str})"))
+                self._write_tool_start(log, tool_name, f"({args_str})")
             except Exception:
                 pass
 
@@ -1280,20 +1456,24 @@ class OpenNovaTUI(App):
                 return
             try:
                 log = self.query_one("#messages")
-                if result.success:
-                    log.write(f"[green]Result:[/green] [dim]{summary}[/dim]")
-                else:
-                    log.write(f"[red]Result:[/red] [dim]{summary}[/dim]")
+                summary_markup = (
+                    f"[green]Result:[/green] [dim]{summary}[/dim]"
+                    if result.success
+                    else f"[red]Result:[/red] [dim]{summary}[/dim]"
+                )
+                output = ""
                 if _current_tool["name"] not in _SUPPRESSED_RESULT_OUTPUT:
                     output = (event.get("output_preview") or "")[:500]
-                    if output:
-                        log.write(output)
-                if result.error:
-                    log.write(f"[red]Error: {result.error}[/red]")
                 diff = result.metadata.get("diff") if result.success else None
-                if diff:
-                    max_lines = _MAX_DIFF_LINES.get(_current_tool["name"], 120)
-                    self._write_diff(log, diff, max_lines=max_lines)
+                self._write_tool_result(
+                    log,
+                    tool_name=_current_tool["name"],
+                    summary_markup=summary_markup,
+                    output=output,
+                    error=result.error or "",
+                    diff=diff or "",
+                    diff_max_lines=_MAX_DIFF_LINES.get(_current_tool["name"], 120),
+                )
             except Exception:
                 pass
 
@@ -1311,8 +1491,10 @@ class OpenNovaTUI(App):
                 self._tool_progress.started_at = float(data.get("started_at") or time.time())
                 try:
                     log = self.query_one("#messages")
-                    log.write(
-                        _format_tool_execution(tool_name, f"[dim]{data.get('tool_id')}[/dim]")
+                    self._write_tool_start(
+                        log,
+                        tool_name,
+                        f"[dim]{data.get('tool_id')}[/dim]",
                     )
                 except Exception:
                     pass
@@ -1325,18 +1507,21 @@ class OpenNovaTUI(App):
                     success = data.get("success") is True
                     color = "green" if success else "red"
                     duration = data.get("duration_ms")
-                    log.write(
+                    summary_markup = (
                         f"[{color}]Result:[/{color}] [dim]{tool_name} in {duration or 0}ms[/dim]"
                     )
                     output = str(data.get("output") or "")[:500]
-                    if output and tool_name not in _SUPPRESSED_RESULT_OUTPUT:
-                        log.write(output)
-                    if data.get("error"):
-                        log.write(f"[red]Error: {data['error']}[/red]")
-                    if data.get("diff"):
-                        self._write_diff(
-                            log, str(data["diff"]), max_lines=_MAX_DIFF_LINES.get(tool_name, 120)
-                        )
+                    if tool_name in _SUPPRESSED_RESULT_OUTPUT:
+                        output = ""
+                    self._write_tool_result(
+                        log,
+                        tool_name=tool_name,
+                        summary_markup=summary_markup,
+                        output=output,
+                        error=str(data.get("error") or ""),
+                        diff=str(data.get("diff") or ""),
+                        diff_max_lines=_MAX_DIFF_LINES.get(tool_name, 120),
+                    )
                 except Exception:
                     pass
                 self._tool_progress.clear_interaction()
@@ -1564,8 +1749,8 @@ class OpenNovaTUI(App):
         self._set_status("[yellow]Could not copy selection to clipboard[/yellow]")
 
 
-async def run_tui(config: Config) -> None:
+async def run_tui(config: Config, startup_resume_mode: str | None = None) -> None:
     """Launch the Textual TUI."""
     agent = AgentRuntime(config)
-    app = OpenNovaTUI(agent, config)
+    app = OpenNovaTUI(agent, config, startup_resume_mode=startup_resume_mode)
     await app.run_async()

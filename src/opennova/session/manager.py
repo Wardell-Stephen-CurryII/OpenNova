@@ -31,6 +31,14 @@ class SessionMeta:
 
 
 @dataclass
+class SessionTranscriptEvent:
+    """Replayable TUI transcript event stored alongside a session snapshot."""
+
+    kind: str
+    payload: dict[str, Any]
+
+
+@dataclass
 class CompressionMarker:
     """Marks a compression boundary in a session JSONL file."""
 
@@ -45,8 +53,17 @@ class LoadedSession:
 
     session_id: str
     messages: list[Any]
+    transcript_events: list[SessionTranscriptEvent]
     compression_summary: str | None = None
     compression_markers: list[CompressionMarker] | None = None
+
+
+def format_session_title_snippet(first_prompt: str, limit: int = 20) -> str:
+    """Return a short session title derived from the first user prompt."""
+    compact = " ".join((first_prompt or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
 
 
 class SessionManager:
@@ -60,6 +77,7 @@ class SessionManager:
         self._file: Path | None = None
         self._message_count: int = 0
         self._first_prompt: str | None = None
+        self._title: str | None = None
 
     # ── session lifecycle ──────────────────────────────────────────
 
@@ -69,6 +87,7 @@ class SessionManager:
         self._file = self._sessions_dir / f"{self._session_id}.jsonl"
         self._message_count = 0
         self._first_prompt = None
+        self._title = None
         return self._session_id
 
     @property
@@ -110,16 +129,74 @@ class SessionManager:
 
     def save_title(self, title: str) -> None:
         """Set a custom title for the current session."""
-        if self._file is None:
+        self._title = title
+
+    def save_snapshot(
+        self,
+        messages: list[Any],
+        *,
+        compression_summary: str | None = None,
+        transcript_events: list[dict[str, Any]] | list[SessionTranscriptEvent] | None = None,
+    ) -> None:
+        """Rewrite the current session file with a single deduplicated snapshot."""
+        if self._session_id is None or self._file is None:
             return
-        entry = {
-            "type": "title",
-            "session_id": self._session_id,
-            "title": title,
-        }
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        with open(self._file, "a", encoding="utf-8") as f:
-            f.write(line)
+
+        self._message_count = len(messages)
+        self._first_prompt = None
+        for message in messages:
+            data = message.to_dict()
+            if data.get("role") == "user":
+                self._first_prompt = data.get("content", "")
+                break
+
+        entries: list[dict[str, Any]] = []
+        if self._first_prompt:
+            entries.append(
+                {
+                    "type": "first_prompt",
+                    "session_id": self._session_id,
+                    "content": self._first_prompt,
+                }
+            )
+        if self._title:
+            entries.append(
+                {
+                    "type": "title",
+                    "session_id": self._session_id,
+                    "title": self._title,
+                }
+            )
+        for message in messages:
+            entries.append(
+                {
+                    "type": "message",
+                    "session_id": self._session_id,
+                    "message": message.to_dict(),
+                }
+            )
+        if compression_summary:
+            entries.append(
+                {
+                    "type": "compression_boundary",
+                    "session_id": self._session_id,
+                    "summary": compression_summary,
+                    "message_count": 0,
+                }
+            )
+        for event in transcript_events or []:
+            payload = event.payload if isinstance(event, SessionTranscriptEvent) else dict(event)
+            entries.append(
+                {
+                    "type": "transcript_event",
+                    "session_id": self._session_id,
+                    "event": payload,
+                }
+            )
+
+        with open(self._file, "w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def save_compression_marker(self, summary: str, message_count: int) -> None:
         """Write a compression boundary marker to the current session JSONL."""
@@ -202,7 +279,7 @@ class SessionManager:
                     if skip_until_count is not None and msg_index <= skip_until_count:
                         continue
                     messages.append(Message.from_dict(entry["message"]))
-        return messages
+        return self._dedupe_legacy_messages(messages)
 
     def load_session_with_summary(
         self, session_id: str, apply_compression: bool = True
@@ -211,9 +288,11 @@ class SessionManager:
         markers = self.get_compression_markers(session_id) if apply_compression else []
         messages = self.load_session(session_id, apply_compression=apply_compression)
         summary = markers[-1].summary if markers else None
+        transcript_events = self._load_transcript_events(session_id)
         return LoadedSession(
             session_id=session_id,
             messages=messages,
+            transcript_events=transcript_events,
             compression_summary=summary,
             compression_markers=markers,
         )
@@ -269,6 +348,49 @@ class SessionManager:
         except Exception:
             pass
 
+    def _load_transcript_events(self, session_id: str) -> list[SessionTranscriptEvent]:
+        """Load replayable transcript events from a session file."""
+        file = self._sessions_dir / f"{session_id}.jsonl"
+        if not file.exists():
+            return []
+
+        events: list[SessionTranscriptEvent] = []
+        with open(file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "transcript_event" and isinstance(entry.get("event"), dict):
+                    event = dict(entry["event"])
+                    kind = str(event.get("kind") or "")
+                    if kind:
+                        events.append(SessionTranscriptEvent(kind=kind, payload=event))
+        return events
+
+    def _dedupe_legacy_messages(self, messages: list[Any]) -> list[Any]:
+        """Collapse repeated appended snapshots from legacy session files."""
+        serialized = [message.to_dict() for message in messages]
+        changed = True
+        while changed:
+            changed = False
+            half = len(serialized) // 2
+            for prefix_len in range(1, half + 1):
+                if serialized[:prefix_len] == serialized[prefix_len : prefix_len * 2]:
+                    serialized = serialized[prefix_len:]
+                    changed = True
+                    break
+
+        if len(serialized) == len(messages):
+            return messages
+
+        from opennova.providers.base import Message
+
+        return [Message.from_dict(item) for item in serialized]
+
     @staticmethod
     def _is_valid_uuid(name: str) -> bool:
         try:
@@ -285,3 +407,4 @@ class SessionManager:
         self._file = None
         self._message_count = 0
         self._first_prompt = None
+        self._title = None
