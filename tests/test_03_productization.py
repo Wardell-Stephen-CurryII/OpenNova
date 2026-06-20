@@ -534,6 +534,96 @@ def test_tui_copy_selection_without_selection_prompts_user(monkeypatch):
     assert "Select text" in statuses[-1]
 
 
+def test_tui_copy_bindings_include_macos_command_c():
+    from opennova.cli.tui import OpenNovaTUI
+
+    bindings = {binding.key: binding for binding in OpenNovaTUI.BINDINGS}
+
+    assert "super+c" in bindings
+    assert bindings["super+c"].priority is True
+    assert bindings["ctrl+c"].priority is True
+
+
+def test_tui_ctrl_c_copies_selection_when_idle(monkeypatch):
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Screen:
+        cleared = False
+
+        def get_selected_text(self):
+            return "selected text"
+
+        def clear_selection(self):
+            self.cleared = True
+
+    copied = []
+    statuses = []
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_agent_task": None,
+            "_last_ctrl_c": 0.0,
+            "screen": Screen(),
+            "copy_to_clipboard": copied.append,
+            "_set_status": statuses.append,
+            "_is_agent_running": lambda self: False,
+            "action_copy_selection": lambda self: OpenNovaTUI.action_copy_selection(self),
+            "call_after_refresh": lambda self, callback: None,
+            "_focus_input": lambda self: None,
+            "exit": lambda self: (_ for _ in ()).throw(
+                AssertionError("should not exit when text is selected")
+            ),
+        },
+    )()
+    monkeypatch.setattr("opennova.cli.tui._copy_to_system_clipboard", lambda text: True)
+
+    OpenNovaTUI.action_cancel(app)
+
+    assert copied == ["selected text"]
+    assert app.screen.cleared is True
+    assert "Copied selection" in statuses[-1]
+
+
+def test_tui_ctrl_c_still_cancels_running_agent(monkeypatch):
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Task:
+        cancelled = False
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancelled = True
+
+    class Screen:
+        def get_selected_text(self):
+            raise AssertionError("running Ctrl+C should cancel before checking selection")
+
+    statuses = []
+    task = Task()
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_agent_task": task,
+            "screen": Screen(),
+            "_set_status": statuses.append,
+            "_is_agent_running": lambda self: True,
+        },
+    )()
+    monkeypatch.setattr(
+        "opennova.cli.tui._copy_to_system_clipboard",
+        lambda text: (_ for _ in ()).throw(AssertionError("should not copy")),
+    )
+
+    OpenNovaTUI.action_cancel(app)
+
+    assert task.cancelled is True
+    assert "Cancelling" in statuses[-1]
+
+
 def test_ask_question_dialog_options_always_include_custom_answer():
     from opennova.cli.ask_question_dialog import CUSTOM_OPTION_ID, options_with_custom_answer
 

@@ -267,8 +267,16 @@ class OpenNovaTUI(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+c", "cancel", "Cancel", show=True),
-        Binding("ctrl+shift+c", "copy_selection", "Copy", show=True),
+        Binding("ctrl+c", "cancel", "Cancel", show=True, priority=True),
+        Binding("ctrl+shift+c", "copy_selection", "Copy", show=True, priority=True),
+        Binding(
+            "super+c",
+            "copy_selection",
+            "Copy",
+            show=False,
+            key_display="Cmd+C",
+            priority=True,
+        ),
         Binding("ctrl+d", "quit_app", "Quit", show=True),
         Binding("up", "history_prev", "Previous", show=False),
         Binding("down", "history_next", "Next", show=False),
@@ -382,6 +390,11 @@ class OpenNovaTUI(App):
             self._agent_task.cancel()
             self._set_status("[yellow]Cancelling...[/yellow]")
             return
+
+        with suppress(Exception):
+            if self.screen.get_selected_text():
+                self.action_copy_selection()
+                return
 
         # When idle, double Ctrl+C exits
         now = time.monotonic()
@@ -1520,7 +1533,7 @@ class OpenNovaTUI(App):
 
         if not selected:
             self._set_status(
-                "[yellow]Select text in the messages area, then press Ctrl+Shift+C[/yellow]"
+                "[yellow]Select text in the messages area, then press Ctrl+C or Cmd+C[/yellow]"
             )
             return
 
