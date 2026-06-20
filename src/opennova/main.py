@@ -6,20 +6,17 @@ Main command-line interface for the OpenNova AI Coding Agent.
 
 import asyncio
 import sys
-from pathlib import Path
-from typing import Optional
 
 import click
 
 from opennova import __version__
+from opennova.cli.repl import run_repl
 from opennova.config import (
     Config,
     create_default_config,
-    get_default_config_path,
     load_config,
     validate_config,
 )
-from opennova.cli.repl import run_repl
 from opennova.runtime.agent import AgentRuntime
 
 
@@ -49,7 +46,7 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     help="Path to configuration file.",
 )
 @click.pass_context
-def main(ctx: click.Context, config_path: Optional[str]) -> None:
+def main(ctx: click.Context, config_path: str | None) -> None:
     """
     OpenNova - A lightweight CLI AI Coding Agent.
 
@@ -73,20 +70,28 @@ def main(ctx: click.Context, config_path: Optional[str]) -> None:
     is_flag=True,
     help="Use the original line-based REPL instead of the TUI.",
 )
+@click.option(
+    "--tui",
+    "force_tui",
+    is_flag=True,
+    help="Force the Textual TUI, including on Windows terminals.",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
-    task: Optional[str],
+    task: str | None,
     plan: bool,
-    model: Optional[str],
-    provider: Optional[str],
+    model: str | None,
+    provider: str | None,
     no_stream: bool,
     no_tui: bool,
+    force_tui: bool,
 ) -> None:
     """
     Run OpenNova agent on a task.
 
-    If no task is provided, starts interactive TUI mode.
+    If no task is provided, starts interactive mode. Windows defaults to the
+    prompt_toolkit REPL for IME compatibility; other platforms default to the TUI.
 
     Examples:
 
@@ -100,7 +105,7 @@ def run(
 
     if task:
         asyncio.run(_run_single_task(config, task, plan, not no_stream))
-    elif no_tui:
+    elif not _use_tui_for_interactive(no_tui=no_tui, force_tui=force_tui):
         asyncio.run(run_repl(config))
     else:
         from opennova.cli.tui import run_tui
@@ -174,6 +179,15 @@ def init() -> None:
     click.echo("  - DEEPSEEK_API_KEY")
 
 
+def _use_tui_for_interactive(*, no_tui: bool, force_tui: bool, platform: str | None = None) -> bool:
+    """Return whether the interactive command should launch the Textual TUI."""
+    if no_tui:
+        return False
+    if force_tui:
+        return True
+    return (platform or sys.platform) != "win32"
+
+
 async def _run_single_task(
     config: Config,
     task: str,
@@ -182,6 +196,7 @@ async def _run_single_task(
 ) -> None:
     """Run a single task and exit."""
     from rich.console import Console
+
     from opennova.providers.base import StreamChunk
     from opennova.runtime.state import Plan
     from opennova.tools.base import ToolResult
@@ -209,7 +224,7 @@ async def _run_single_task(
 
     def on_result(result: ToolResult) -> None:
         if result.success:
-            console.print(f"[green]✅ Done[/green]\n")
+            console.print("[green]✅ Done[/green]\n")
         else:
             console.print(f"[red]❌ Error: {result.error}[/red]\n")
 
@@ -260,9 +275,9 @@ async def _run_single_task(
 
 
 def _load_and_validate_config(
-    config_path: Optional[str] = None,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
+    config_path: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> Config:
     """Load and validate configuration."""
     config = load_config(config_path)

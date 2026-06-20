@@ -31,7 +31,11 @@ class FakeLLM(BaseLLMProvider):
         if self.calls == 1:
             return LLMResponse(
                 content="I'll read the file.",
-                tool_calls=[ToolCall(id="llm-call-1", name="read_file", arguments={"file_path": "README.md"})],
+                tool_calls=[
+                    ToolCall(
+                        id="llm-call-1", name="read_file", arguments={"file_path": "README.md"}
+                    )
+                ],
                 finish_reason=FinishReason.TOOL_CALL,
             )
         return LLMResponse(content="done", finish_reason=FinishReason.STOP)
@@ -96,7 +100,10 @@ def test_permission_store_persists_session_rules_and_never_allows_hard_blocks(tm
     reloaded = PermissionStore(tmp_path / "permissions.json")
     guardrails = Guardrails(permission_store=reloaded)
 
-    assert guardrails.check_tool_call("write_file", {"file_path": "ok.txt"}).requires_confirmation is False
+    assert (
+        guardrails.check_tool_call("write_file", {"file_path": "ok.txt"}).requires_confirmation
+        is False
+    )
     assert guardrails.check_tool_call("delete_file", {"file_path": "ok.txt"}).allowed is False
     blocked = guardrails.check_tool_call("execute_command", {"command": "rm -rf /"})
     assert blocked.allowed is False
@@ -151,10 +158,17 @@ hooks:
     assert str(plugin_dir / "skills") in config["skills"]["dirs"]
     assert config["mcp"]["servers"][0]["name"] == "demo_mcp"
     assert manager.commands[0]["plugin"] == "demo"
-    assert hooks.run_pre_tool_use({"tool_name": "read_file", "metadata": {}})["metadata"]["trusted_hook"] is True
+    assert (
+        hooks.run_pre_tool_use({"tool_name": "read_file", "metadata": {}})["metadata"][
+            "trusted_hook"
+        ]
+        is True
+    )
 
 
-def test_automation_scheduler_records_history_and_supports_pause_resume_delete_run_now(tmp_path: Path):
+def test_automation_scheduler_records_history_and_supports_pause_resume_delete_run_now(
+    tmp_path: Path,
+):
     from opennova.automation import LocalAutomationScheduler
 
     scheduler = LocalAutomationScheduler(tmp_path / "automations.json", clock=lambda: 100.0)
@@ -202,11 +216,15 @@ value = target()
 
     assert {"Alpha", "Alpha.target", "target", "value"}.issubset(qualified)
 
-    definition = PythonDefinitionTool(config=config).execute(symbol="Alpha.target", path=str(source))
+    definition = PythonDefinitionTool(config=config).execute(
+        symbol="Alpha.target", path=str(source)
+    )
     assert definition.success is True
     assert definition.metadata["definition"]["qualified_name"] == "Alpha.target"
 
-    references = PythonReferencesTool(config=config).execute(symbol="target", path=str(source), max_results=10)
+    references = PythonReferencesTool(config=config).execute(
+        symbol="target", path=str(source), max_results=10
+    )
     assert references.metadata["count"] == 1
     assert references.metadata["references"][0]["context"] == "value = target()"
 
@@ -225,12 +243,33 @@ def test_slash_command_registry_exposes_03_productization_commands():
     from opennova.cli.commands import SlashCommandRegistry
 
     registry = SlashCommandRegistry.default()
-    registry.register_plugin_command({"name": "demo", "description": "Demo command", "plugin": "demo"})
+    registry.register_plugin_command(
+        {"name": "demo", "description": "Demo command", "plugin": "demo"}
+    )
     names = registry.names()
 
-    assert {"/permissions", "/plugins", "/hooks", "/automations", "/diagnostics", "/status"}.issubset(names)
+    assert {
+        "/permissions",
+        "/plugins",
+        "/hooks",
+        "/automations",
+        "/diagnostics",
+        "/status",
+    }.issubset(names)
     assert "/demo" in names
     assert registry.get("/demo").plugin == "demo"
+
+
+def test_interactive_mode_defaults_to_repl_on_windows_for_ime_support():
+    from opennova.main import _use_tui_for_interactive
+
+    assert _use_tui_for_interactive(no_tui=False, force_tui=False, platform="win32") is False
+
+
+def test_interactive_mode_can_force_tui_on_windows():
+    from opennova.main import _use_tui_for_interactive
+
+    assert _use_tui_for_interactive(no_tui=False, force_tui=True, platform="win32") is True
 
 
 def test_todo_write_tool_replaces_structured_todos():

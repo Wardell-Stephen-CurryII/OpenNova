@@ -57,11 +57,14 @@ providers:
 ## 第三步：开始使用
 
 ```bash
-# 启动交互模式（默认进入 TUI）
+# 启动交互模式（Windows 为中文输入法兼容默认进入 REPL，其他平台默认进入 TUI）
 uv run opennova
 
 # 使用经典 REPL
 uv run opennova run --no-tui
+
+# 强制使用 Textual TUI
+uv run opennova run --tui
 
 # 直接执行单个任务
 uv run opennova run "读取 README.md"
@@ -111,6 +114,7 @@ opennova> /init
 | `uv run opennova` | 启动交互模式 |
 | `uv run opennova run "task"` | 执行单次任务 |
 | `uv run opennova run --no-tui` | 使用经典 REPL |
+| `uv run opennova run --tui` | 强制使用 Textual TUI |
 | `uv run opennova --version` | 查看版本 |
 | `uv run opennova init` | 初始化全局配置 |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |

@@ -127,11 +127,14 @@ export DEEPSEEK_API_KEY=your_key_here
 ### Interactive modes
 
 ```bash
-# REPL mode (prompt_toolkit, default)
+# Interactive mode (Textual TUI by default, REPL on Windows for IME support)
 uv run opennova
 
 # Textual TUI mode (split-pane chat interface)
-uv run opennova tui
+uv run opennova run --tui
+
+# REPL mode (prompt_toolkit)
+uv run opennova run --no-tui
 ```
 
 ### Session management
