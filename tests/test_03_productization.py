@@ -352,6 +352,184 @@ def test_no_tui_still_disables_tui_on_windows():
     assert _use_tui_for_interactive(no_tui=True, force_tui=False, platform="win32") is False
 
 
+def test_ask_question_dialog_options_always_include_custom_answer():
+    from opennova.cli.ask_question_dialog import CUSTOM_OPTION_ID, options_with_custom_answer
+
+    options = options_with_custom_answer(
+        [
+            {"index": 1, "label": "A", "description": "First"},
+            {"index": 2, "label": "B", "description": "Second"},
+        ]
+    )
+
+    assert options[-1]["id"] == CUSTOM_OPTION_ID
+    assert options[-1]["custom"] is True
+    assert options[-1]["index"] == 3
+
+
+def test_ask_question_dialog_builds_selected_option_answer():
+    from opennova.cli.ask_question_dialog import answer_from_selected_option
+
+    option = {"index": 1, "label": "Use cache", "description": "Fast"}
+
+    answer = answer_from_selected_option(
+        question="Which path?",
+        header="Plan",
+        option=option,
+    )
+
+    assert answer["answer"] == "Use cache"
+    assert answer["selected_options"] == [option]
+    assert answer["skipped"] is False
+    assert answer["custom"] is False
+
+
+def test_ask_question_dialog_builds_custom_text_answer():
+    from opennova.cli.ask_question_dialog import (
+        answer_from_selected_option,
+        options_with_custom_answer,
+    )
+
+    custom_option = options_with_custom_answer([])[-1]
+
+    answer = answer_from_selected_option(
+        question="Which path?",
+        header="Plan",
+        option=custom_option,
+        custom_text="Use my own plan",
+    )
+
+    assert answer["answer"] == "Use my own plan"
+    assert answer["selected_options"] == []
+    assert answer["skipped"] is False
+    assert answer["custom"] is True
+
+
+@pytest.mark.asyncio
+async def test_ask_question_dialog_selects_option_with_enter():
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from opennova.cli.ask_question_dialog import AskQuestionDialog
+
+    class DialogHarness(App):
+        def __init__(self):
+            super().__init__()
+            self.answer = None
+
+        def compose(self) -> ComposeResult:
+            yield Static("ready")
+
+        async def on_mount(self) -> None:
+            await self.push_screen(
+                AskQuestionDialog(
+                    question="Pick one",
+                    header=None,
+                    options=[
+                        {"index": 1, "label": "First", "description": "A"},
+                        {"index": 2, "label": "Second", "description": "B"},
+                    ],
+                ),
+                callback=self._on_answer,
+            )
+
+        def _on_answer(self, answer):
+            self.answer = answer
+            self.exit()
+
+    app = DialogHarness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+
+    assert app.answer["answer"] == "First"
+    assert app.answer["custom"] is False
+
+
+@pytest.mark.asyncio
+async def test_ask_question_dialog_accepts_custom_text_with_keyboard():
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from opennova.cli.ask_question_dialog import AskQuestionDialog
+
+    class DialogHarness(App):
+        def __init__(self):
+            super().__init__()
+            self.answer = None
+
+        def compose(self) -> ComposeResult:
+            yield Static("ready")
+
+        async def on_mount(self) -> None:
+            await self.push_screen(
+                AskQuestionDialog(
+                    question="Pick one",
+                    header=None,
+                    options=[
+                        {"index": 1, "label": "First", "description": "A"},
+                        {"index": 2, "label": "Second", "description": "B"},
+                    ],
+                ),
+                callback=self._on_answer,
+            )
+
+        def _on_answer(self, answer):
+            self.answer = answer
+            self.exit()
+
+    app = DialogHarness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("down", "down", "enter", "u", "s", "e", "enter")
+
+    assert app.answer["answer"] == "use"
+    assert app.answer["custom"] is True
+
+
+@pytest.mark.asyncio
+async def test_ask_question_dialog_accepts_multi_select_with_keyboard():
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from opennova.cli.ask_question_dialog import AskQuestionDialog
+
+    class DialogHarness(App):
+        def __init__(self):
+            super().__init__()
+            self.answer = None
+
+        def compose(self) -> ComposeResult:
+            yield Static("ready")
+
+        async def on_mount(self) -> None:
+            await self.push_screen(
+                AskQuestionDialog(
+                    question="Pick features",
+                    header=None,
+                    options=[
+                        {"index": 1, "label": "First", "description": "A"},
+                        {"index": 2, "label": "Second", "description": "B"},
+                    ],
+                    multi_select=True,
+                ),
+                callback=self._on_answer,
+            )
+
+        def _on_answer(self, answer):
+            self.answer = answer
+            self.exit()
+
+    app = DialogHarness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("space", "down", "space", "enter")
+
+    assert app.answer["answer"] == "First, Second"
+    assert [option["label"] for option in app.answer["selected_options"]] == ["First", "Second"]
+    assert app.answer["custom"] is False
+
+
 def test_todo_write_tool_replaces_structured_todos():
     from opennova.tools.todo_tools import TodoWriteTool
 
