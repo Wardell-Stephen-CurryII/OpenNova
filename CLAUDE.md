@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenNova is a lightweight CLI AI Coding Agent built from scratch in Python (v0.2.3). It's a minimalist AI coding assistant that runs in your terminal with support for multiple LLM providers (OpenAI, Anthropic, DeepSeek), a plugin-based tool system with Skill support, built-in safety guardrails, session management, context compression, and both REPL and Textual TUI interfaces.
+OpenNova is a lightweight CLI AI Coding Agent built from scratch in Python (v0.3.0). It's a minimalist AI coding assistant that runs in your terminal with support for multiple LLM providers (OpenAI, Anthropic, DeepSeek), a plugin-based tool system with Skill support, built-in safety guardrails, session management, context compression, and both REPL and Textual TUI interfaces.
 
 ## Development Commands
 

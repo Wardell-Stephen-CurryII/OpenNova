@@ -167,7 +167,7 @@ uv run opennova --version
 
 输出：
 ```text
-OpenNova v0.2.3
+OpenNova v0.3.0
 ```
 
 ### 4.2 交互式模式

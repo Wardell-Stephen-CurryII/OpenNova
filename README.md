@@ -1,6 +1,6 @@
 # OpenNova
 
-OpenNova v0.2.3 is a lightweight CLI AI coding agent built from scratch in Python.
+OpenNova v0.3.0 is a lightweight CLI AI coding agent built from scratch in Python.
 
 **English** | **[简体中文](README.zh-CN.md)**
 
@@ -18,7 +18,7 @@ OpenNova runs in your terminal and combines a small core with practical coding-a
 - **MCP integration** for external tool servers
 - **Built-in safety guardrails** for risky commands and protected paths
 
-## What’s in v0.2.3
+## What’s in v0.3.0
 
 The current release adds session management, context compression, Textual TUI, and Claude Code-style workflow foundations:
 - **Session management**: `/resume <id>`, `/sessions` — conversations persist to JSONL
