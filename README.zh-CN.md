@@ -63,8 +63,8 @@ uv run opennova init
 编辑 `~/.opennova/config.yaml`，或者直接设置环境变量：
 
 ```yaml
-default_provider: openai
-default_model: gpt-4o
+default_provider: deepseek
+default_model: deepseek-v4-pro
 
 providers:
   openai:
@@ -77,7 +77,7 @@ providers:
 
   deepseek:
     api_key: ${DEEPSEEK_API_KEY}
-    default_model: deepseek-chat
+    default_model: deepseek-v4-pro
 
 agent:
   max_iterations: 20
@@ -159,7 +159,16 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/skill <name> [args]` | 直接调用指定的 Skill |
 | `/reload-skills` | 从磁盘重新加载 Skills |
 | `/model` | 显示当前模型信息 |
+| `/init [--force]` | 生成或重建 `OPENNOVA.md` |
 | `/config` | 显示当前配置 |
+| `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
+| `/plugins [trust\|untrust name]` | 查看或信任本地项目插件 |
+| `/hooks` | 查看已加载 hooks |
+| `/automations` | 查看本地自动化任务 |
+| `/diagnostics [path]` | 运行 Python 诊断 |
+| `/status` | 查看运行时状态 |
+| `/todos` | 查看 TodoWrite 任务板 |
+| `/checkpoint` | 查看 checkpoint/rollback 状态 |
 | `/history [n]` | 显示最近的会话历史 |
 | `/resume <id>` | 恢复之前的会话 |
 | `/sessions` | 列出已保存的会话 |
@@ -188,6 +197,13 @@ OpenNova 当前内置的工具面比早期版本更完整：
 | `task_list` | 列出所有跟踪的任务 |
 | `task_get` | 按 ID 获取任务详情 |
 | `task_update` | 更新任务状态或属性 |
+| `todo_write` | 替换当前结构化任务板 |
+| `glob_files` | 按 glob 模式搜索文件 |
+| `grep_code` | 搜索代码内容 |
+| `python_diagnostics` | 运行 Python 语法诊断 |
+| `python_symbols` | 列出 Python 符号及 qualified name |
+| `python_definition` | 查找 Python 符号定义 |
+| `python_references` | 查找 Python 符号引用 |
 | `task_stop` | 停止正在运行的后台任务 |
 | `task_output` | 获取已完成任务的输出 |
 | `enter_plan_mode` | 进入计划模式进行架构设计 |
@@ -305,16 +321,17 @@ OpenNova 内置了多项安全机制：
 - **路径沙箱**：将文件操作限制在允许目录内
 - **受保护路径**：阻止访问系统目录（如 `/etc`、`/usr` 等）
 - **确认提示**：对高风险操作要求用户确认
+- **持久化权限规则**：支持项目级 allow/deny/ask 工具策略
 - **敏感文件检测**：访问 `.env`、`.pem` 等文件时给出提醒
 
 ## 开发
 
 ```bash
 # 运行测试
-uv run pytest
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1 uv run pytest
 
 # 运行带覆盖率的测试
-uv run pytest --cov=opennova
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1 uv run pytest --cov=opennova
 
 # 类型检查
 uv run mypy src/opennova

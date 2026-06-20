@@ -9,10 +9,11 @@ Provides an interactive command-line interface with:
 """
 
 import asyncio
-import os
 import sys
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 from prompt_toolkit import PromptSession
@@ -28,10 +29,11 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
+from opennova.cli.commands import SlashCommandRegistry
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
 from opennova.runtime.agent import AgentRuntime
-from opennova.runtime.state import Plan, PlanStep
+from opennova.runtime.state import Plan
 from opennova.tools.base import ToolResult
 
 
@@ -105,14 +107,13 @@ class SlashCommandCompleter(Completer):
                 continue
 
             # Complete whole history entry if it starts with typed text
-            if item_stripped.startswith(text) and item_stripped != text:
-                if item_stripped not in seen:
-                    seen.add(item_stripped)
-                    yield Completion(
-                        item_stripped,
-                        start_position=-len(text),
-                        display=item_stripped[:80],
-                    )
+            if item_stripped.startswith(text) and item_stripped != text and item_stripped not in seen:
+                seen.add(item_stripped)
+                yield Completion(
+                    item_stripped,
+                    start_position=-len(text),
+                    display=item_stripped[:80],
+                )
 
             # Complete individual word from history matching the last word
             for word in item_stripped.split():
@@ -120,13 +121,13 @@ class SlashCommandCompleter(Completer):
                     len(word) > 1
                     and word.startswith(current_word)
                     and word != current_word
+                    and word not in seen
                 ):
-                    if word not in seen:
-                        seen.add(word)
-                        yield Completion(
-                            word,
-                            start_position=-len(current_word),
-                        )
+                    seen.add(word)
+                    yield Completion(
+                        word,
+                        start_position=-len(current_word),
+                    )
 
 
 class Renderer:
@@ -282,6 +283,14 @@ class Renderer:
 - `/model` - Show current model info
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
+- `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
+- `/plugins [trust|untrust name]` - List or trust local project plugins
+- `/hooks` - Show loaded hook counts
+- `/automations` - List local scheduled automations
+- `/diagnostics [path]` - Run Python syntax diagnostics
+- `/status` - Show runtime/session status
+- `/todos` - Show current task summary
+- `/checkpoint` - Show checkpoint/rollback status
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation state
 - `/help` - Show this help
@@ -388,6 +397,9 @@ class REPL:
         self.agent = agent
         self.config = config
         self.renderer = Renderer()
+        self.command_registry = SlashCommandRegistry.default()
+        for command in getattr(getattr(self.agent, "plugin_manager", None), "commands", []):
+            self.command_registry.register_plugin_command(command)
 
         history_path = Path(history_file) if history_file else Path.home() / ".opennova" / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -401,28 +413,19 @@ class REPL:
 
     def _get_command_handlers(self) -> dict[str, Callable[[str], Any]]:
         """Return canonical slash command handlers."""
-        return {
-            "/help": self._cmd_help,
-            "/plan": self._cmd_plan,
-            "/act": self._cmd_act,
-            "/tools": self._cmd_tools,
-            "/skills": self._cmd_skills,
-            "/skill": self._cmd_skill,
-            "/reload-skills": self._cmd_reload_skills,
-            "/model": self._cmd_model,
-            "/init": self._cmd_init,
-            "/config": self._cmd_config,
-            "/clear": self._cmd_clear,
-            "/exit": self._cmd_exit,
-            "/quit": self._cmd_exit,
-            "/history": self._cmd_history,
-            "/resume": self._cmd_resume,
-            "/sessions": self._cmd_sessions,
-        }
+        handlers: dict[str, Callable[[str], Any]] = {}
+        for name in self.command_registry.names():
+            command = self.command_registry.get(name)
+            if not command or not command.handler:
+                continue
+            handler = getattr(self, command.handler, None)
+            if handler:
+                handlers[name] = handler
+        return handlers
 
     def _get_slash_commands(self) -> list[str]:
         """Return slash commands available for completion."""
-        return list(self._get_command_handlers().keys())
+        return self.command_registry.names()
 
     def _get_completer(self) -> SlashCommandCompleter:
         """Return the prompt completer for slash commands."""
@@ -834,6 +837,148 @@ class REPL:
         except Exception as e:
             self.renderer.print_error(f"Failed to resume session: {e}")
 
+    async def _cmd_permissions(self, args: str) -> None:
+        """Show or update session permission rules."""
+        from opennova.security.permissions import PermissionDecision, PermissionStore
+
+        store = getattr(self.agent.guardrails, "permission_store", None)
+        if store is None:
+            store = PermissionStore(Path(".opennova") / "permissions.json")
+            self.agent.guardrails.permission_store = store
+
+        tokens = args.split()
+        if len(tokens) >= 2:
+            tool_name = tokens[0]
+            aliases = {
+                "allow": PermissionDecision.ALWAYS_ALLOW,
+                "deny": PermissionDecision.ALWAYS_DENY,
+                "ask": PermissionDecision.ALWAYS_ASK,
+            }
+            decision = aliases.get(tokens[1])
+            if decision is None:
+                self.renderer.print_error("Usage: /permissions [tool allow|deny|ask]")
+                return
+            store.record(tool_name, decision)
+            self.agent.guardrails.always_allow_tools.update(store.allowed_tools())
+            self.agent.guardrails.always_deny_tools.update(store.denied_tools())
+            self.agent.guardrails.always_ask_tools.update(store.ask_tools())
+            self.renderer.print_success(f"Permission rule saved: {tool_name} -> {decision.value}")
+            return
+
+        if not store.rules:
+            self.renderer.print("No persisted permission rules.")
+            return
+        table = Table(title="Permission Rules")
+        table.add_column("Tool", style="cyan")
+        table.add_column("Decision")
+        for tool_name, decision in sorted(store.rules.items()):
+            table.add_row(tool_name, decision.value)
+        self.renderer.print(table)
+
+    async def _cmd_plugins(self, args: str) -> None:
+        """List or trust local plugins."""
+        manager = getattr(self.agent, "plugin_manager", None)
+        if not manager:
+            self.renderer.print("No plugin manager available.")
+            return
+        tokens = args.split()
+        if len(tokens) == 2 and tokens[0] == "trust":
+            manager.trust_plugin(tokens[1])
+            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+            self.renderer.print_success(f"Trusted plugin: {tokens[1]}")
+            return
+        if len(tokens) == 2 and tokens[0] == "untrust":
+            manager.untrust_plugin(tokens[1])
+            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+            self.renderer.print_success(f"Untrusted plugin: {tokens[1]}")
+            return
+
+        plugins = manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+        if not plugins:
+            self.renderer.print("No project plugins discovered.")
+            return
+        table = Table(title="Project Plugins")
+        table.add_column("Name", style="cyan")
+        table.add_column("Trusted")
+        table.add_column("Description")
+        for plugin in plugins:
+            table.add_row(plugin.name, "yes" if manager.is_trusted(plugin.name) else "no", plugin.description)
+        self.renderer.print(table)
+
+    async def _cmd_hooks(self, args: str) -> None:
+        """Show loaded hooks."""
+        hook_manager = getattr(self.agent, "hook_manager", None)
+        callbacks = getattr(hook_manager, "_callbacks", {}) if hook_manager else {}
+        table = Table(title="Hooks")
+        table.add_column("Event", style="cyan")
+        table.add_column("Callbacks")
+        for event_name, items in sorted(callbacks.items()):
+            table.add_row(event_name, str(len(items)))
+        self.renderer.print(table)
+
+    async def _cmd_automations(self, args: str) -> None:
+        """List local automations."""
+        from opennova.automation import LocalAutomationScheduler
+
+        scheduler = LocalAutomationScheduler(Path(".opennova") / "automations.json")
+        tasks = scheduler.list_tasks()
+        if not tasks:
+            self.renderer.print("No local automations scheduled.")
+            return
+        table = Table(title="Local Automations")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        table.add_column("Enabled")
+        table.add_column("Next Run")
+        for task in tasks:
+            table.add_row(task.id[:8], task.name, "yes" if task.enabled else "no", str(task.next_run_at))
+        self.renderer.print(table)
+
+    async def _cmd_diagnostics(self, args: str) -> None:
+        """Run Python diagnostics."""
+        tool = self.agent.tool_registry.get("python_diagnostics")
+        result = tool.execute(path=args.strip() or ".")
+        if result.success:
+            self.renderer.print_success(result.output)
+        else:
+            self.renderer.print_error(result.error or result.output)
+
+    async def _cmd_status(self, args: str) -> None:
+        """Show runtime status."""
+        info = self.agent.get_model_info()
+        self.renderer.print(
+            f"[cyan]Provider:[/cyan] {info.get('provider')}  "
+            f"[cyan]Model:[/cyan] {info.get('model')}  "
+            f"[cyan]Session:[/cyan] {self.agent.session_manager.session_id[:8]}"
+        )
+        self.renderer.print(
+            f"[cyan]Tools:[/cyan] {len(self.agent.get_tools())}  "
+            f"[cyan]Plugins:[/cyan] {len(getattr(self.agent.plugin_manager, 'plugins', []))}"
+        )
+
+    async def _cmd_todos(self, args: str) -> None:
+        """Show current task/todo summary."""
+        from opennova.tools.todo_tools import TodoWriteTool
+
+        todos = TodoWriteTool.current_todos()
+        if not todos:
+            task = getattr(self.agent.state, "current_task", "") or "(none)"
+            self.renderer.print(f"[cyan]Current task:[/cyan] {task}\nNo todos recorded.")
+            return
+        table = Table(title="Todos")
+        table.add_column("ID", style="cyan")
+        table.add_column("Status")
+        table.add_column("Content")
+        for todo in todos:
+            table.add_row(todo["id"], todo["status"], todo["content"])
+        self.renderer.print(table)
+
+    async def _cmd_checkpoint(self, args: str) -> None:
+        """Show checkpoint guidance for the current lightweight implementation."""
+        self.renderer.print(
+            "Checkpoint/rollback metadata is emitted through tool events. "
+            "Full restore commands are reserved for the next persistence pass."
+        )
 
     async def _cmd_exit(self, args: str) -> None:
         """Exit the REPL."""
@@ -976,10 +1121,8 @@ class REPL:
             return result
         finally:
             spinner_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await spinner_task
-            except asyncio.CancelledError:
-                pass
             sys.stderr.write("\r" + " " * 40 + "\r")
             sys.stderr.flush()
 

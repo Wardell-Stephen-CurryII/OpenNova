@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,8 +75,25 @@ class PluginManager:
     def __init__(self, project_path: str | Path = "."):
         self.project_path = Path(project_path).resolve()
         self.plugins_dir = self.project_path / ".opennova" / "plugins"
+        self.trust_path = self.plugins_dir / "trusted.json"
         self.plugins: list[PluginManifest] = []
         self.errors: dict[str, str] = {}
+        self.commands: list[dict[str, Any]] = []
+        self.trusted_plugins: set[str] = self._load_trusted_plugins()
+
+    def trust_plugin(self, name: str) -> None:
+        """Persist trust for a local plugin so active contributions can load."""
+        self.trusted_plugins.add(name)
+        self._save_trusted_plugins()
+
+    def untrust_plugin(self, name: str) -> None:
+        """Remove persisted trust for a local plugin."""
+        self.trusted_plugins.discard(name)
+        self._save_trusted_plugins()
+
+    def is_trusted(self, name: str) -> bool:
+        """Return whether a plugin may apply active contributions."""
+        return name in self.trusted_plugins
 
     def discover_manifests(self) -> list[Path]:
         """Find plugin.yaml files under .opennova/plugins/*/."""
@@ -91,6 +109,8 @@ class PluginManager:
         """Load enabled plugins and merge their declarative contributions."""
         self.plugins = []
         self.errors = {}
+        self.commands = []
+        self.trusted_plugins = self._load_trusted_plugins()
 
         for manifest_path in self.discover_manifests():
             plugin_name = manifest_path.parent.name
@@ -98,7 +118,8 @@ class PluginManager:
                 manifest = PluginManifest.from_file(manifest_path, project_path=self.project_path)
                 if not manifest.enabled:
                     continue
-                self._apply_manifest(manifest, config=config, hook_manager=hook_manager)
+                if self.is_trusted(manifest.name):
+                    self._apply_manifest(manifest, config=config, hook_manager=hook_manager)
                 self.plugins.append(manifest)
             except Exception as exc:
                 self.errors[plugin_name] = str(exc)
@@ -131,3 +152,19 @@ class PluginManager:
                     hook_path,
                     module_prefix=f"opennova_plugin_hook_{manifest.name}",
                 )
+
+        for command in manifest.commands:
+            command_entry = dict(command)
+            command_entry.setdefault("plugin", manifest.name)
+            self.commands.append(command_entry)
+
+    def _load_trusted_plugins(self) -> set[str]:
+        if not self.trust_path.exists():
+            return set()
+        payload = json.loads(self.trust_path.read_text(encoding="utf-8"))
+        return {str(name) for name in payload.get("trusted", [])}
+
+    def _save_trusted_plugins(self) -> None:
+        self.trust_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"trusted": sorted(self.trusted_plugins)}
+        self.trust_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

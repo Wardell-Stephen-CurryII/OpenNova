@@ -96,21 +96,34 @@ class OpenNovaClient:
         runtime = self.get_runtime(session_id)
         queue: asyncio.Queue[SDKEvent] = asyncio.Queue()
         tool_progress = ToolProgressTracker()
+        saw_canonical_tool_events = False
 
         def enqueue(event_type: str, **data: Any) -> None:
             queue.put_nowait(SDKEvent(type=event_type, session_id=session_id, data=data))
 
         runtime.register_callback("thought", lambda thought: enqueue("thought", content=thought))
         def on_action(tool_name: str, args: dict[str, Any]) -> None:
+            if saw_canonical_tool_events:
+                return
             enqueue("tool_start", **tool_progress.start_tool(tool_name, args))
 
         def on_result(result: ToolResult) -> None:
+            if saw_canonical_tool_events:
+                return
             data = self._tool_result_data(result)
             data.update(tool_progress.finish_tool(result))
             enqueue("tool_result", **data)
 
+        def on_tool_event(event: Any) -> None:
+            nonlocal saw_canonical_tool_events
+            saw_canonical_tool_events = True
+            payload = event.to_dict() if hasattr(event, "to_dict") else dict(event)
+            event_type = str(payload.pop("type"))
+            enqueue(event_type, **payload)
+
         runtime.register_callback("action", on_action)
         runtime.register_callback("result", on_result)
+        runtime.register_callback("tool_event", on_tool_event)
         runtime.register_callback("stream", lambda chunk: enqueue("text_delta", content=getattr(chunk, "content", "") or ""))
         runtime.register_callback(
             "plan",

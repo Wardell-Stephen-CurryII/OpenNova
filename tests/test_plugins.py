@@ -41,6 +41,7 @@ hooks:
     config = {"skills": {"dirs": []}, "mcp": {"servers": []}}
     hooks = HookManager(project_path=tmp_path)
     manager = PluginManager(project_path=tmp_path)
+    manager.trust_plugin("demo")
     loaded = manager.load_enabled_plugins(config=config, hook_manager=hooks)
 
     event = hooks.run_pre_tool_use({"tool_name": "read_file", "metadata": {}})

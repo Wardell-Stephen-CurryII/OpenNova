@@ -18,6 +18,7 @@ from typing import Any
 
 from opennova.security.guardrails import Guardrails, GuardResult
 from opennova.tools.base import BaseTool, ToolResult
+from opennova.utils.encoding import utf8_environment
 
 DEFAULT_TIMEOUT = 30
 MAX_OUTPUT_SIZE = 100 * 1024
@@ -181,6 +182,7 @@ class ExecuteCommandTool(BaseTool):
                 capture_output=True,
                 text=True,
                 timeout=prepared.timeout,
+                env=utf8_environment(),
             )
 
             stdout = result.stdout or ""
@@ -263,6 +265,7 @@ class ExecuteCommandTool(BaseTool):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=prepared.working_dir,
+                    env=utf8_environment(),
                 )
             else:
                 process = await asyncio.create_subprocess_exec(
@@ -270,6 +273,7 @@ class ExecuteCommandTool(BaseTool):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=prepared.working_dir,
+                    env=utf8_environment(),
                 )
 
             try:

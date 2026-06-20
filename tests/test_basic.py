@@ -5,13 +5,20 @@ import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from opennova.config import DEFAULT_CONFIG
+from opennova.memory.context import ContextManager
+from opennova.providers.base import Message
 from opennova.providers.factory import ProviderFactory
-from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
+from opennova.runtime.agent import AgentRuntime
+from opennova.runtime.loop import ReActLoop
+from opennova.runtime.state import AgentState, PlanApprovalStatus
+from opennova.tasks import TaskManager, TaskStatus, TaskType
 from opennova.tools.agent_tools import AgentTool, SendMessageTool
 from opennova.tools.ask_question_tool import AskUserQuestionTool
+from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 from opennova.tools.git_tools import (
     GitBranchTool,
     GitCommitTool,
@@ -19,6 +26,7 @@ from opennova.tools.git_tools import (
     GitLogTool,
     GitStatusTool,
 )
+from opennova.tools.plan_mode_tools import EnterPlanModeTool, ExitPlanModeTool
 from opennova.tools.shell_tools import ExecuteCommandTool
 from opennova.tools.task_tools import (
     TaskGetTool,
@@ -28,13 +36,6 @@ from opennova.tools.task_tools import (
 )
 from opennova.tools.web_tools import WebFetchTool, WebSearchTool
 from opennova.utils.task_output import read_task_output
-from opennova.providers.base import Message, ToolSchema
-from opennova.memory.context import ContextManager
-from opennova.runtime.agent import AgentRuntime
-from opennova.runtime.state import AgentState, PlanApprovalStatus
-from opennova.tools.plan_mode_tools import EnterPlanModeTool, ExitPlanModeTool
-from opennova.runtime.loop import ReActLoop
-from opennova.tasks import TaskManager, TaskStatus, TaskType
 
 
 class MockTool(BaseTool):
@@ -639,7 +640,6 @@ def test_task_update_tool_rejects_invalid_dependencies():
 def test_planner_prefers_llm_plan_for_broad_development_requests():
     """Broad coding tasks should use LLM planning before generic templates."""
     from opennova.planning.planner import Planner
-    from opennova.runtime.state import Plan, PlanStep
 
     class LLMProvider(DummyProvider):
         async def chat(self, messages, tools=None, **kwargs):
@@ -723,7 +723,7 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
 
 def test_agent_runtime_execute_approved_plan_runs_steps():
     """Approved plans should execute only after explicit approval."""
-    from opennova.runtime.state import Plan, PlanStep, StepStatus
+    from opennova.runtime.state import Plan, PlanStep
 
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
@@ -963,7 +963,7 @@ def test_repl_command_completer_suggests_slash_commands():
     runtime = AgentRuntime.__new__(AgentRuntime)
     repl = REPL(runtime, config=None)
 
-    assert _completion_texts(repl, "/pl") == ["/plan"]
+    assert {"/plan", "/plugins"}.issubset(set(_completion_texts(repl, "/pl")))
     assert "/skills" in _completion_texts(repl, "/")
     assert "/init" in _completion_texts(repl, "/")
 
@@ -1493,13 +1493,15 @@ def test_git_commit_uses_explicit_message_and_amend():
 def test_git_commit_generates_message_and_handles_failures():
     tool = GitCommitTool()
 
-    with patch.object(tool, '_generate_commit_message', return_value='Auto message') as mock_generate:
-        with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
-            mock_run.side_effect = [
-                Completed(stdout='', returncode=0),
-                Completed(stdout='abcdef123456\n'),
-            ]
-            result = tool.execute()
+    with (
+        patch.object(tool, '_generate_commit_message', return_value='Auto message') as mock_generate,
+        patch('opennova.tools.git_tools.subprocess.run') as mock_run,
+    ):
+        mock_run.side_effect = [
+            Completed(stdout='', returncode=0),
+            Completed(stdout='abcdef123456\n'),
+        ]
+        result = tool.execute()
 
     assert result.success is True
     assert result.metadata['message'] == 'Auto message'

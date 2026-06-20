@@ -8,6 +8,7 @@ Provides utilities for:
 """
 
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -21,8 +22,16 @@ def get_task_output_dir() -> Path:
         base = Path.home() / ".local" / "share" / "opennova"
 
     output_dir = base / "task_outputs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        probe = output_dir / ".write-test"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return output_dir
+    except Exception:
+        fallback_dir = Path(tempfile.gettempdir()) / "opennova" / "task_outputs"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir
 
 
 def get_task_output_path(task_id: str) -> str:
@@ -53,16 +62,13 @@ def write_task_output(task_id: str, content: str, offset: int = 0) -> int:
     """
     output_path = get_task_output_path(task_id)
 
-    if offset == 0:
-        mode = "a"
-    else:
-        mode = "r+"
+    mode = "a" if offset == 0 else "r+"
 
     try:
         with open(output_path, mode, encoding="utf-8") as f:
             if offset > 0:
                 f.seek(offset)
-            written = f.write(content)
+            f.write(content)
             new_offset = f.tell()
         return new_offset
     except Exception:
@@ -87,7 +93,7 @@ def read_task_output(task_id: str, max_length: int = 10000, offset: int = 0) -> 
         return "", offset
 
     try:
-        with open(output_path, "r", encoding="utf-8") as f:
+        with open(output_path, encoding="utf-8") as f:
             f.seek(offset)
             content = f.read(max_length)
             new_offset = f.tell()

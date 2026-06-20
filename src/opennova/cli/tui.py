@@ -27,6 +27,7 @@ from textual.binding import Binding
 from textual.containers import Container
 from textual.widgets import Header, Input, Label, RichLog, TextArea
 
+from opennova.cli.commands import SlashCommandRegistry
 from opennova.cli.tool_progress import ToolProgressTracker
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
@@ -240,6 +241,9 @@ class OpenNovaTUI(App):
         self._completion_state: dict[str, Any] = {}
         self._start_time: float = 0.0
         self._tool_progress = ToolProgressTracker()
+        self.command_registry = SlashCommandRegistry.default()
+        for command in getattr(getattr(self.agent, "plugin_manager", None), "commands", []):
+            self.command_registry.register_plugin_command(command)
         self._last_ctrl_c: float = 0.0
         # Guard against duplicate Submitted events from a single Enter press
         self._last_submitted_text: str = ""
@@ -438,7 +442,7 @@ class OpenNovaTUI(App):
         cmd_prefix = parts[0].replace("_", "-")
         if len(parts) == 1 and not text.endswith(" "):
             # Still typing the command name
-            all_cmds = list(self._COMMAND_MAP.keys())
+            all_cmds = self.command_registry.names()
             matches = [c for c in all_cmds if c.startswith(cmd_prefix)]
             matches.sort()
             return matches
@@ -551,31 +555,8 @@ class OpenNovaTUI(App):
 
     # ── command dispatch ─────────────────────────────────────────
 
-    _COMMAND_MAP: dict[str, str] = {
-        "/help": "_cmd_help",
-        "/plan": "_cmd_plan",
-        "/act": "_cmd_act",
-        "/tools": "_cmd_tools",
-        "/skills": "_cmd_skills",
-        "/skill": "_cmd_skill",
-        "/reload-skills": "_cmd_reload_skills",
-        "/model": "_cmd_model",
-        "/init": "_cmd_init",
-        "/config": "_cmd_config",
-        "/clear": "_cmd_clear",
-        "/exit": "_cmd_exit",
-        "/quit": "_cmd_exit",
-        "/history": "_cmd_history",
-        "/resume": "_cmd_resume",
-        "/sessions": "_cmd_sessions",
-    }
-
     # Commands that return quickly and can be awaited synchronously
-    _SYNC_COMMANDS: set[str] = {
-        "/help", "/tools", "/skills", "/model", "/config",
-        "/clear", "/exit", "/quit", "/history", "/reload-skills",
-        "/resume", "/sessions",
-    }
+    _SYNC_COMMANDS: set[str] = SlashCommandRegistry.default().sync_names()
 
     def _launch_agent_task(self, coro) -> None:
         """Launch a coroutine as a background task so Textual can refresh UI."""
@@ -591,9 +572,9 @@ class OpenNovaTUI(App):
         cmd = parts[0].lower().replace("_", "-")
         args = parts[1] if len(parts) > 1 else ""
 
-        method_name = self._COMMAND_MAP.get(cmd)
-        if method_name:
-            handler = getattr(self, method_name)
+        command = self.command_registry.get(cmd)
+        if command and command.handler and hasattr(self, command.handler):
+            handler = getattr(self, command.handler)
             await handler(args)
         else:
             log = self.query_one("#messages")
@@ -617,6 +598,14 @@ class OpenNovaTUI(App):
 - `/model` - Show current model info
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
+- `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
+- `/plugins [trust|untrust name]` - List or trust local project plugins
+- `/hooks` - Show loaded hook counts
+- `/automations` - List local scheduled automations
+- `/diagnostics [path]` - Run Python syntax diagnostics
+- `/status` - Show runtime/session status
+- `/todos` - Show current task summary
+- `/checkpoint` - Show checkpoint/rollback status
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation (starts a new session)
 - `/resume [id]` - Resume a past session (empty = pick from list)
@@ -856,6 +845,146 @@ class OpenNovaTUI(App):
         except Exception as e:
             log.write(f"[red]Failed to resume session: {e}[/red]")
 
+    async def _cmd_permissions(self, args: str) -> None:
+        from opennova.security.permissions import PermissionDecision, PermissionStore
+
+        log = self.query_one("#messages")
+        store = getattr(self.agent.guardrails, "permission_store", None)
+        if store is None:
+            store = PermissionStore(Path(".opennova") / "permissions.json")
+            self.agent.guardrails.permission_store = store
+
+        tokens = args.split()
+        if len(tokens) >= 2:
+            aliases = {
+                "allow": PermissionDecision.ALWAYS_ALLOW,
+                "deny": PermissionDecision.ALWAYS_DENY,
+                "ask": PermissionDecision.ALWAYS_ASK,
+            }
+            decision = aliases.get(tokens[1])
+            if decision is None:
+                log.write("[red]Usage: /permissions [tool allow|deny|ask][/red]")
+                return
+            store.record(tokens[0], decision)
+            self.agent.guardrails.always_allow_tools.update(store.allowed_tools())
+            self.agent.guardrails.always_deny_tools.update(store.denied_tools())
+            self.agent.guardrails.always_ask_tools.update(store.ask_tools())
+            log.write(f"[green]Permission rule saved: {tokens[0]} -> {decision.value}[/green]")
+            return
+
+        if not store.rules:
+            log.write("[yellow]No persisted permission rules.[/yellow]")
+            return
+        table = Table(title="Permission Rules")
+        table.add_column("Tool", style="cyan")
+        table.add_column("Decision")
+        for tool_name, decision in sorted(store.rules.items()):
+            table.add_row(tool_name, decision.value)
+        log.write(table)
+
+    async def _cmd_plugins(self, args: str) -> None:
+        log = self.query_one("#messages")
+        manager = getattr(self.agent, "plugin_manager", None)
+        if not manager:
+            log.write("[yellow]No plugin manager available.[/yellow]")
+            return
+        tokens = args.split()
+        if len(tokens) == 2 and tokens[0] == "trust":
+            manager.trust_plugin(tokens[1])
+            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+            log.write(f"[green]Trusted plugin: {tokens[1]}[/green]")
+            return
+        if len(tokens) == 2 and tokens[0] == "untrust":
+            manager.untrust_plugin(tokens[1])
+            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+            log.write(f"[green]Untrusted plugin: {tokens[1]}[/green]")
+            return
+        plugins = manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+        if not plugins:
+            log.write("[yellow]No project plugins discovered.[/yellow]")
+            return
+        table = Table(title="Project Plugins")
+        table.add_column("Name", style="cyan")
+        table.add_column("Trusted")
+        table.add_column("Description")
+        for plugin in plugins:
+            table.add_row(plugin.name, "yes" if manager.is_trusted(plugin.name) else "no", plugin.description)
+        log.write(table)
+
+    async def _cmd_hooks(self, args: str) -> None:
+        log = self.query_one("#messages")
+        callbacks = getattr(getattr(self.agent, "hook_manager", None), "_callbacks", {})
+        table = Table(title="Hooks")
+        table.add_column("Event", style="cyan")
+        table.add_column("Callbacks")
+        for event_name, items in sorted(callbacks.items()):
+            table.add_row(event_name, str(len(items)))
+        log.write(table)
+
+    async def _cmd_automations(self, args: str) -> None:
+        from opennova.automation import LocalAutomationScheduler
+
+        log = self.query_one("#messages")
+        scheduler = LocalAutomationScheduler(Path(".opennova") / "automations.json")
+        tasks = scheduler.list_tasks()
+        if not tasks:
+            log.write("[yellow]No local automations scheduled.[/yellow]")
+            return
+        table = Table(title="Local Automations")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        table.add_column("Enabled")
+        table.add_column("Next Run")
+        for task in tasks:
+            table.add_row(task.id[:8], task.name, "yes" if task.enabled else "no", str(task.next_run_at))
+        log.write(table)
+
+    async def _cmd_diagnostics(self, args: str) -> None:
+        log = self.query_one("#messages")
+        tool = self.agent.tool_registry.get("python_diagnostics")
+        result = tool.execute(path=args.strip() or ".")
+        if result.success:
+            log.write(f"[green]{result.output}[/green]")
+        else:
+            log.write(f"[red]{result.error or result.output}[/red]")
+
+    async def _cmd_status(self, args: str) -> None:
+        log = self.query_one("#messages")
+        info = self.agent.get_model_info()
+        log.write(
+            f"[cyan]Provider:[/cyan] {info.get('provider')}  "
+            f"[cyan]Model:[/cyan] {info.get('model')}  "
+            f"[cyan]Session:[/cyan] {self.agent.session_manager.session_id[:8]}"
+        )
+        log.write(
+            f"[cyan]Tools:[/cyan] {len(self.agent.get_tools())}  "
+            f"[cyan]Plugins:[/cyan] {len(getattr(self.agent.plugin_manager, 'plugins', []))}"
+        )
+
+    async def _cmd_todos(self, args: str) -> None:
+        log = self.query_one("#messages")
+        from opennova.tools.todo_tools import TodoWriteTool
+
+        todos = TodoWriteTool.current_todos()
+        if not todos:
+            task = getattr(self.agent.state, "current_task", "") or "(none)"
+            log.write(f"[cyan]Current task:[/cyan] {task}\n[yellow]No todos recorded.[/yellow]")
+            return
+        table = Table(title="Todos")
+        table.add_column("ID", style="cyan")
+        table.add_column("Status")
+        table.add_column("Content")
+        for todo in todos:
+            table.add_row(todo["id"], todo["status"], todo["content"])
+        log.write(table)
+
+    async def _cmd_checkpoint(self, args: str) -> None:
+        log = self.query_one("#messages")
+        log.write(
+            "[yellow]Checkpoint restore commands are not yet persisted; "
+            "tool events include checkpoint metadata for the next pass.[/yellow]"
+        )
+
     async def _cmd_plan(self, args: str) -> None:
         log = self.query_one("#messages")
         if not args:
@@ -1001,6 +1130,7 @@ class OpenNovaTUI(App):
 
     def _register_callbacks(self) -> None:
         _current_tool: dict[str, str] = {"name": ""}
+        _canonical_tools: dict[str, bool] = {"seen": False}
 
         _stream_buffer: list[str] = [""]  # mutable so closure can reassign
 
@@ -1012,6 +1142,8 @@ class OpenNovaTUI(App):
                 pass
 
         def on_action(tool_name: str, args: dict) -> None:
+            if _canonical_tools["seen"]:
+                return
             _current_tool["name"] = tool_name
             self._tool_progress.start_tool(tool_name, args)
             try:
@@ -1031,6 +1163,8 @@ class OpenNovaTUI(App):
                 pass
 
         def on_result(result: ToolResult) -> None:
+            if _canonical_tools["seen"]:
+                return
             event = self._tool_progress.finish_tool(result)
             summary = event["summary"]
             if _current_tool["name"] in _SUPPRESSED_RESULT_TOOLS:
@@ -1053,6 +1187,43 @@ class OpenNovaTUI(App):
                     self._write_diff(log, diff, max_lines=max_lines)
             except Exception:
                 pass
+
+        def on_tool_event(event: Any) -> None:
+            _canonical_tools["seen"] = True
+            data = event.to_dict() if hasattr(event, "to_dict") else dict(event)
+            event_type = data.get("type")
+            tool_name = data.get("tool_name", "tool")
+            if event_type == "tool_start":
+                self._tool_progress.current_tool_id = str(data.get("tool_id", ""))
+                self._tool_progress.current_tool_name = tool_name
+                self._tool_progress.current_args = dict(data.get("arguments") or {})
+                self._tool_progress.started_at = float(data.get("started_at") or time.time())
+                try:
+                    log = self.query_one("#messages")
+                    log.write(f"[cyan]Executing:[/cyan] {tool_name} [dim]{data.get('tool_id')}[/dim]")
+                except Exception:
+                    pass
+            elif event_type == "permission_request":
+                self._tool_progress.waiting_for_interaction = True
+                self._tool_progress.interaction_label = "Confirm"
+            elif event_type in {"tool_result", "tool_error", "tool_cancelled"}:
+                try:
+                    log = self.query_one("#messages")
+                    success = data.get("success") is True
+                    color = "green" if success else "red"
+                    duration = data.get("duration_ms")
+                    log.write(f"[{color}]Result:[/{color}] [dim]{tool_name} in {duration or 0}ms[/dim]")
+                    output = str(data.get("output") or "")[:500]
+                    if output and tool_name not in _SUPPRESSED_RESULT_OUTPUT:
+                        log.write(output)
+                    if data.get("error"):
+                        log.write(f"[red]Error: {data['error']}[/red]")
+                    if data.get("diff"):
+                        self._write_diff(log, str(data["diff"]), max_lines=_MAX_DIFF_LINES.get(tool_name, 120))
+                except Exception:
+                    pass
+                self._tool_progress.clear_interaction()
+                self._tool_progress.current_tool_name = ""
 
         def on_stream(chunk: StreamChunk) -> None:
             try:
@@ -1081,6 +1252,7 @@ class OpenNovaTUI(App):
         self.agent.register_callback("action", on_action)
         self.agent.register_callback("result", on_result)
         self.agent.register_callback("stream", on_stream)
+        self.agent.register_callback("tool_event", on_tool_event)
 
     # ── interaction ──────────────────────────────────────────────
 

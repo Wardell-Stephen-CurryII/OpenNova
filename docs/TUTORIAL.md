@@ -260,6 +260,14 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/model` | 显示当前模型 | `/model` |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` | `/init --force` |
 | `/config` | 显示配置 | `/config` |
+| `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 | `/permissions execute_command ask` |
+| `/plugins [trust\|untrust name]` | 查看或信任本地项目插件 | `/plugins trust demo` |
+| `/hooks` | 查看已加载 hooks | `/hooks` |
+| `/automations` | 查看本地自动化任务 | `/automations` |
+| `/diagnostics [path]` | 运行 Python 诊断 | `/diagnostics src` |
+| `/status` | 查看运行时状态 | `/status` |
+| `/todos` | 查看 TodoWrite 任务板 | `/todos` |
+| `/checkpoint` | 查看 checkpoint/rollback 状态 | `/checkpoint` |
 | `/history [n]` | 显示最近会话历史 | `/history 5` |
 | `/resume [id]` | 恢复历史会话 | `/resume abc123` |
 | `/sessions` | 列出历史会话 | `/sessions` |
@@ -472,6 +480,7 @@ chmod +x your_script.sh
 ```bash
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
+export PYTHONUTF8=1
 ```
 
 ### Q5: 如何更新

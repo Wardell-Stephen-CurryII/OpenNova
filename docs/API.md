@@ -260,11 +260,15 @@ summary = memory.get_summary()
 
 ```python
 from opennova.security.guardrails import Guardrails
+from opennova.security.permissions import PermissionDecision, PermissionStore
 
+store = PermissionStore(".opennova/permissions.json")
+store.record("execute_command", PermissionDecision.ALWAYS_ASK)
 guard = Guardrails(
     sandbox_mode=True,
     allow_network=True,
     auto_confirm_safe=True,
+    permission_store=store,
 )
 result = guard.check_command("rm -rf /")
 print(result.allowed)
@@ -276,6 +280,22 @@ print(result.risk_level)
 - 对 shell fallback、删除操作、敏感 URL 等返回 `WARN`
 - 在 `allow_network=False` 时阻断 `web_fetch` 和常见联网命令
 - 配合运行时交互机制，在需要时请求用户确认
+- 支持项目级持久化权限规则，且 hard block 不会被 always allow 绕过
+
+### Runtime Tool Events
+
+运行时会为工具调用发出统一事件，SDK/TUI/REPL 可以消费同一套元信息。
+
+```python
+from opennova.runtime.events import ToolEvent, ToolUseContext
+```
+
+事件类型包括：
+- `tool_start`
+- `permission_request`
+- `tool_result`
+- `tool_error`
+- `tool_cancelled`
 
 ### Sandbox
 

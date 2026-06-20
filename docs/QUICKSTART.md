@@ -114,8 +114,17 @@ opennova> /init
 | `uv run opennova --version` | 查看版本 |
 | `uv run opennova init` | 初始化全局配置 |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
+| `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
+| `/plugins [trust\|untrust name]` | 查看或信任本地项目插件 |
+| `/automations` | 查看本地自动化任务 |
+| `/diagnostics [path]` | 运行 Python 诊断 |
+| `/status` | 查看当前运行时状态 |
+| `/todos` | 查看 TodoWrite 任务板 |
 | `/help` | 查看交互命令帮助 |
 | `/exit` | 退出当前会话 |
+
+> 如果项目路径包含中文或其他非 ASCII 字符，建议使用：
+> `LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1 uv run pytest -q`
 
 ## 获取帮助
 
