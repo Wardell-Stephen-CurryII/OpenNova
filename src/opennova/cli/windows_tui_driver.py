@@ -14,6 +14,30 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+LEFT_ALT_PRESSED = 0x0002
+RIGHT_ALT_PRESSED = 0x0001
+SHIFT_PRESSED = 0x0010
+LEFT_CTRL_PRESSED = 0x0008
+RIGHT_CTRL_PRESSED = 0x0004
+
+SPECIAL_KEYS = {
+    8: "backspace",
+    9: "tab",
+    13: "enter",
+    27: "escape",
+    33: "pageup",
+    34: "pagedown",
+    35: "end",
+    36: "home",
+    37: "left",
+    38: "up",
+    39: "right",
+    40: "down",
+    45: "insert",
+    46: "delete",
+    **{code: f"f{code - 111}" for code in range(112, 124)},
+}
+
 
 def should_queue_console_key(
     *,
@@ -30,6 +54,26 @@ def should_queue_console_key(
         return key.isprintable()
 
     return True
+
+
+def format_windows_virtual_key(virtual_key_code: int, control_key_state: int) -> str | None:
+    """Return the Textual key name for a Windows virtual key code."""
+    key = SPECIAL_KEYS.get(virtual_key_code)
+    if key is None:
+        return None
+
+    if key == "tab" and control_key_state & SHIFT_PRESSED:
+        return "shift+tab"
+
+    modifiers: list[str] = []
+    if control_key_state & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED):
+        modifiers.append("ctrl")
+    if control_key_state & SHIFT_PRESSED:
+        modifiers.append("shift")
+    if control_key_state & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED):
+        modifiers.append("alt")
+
+    return "+".join([*modifiers, key]) if modifiers else key
 
 
 def get_ime_friendly_windows_driver_class() -> type[Any]:
@@ -54,30 +98,6 @@ def _build_ime_friendly_windows_driver_class() -> type[Any]:
 
     key_event_type = 0x0001
     window_buffer_size_event_type = 0x0004
-
-    left_alt_pressed = 0x0002
-    right_alt_pressed = 0x0001
-    shift_pressed = 0x0010
-    left_ctrl_pressed = 0x0008
-    right_ctrl_pressed = 0x0004
-
-    special_keys = {
-        8: "backspace",
-        9: "tab",
-        13: "enter",
-        27: "escape",
-        33: "pageup",
-        34: "pagedown",
-        35: "end",
-        36: "home",
-        37: "left",
-        38: "up",
-        39: "right",
-        40: "down",
-        45: "insert",
-        46: "delete",
-        **{code: f"f{code - 111}" for code in range(112, 124)},
-    }
 
     def enable_ime_application_mode(mouse: bool) -> Callable[[], None]:
         terminal_in = sys.__stdin__
@@ -106,24 +126,6 @@ def _build_ime_friendly_windows_driver_class() -> type[Any]:
 
         win32.set_console_mode(terminal_in, input_mode)
         return restore
-
-    def format_special_key(virtual_key_code: int, control_key_state: int) -> str | None:
-        key = special_keys.get(virtual_key_code)
-        if key is None:
-            return None
-
-        if key == "tab" and control_key_state & shift_pressed:
-            return "shift+tab"
-
-        modifiers: list[str] = []
-        if control_key_state & (left_ctrl_pressed | right_ctrl_pressed):
-            modifiers.append("ctrl")
-        if control_key_state & shift_pressed:
-            modifiers.append("shift")
-        if control_key_state & (left_alt_pressed | right_alt_pressed):
-            modifiers.append("alt")
-
-        return "+".join([*modifiers, key]) if modifiers else key
 
     class IMEFriendlyWindowsEventMonitor(threading.Thread):
         """Thread that sends Windows console input events to Textual."""
@@ -197,7 +199,7 @@ def _build_ime_friendly_windows_driver_class() -> type[Any]:
                                 continue
 
                             if key_event.bKeyDown:
-                                special_key = format_special_key(
+                                special_key = format_windows_virtual_key(
                                     virtual_key_code,
                                     control_state,
                                 )

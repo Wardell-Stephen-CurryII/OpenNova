@@ -294,6 +294,23 @@ def test_windows_tui_ignores_control_only_virtual_key_events():
     )
 
 
+def test_windows_tui_maps_navigation_keys_to_textual_names():
+    from opennova.cli.windows_tui_driver import format_windows_virtual_key
+
+    assert format_windows_virtual_key(13, 0) == "enter"
+    assert format_windows_virtual_key(8, 0) == "backspace"
+    assert format_windows_virtual_key(37, 0) == "left"
+    assert format_windows_virtual_key(39, 0) == "right"
+
+
+def test_windows_tui_maps_modified_navigation_keys_to_textual_names():
+    from opennova.cli.windows_tui_driver import format_windows_virtual_key
+
+    assert format_windows_virtual_key(37, 0x0008) == "ctrl+left"
+    assert format_windows_virtual_key(39, 0x0010) == "shift+right"
+    assert format_windows_virtual_key(9, 0x0010) == "shift+tab"
+
+
 def test_no_tui_still_disables_tui_on_windows():
     from opennova.main import _use_tui_for_interactive
 
