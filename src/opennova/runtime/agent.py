@@ -12,21 +12,30 @@ Manages the agent lifecycle:
 
 import copy
 import os
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any
 
+from opennova.hooks import HookManager
 from opennova.memory.context import ContextManager
 from opennova.memory.project import ProjectMemory
 from opennova.memory.working import WorkingMemory
-from opennova.providers.base import BaseLLMProvider, Message, StreamChunk
-from opennova.providers.factory import ProviderFactory
 from opennova.planning.planner import Planner
-from opennova.runtime.loop import ParsedAction, ReActLoop, run_simple_task
-from opennova.runtime.state import AgentState, AgentMode, Plan, PlanApprovalStatus, PlanStatus, PlanStep
+from opennova.plugins import PluginManager
+from opennova.providers.base import Message, StreamChunk
+from opennova.providers.factory import ProviderFactory
+from opennova.runtime.loop import ReActLoop
+from opennova.runtime.state import (
+    AgentState,
+    Plan,
+    PlanApprovalStatus,
+    PlanStatus,
+    PlanStep,
+)
 from opennova.tasks import TaskManager
-from opennova.tools.base import BaseTool, ToolRegistry, ToolResult, register_builtin_tools
+from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 
 
 class AgentRuntime:
@@ -75,6 +84,10 @@ class AgentRuntime:
         self.llm = ProviderFactory.create_provider(config)
         self.project_memory = ProjectMemory(project_path=os.getcwd())
         self.working_memory = WorkingMemory()
+        self.hook_manager = HookManager(project_path=os.getcwd())
+        self.hook_manager.load_project_hooks()
+        self.plugin_manager = PluginManager(project_path=os.getcwd())
+        self.plugin_manager.load_enabled_plugins(config=self.config, hook_manager=self.hook_manager)
 
         # Read compression config
         compression_config = agent_config.get("compression", {})
@@ -112,6 +125,10 @@ class AgentRuntime:
             blocked_commands=self.security_config.get("blocked_commands", []),
             auto_confirm_safe=self.security_config.get("auto_confirm_safe", True),
             allow_network=self.security_config.get("allow_network", True),
+            permission_mode=self.security_config.get("permission_mode", "default"),
+            always_allow_tools=self.security_config.get("always_allow_tools", []),
+            always_deny_tools=self.security_config.get("always_deny_tools", []),
+            always_ask_tools=self.security_config.get("always_ask_tools", []),
         )
 
         # Set global task manager for task tools
@@ -139,18 +156,47 @@ class AgentRuntime:
             "auto_confirm_safe": security_config.get("auto_confirm_safe", True),
             "allow_network": security_config.get("allow_network", True),
             "strict_shell_parsing": security_config.get("strict_shell_parsing", False),
+            "permission_mode": security_config.get("permission_mode", "default"),
+            "always_allow_tools": security_config.get("always_allow_tools", []),
+            "always_deny_tools": security_config.get("always_deny_tools", []),
+            "always_ask_tools": security_config.get("always_ask_tools", []),
             "read_only": security_config.get("read_only", False),
             "max_file_size": security_config.get("max_file_size", 100 * 1024 * 1024),
         }
 
+        from opennova.tools.agent_tools import AgentTool, SendMessageTool
+        from opennova.tools.ask_question_tool import AskUserQuestionTool
+        from opennova.tools.diagnostics_tools import (
+            PythonDefinitionTool,
+            PythonDiagnosticsTool,
+            PythonReferencesTool,
+            PythonSymbolsTool,
+        )
         from opennova.tools.file_tools import (
             CreateFileTool,
             DeleteFileTool,
+            EditFileTool,
             ListDirectoryTool,
+            MultiEditFileTool,
             ReadFileTool,
             WriteFileTool,
         )
+        from opennova.tools.git_tools import (
+            GitBranchTool,
+            GitCommitTool,
+            GitDiffTool,
+            GitLogTool,
+            GitStatusTool,
+        )
+        from opennova.tools.mcp_resource_tools import ListMCPResourcesTool, ReadMCPResourceTool
+        from opennova.tools.plan_mode_tools import (
+            EnterPlanModeTool,
+            ExitPlanModeTool,
+        )
+        from opennova.tools.project_guide_tool import InitProjectGuideTool
+        from opennova.tools.search_tools import GlobFilesTool, GrepCodeTool
         from opennova.tools.shell_tools import ExecuteCommandTool
+        from opennova.tools.skill_tool import SkillTool
         from opennova.tools.task_tools import (
             TaskCreateTool,
             TaskGetTool,
@@ -159,30 +205,24 @@ class AgentRuntime:
             TaskStopTool,
             TaskUpdateTool,
         )
-        from opennova.tools.agent_tools import AgentTool, SendMessageTool
-        from opennova.tools.ask_question_tool import AskUserQuestionTool
-        from opennova.tools.skill_tool import SkillTool
-        from opennova.tools.plan_mode_tools import (
-            EnterPlanModeTool,
-            ExitPlanModeTool,
-        )
         from opennova.tools.web_tools import WebFetchTool, WebSearchTool
-        from opennova.tools.project_guide_tool import InitProjectGuideTool
-        from opennova.tools.git_tools import (
-            GitBranchTool,
-            GitCommitTool,
-            GitDiffTool,
-            GitLogTool,
-            GitStatusTool,
-        )
+        from opennova.tools.worktree_tools import EnterWorktreeTool, ExitWorktreeTool
 
         # File and shell tools
         self.tool_registry.register(ReadFileTool(config=tool_config))
         self.tool_registry.register(WriteFileTool(config=tool_config))
         self.tool_registry.register(CreateFileTool(config=tool_config))
+        self.tool_registry.register(EditFileTool(config=tool_config))
+        self.tool_registry.register(MultiEditFileTool(config=tool_config))
         self.tool_registry.register(DeleteFileTool(config=tool_config))
         self.tool_registry.register(ListDirectoryTool(config=tool_config))
         self.tool_registry.register(ExecuteCommandTool(config=tool_config))
+        self.tool_registry.register(GlobFilesTool(config=tool_config))
+        self.tool_registry.register(GrepCodeTool(config=tool_config))
+        self.tool_registry.register(PythonDiagnosticsTool(config=tool_config))
+        self.tool_registry.register(PythonSymbolsTool(config=tool_config))
+        self.tool_registry.register(PythonDefinitionTool(config=tool_config))
+        self.tool_registry.register(PythonReferencesTool(config=tool_config))
 
         # Task management tools (Claude Code-style)
         self.tool_registry.register(TaskCreateTool())
@@ -210,6 +250,8 @@ class AgentRuntime:
         self.tool_registry.register(
             InitProjectGuideTool(config={"working_dir": os.getcwd(), "runtime": self})
         )
+        self.tool_registry.register(ListMCPResourcesTool(config={"runtime": self}))
+        self.tool_registry.register(ReadMCPResourceTool(config={"runtime": self}))
 
         # Git tools
         self.tool_registry.register(GitCommitTool())
@@ -217,6 +259,8 @@ class AgentRuntime:
         self.tool_registry.register(GitDiffTool())
         self.tool_registry.register(GitLogTool())
         self.tool_registry.register(GitBranchTool())
+        self.tool_registry.register(EnterWorktreeTool(config=tool_config))
+        self.tool_registry.register(ExitWorktreeTool(config=tool_config))
 
     def _init_skills(self) -> None:
         """Initialize markdown skill loading."""
@@ -420,15 +464,27 @@ class AgentRuntime:
             memory_parts.append("Relevant prior decisions:\n" + "\n".join(decision_lines))
 
         try:
+            from opennova.memory.layered import LayeredMemoryManager
             from opennova.memory.project_guide import ProjectGuideManager
 
             project_path = getattr(self.project_memory, "project_path", Path(os.getcwd()))
             guide_manager = ProjectGuideManager(project_path=project_path)
             guide_text = guide_manager.load_for_context(max_chars=5000)
+            exclude_hashes = set()
             if guide_text:
+                exclude_hashes.add(LayeredMemoryManager.content_hash(guide_text))
                 memory_parts.append(
                     "Project guide (OPENNOVA.md) — follow these project-specific conventions when relevant:\n"
                     + guide_text
+                )
+            layered_text = LayeredMemoryManager(project_path=project_path).load_for_context(
+                max_chars=5000,
+                exclude_hashes=exclude_hashes,
+            )
+            if layered_text:
+                memory_parts.append(
+                    "Layered project memory (.opennova/memory) — additional maintained project notes:\n"
+                    + layered_text
                 )
         except Exception:
             pass
@@ -618,6 +674,7 @@ class AgentRuntime:
             working_memory=self.working_memory,
             guardrails=getattr(self, "guardrails", None),
             working_dir=os.getcwd(),
+            hook_manager=getattr(self, "hook_manager", None),
         )
         started_at = perf_counter()
         if not preserve_context:
@@ -728,12 +785,11 @@ class AgentRuntime:
         Restores compression state from session markers so the compact
         context view (summary + recent messages) is reconstructed.
         """
-        # Restore compression markers
-        markers = self.session_manager.get_compression_markers(session_id)
-        if markers:
-            self.context_manager.set_compressed_summary(markers[-1].summary)
+        loaded = self.session_manager.load_session_with_summary(session_id)
+        if loaded.compression_summary:
+            self.context_manager.set_compressed_summary(loaded.compression_summary)
 
-        messages = self.session_manager.load_session(session_id)
+        messages = loaded.messages
         self.context_manager.clear()
         for msg in messages:
             self.context_manager.add_message(msg)

@@ -12,6 +12,7 @@ Textual TUI for OpenNova — split-pane chat interface.
 
 import asyncio
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +25,9 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import Footer, Header, Input, Label, RichLog, TextArea
+from textual.widgets import Header, Input, Label, RichLog, TextArea
 
+from opennova.cli.tool_progress import ToolProgressTracker
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
 from opennova.runtime.agent import AgentRuntime
@@ -66,10 +68,8 @@ class _MessagesLog(RichLog):
 
     def on_click(self) -> None:
         """Show the selectable text overlay when user clicks the message area."""
-        try:
+        with suppress(Exception):
             self.app._show_copy_overlay()
-        except Exception:
-            pass
 
 
 class _CopyOverlay(TextArea):
@@ -94,17 +94,15 @@ class _CopyOverlay(TextArea):
         selected = self.selected_text
         if selected:
             self._copy_to_clipboard(selected)
-            try:
+            with suppress(Exception):
                 self.app._set_status("[green]Copied![/green]")
-            except Exception:
-                pass
         self._dismiss()
 
     @staticmethod
     def _copy_to_clipboard(text: str) -> None:
         """Copy text to system clipboard via native shell commands."""
-        import subprocess
         import platform
+        import subprocess
         try:
             system = platform.system()
             if system == "Darwin":
@@ -131,10 +129,8 @@ class _CopyOverlay(TextArea):
 
     def _dismiss(self) -> None:
         """Dismiss overlay and return focus to input."""
-        try:
+        with suppress(Exception):
             self.app.action_focus_input()
-        except Exception:
-            pass
 
 
 def _to_plain(text: Any) -> str:
@@ -243,6 +239,7 @@ class OpenNovaTUI(App):
         self._interaction_mode: bool = False
         self._completion_state: dict[str, Any] = {}
         self._start_time: float = 0.0
+        self._tool_progress = ToolProgressTracker()
         self._last_ctrl_c: float = 0.0
         # Guard against duplicate Submitted events from a single Enter press
         self._last_submitted_text: str = ""
@@ -353,20 +350,16 @@ class OpenNovaTUI(App):
         self._task_active = False
         self._agent_task = None
         self._set_status("")
-        try:
+        with suppress(Exception):
             input_widget = self.query_one("#input", Input)
             input_widget.disabled = False
             input_widget.placeholder = "Type a message or /command..."
-        except Exception:
-            pass
         self.call_after_refresh(self._focus_input)
 
     def _clear_suggestions(self) -> None:
         """Clear the suggestions label and completion state."""
-        try:
+        with suppress(Exception):
             self.query_one("#suggestions", Label).update("")
-        except Exception:
-            pass
         self._completion_state = {}
 
     # ── tab completion ────────────────────────────────────────────
@@ -457,10 +450,9 @@ class OpenNovaTUI(App):
         matches: list[str] = []
         for entry in self._history_entries:
             entry_stripped = entry.strip()
-            if entry_stripped.startswith(text) and entry_stripped != text:
-                if entry_stripped not in seen:
-                    seen.add(entry_stripped)
-                    matches.append(entry_stripped)
+            if entry_stripped.startswith(text) and entry_stripped != text and entry_stripped not in seen:
+                seen.add(entry_stripped)
+                matches.append(entry_stripped)
         return matches
 
     def _show_suggestions(self, matches: list[str], current_idx: int) -> None:
@@ -487,7 +479,7 @@ class OpenNovaTUI(App):
     def _is_agent_running(self) -> bool:
         """Return True when an agent task is running or being set up."""
         return self._agent_task is not None and not self._agent_task.done()
-    
+
     # ── input dispatch ───────────────────────────────────────────
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -970,9 +962,8 @@ class OpenNovaTUI(App):
             frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
             i = 0
             while not self._agent_task.done():
-                elapsed = time.time() - self._start_time
                 frame = frames[i % len(frames)]
-                self._set_status(f"  {frame} Working... ({elapsed:.0f}s)")
+                self._set_status(self._tool_progress.status_text(frame=frame))
                 i += 1
                 await asyncio.sleep(0.1)
 
@@ -1022,6 +1013,7 @@ class OpenNovaTUI(App):
 
         def on_action(tool_name: str, args: dict) -> None:
             _current_tool["name"] = tool_name
+            self._tool_progress.start_tool(tool_name, args)
             try:
                 log = self.query_one("#messages")
                 parts = []
@@ -1039,16 +1031,18 @@ class OpenNovaTUI(App):
                 pass
 
         def on_result(result: ToolResult) -> None:
+            event = self._tool_progress.finish_tool(result)
+            summary = event["summary"]
             if _current_tool["name"] in _SUPPRESSED_RESULT_TOOLS:
                 return
             try:
                 log = self.query_one("#messages")
                 if result.success:
-                    log.write("[green]Result:[/green]")
+                    log.write(f"[green]Result:[/green] [dim]{summary}[/dim]")
                 else:
-                    log.write("[red]Result:[/red]")
+                    log.write(f"[red]Result:[/red] [dim]{summary}[/dim]")
                 if _current_tool["name"] not in _SUPPRESSED_RESULT_OUTPUT:
-                    output = (result.output or "")[:500]
+                    output = (event.get("output_preview") or "")[:500]
                     if output:
                         log.write(output)
                 if result.error:
@@ -1096,149 +1090,156 @@ class OpenNovaTUI(App):
         Renders each question as a dialog panel and collects answers one at a time.
         All answers are batched and returned together, matching Claude Code's behavior.
         """
-        questions = metadata.get("questions", [])
-        if not questions:
-            # Fallback to prompt_payload for backward compat
-            payload = metadata.get("prompt_payload", {})
-            questions = [payload] if payload.get("question") else []
+        self._tool_progress.start_interaction(metadata)
+        try:
+            questions = metadata.get("questions", [])
+            if not questions:
+                # Fallback to prompt_payload for backward compat
+                payload = metadata.get("prompt_payload", {})
+                questions = [payload] if payload.get("question") else []
 
-        if not questions:
-            return {"skipped": True, "answers": {}, "all_answers": [], "display": "(no questions)"}
+            if not questions:
+                return {"skipped": True, "answers": {}, "all_answers": [], "display": "(no questions)"}
 
-        log = self.query_one("#messages")
-        all_answers: list[dict[str, Any]] = []
+            log = self.query_one("#messages")
+            all_answers: list[dict[str, Any]] = []
 
-        for qi, q in enumerate(questions):
-            question = q.get("question", "")
-            options = q.get("options", [])
-            free_text = q.get("free_text", False)
-            header = q.get("header")
-            multi_select = q.get("multiSelect", False)
-            total = len(questions)
+            for qi, q in enumerate(questions):
+                question = q.get("question", "")
+                options = q.get("options", [])
+                free_text = q.get("free_text", False)
+                header = q.get("header")
+                multi_select = q.get("multiSelect", False)
+                total = len(questions)
 
-            # Build dialog panel
-            dialog_lines: list[str] = []
-            if total > 1:
-                dialog_lines.append(f"[dim]Question {qi + 1}/{total}[/dim]")
-            if header:
-                dialog_lines.append(f"[cyan][{header}][/cyan]")
-            dialog_lines.append(f"[bold]{question}[/bold]")
+                dialog_lines: list[str] = []
+                if total > 1:
+                    dialog_lines.append(f"[dim]Question {qi + 1}/{total}[/dim]")
+                if header:
+                    dialog_lines.append(f"[cyan][{header}][/cyan]")
+                dialog_lines.append(f"[bold]{question}[/bold]")
 
-            if free_text:
-                dialog_lines.append("[dim](Enter to skip — model will decide)[/dim]")
-            else:
-                for opt in options:
-                    idx = opt.get("index", "?")
-                    label = opt.get("label", "")
-                    desc = opt.get("description", "")
-                    line = f"  [[{idx}]] [yellow]{label}[/yellow]"
-                    if desc:
-                        line += f"\n      [dim]{desc}[/dim]"
-                    dialog_lines.append(line)
+                if free_text:
+                    dialog_lines.append("[dim](Enter to skip — model will decide)[/dim]")
+                else:
+                    for opt in options:
+                        idx = opt.get("index", "?")
+                        label = opt.get("label", "")
+                        desc = opt.get("description", "")
+                        line = f"  [[{idx}]] [yellow]{label}[/yellow]"
+                        if desc:
+                            line += f"\n      [dim]{desc}[/dim]"
+                        dialog_lines.append(line)
+                    if multi_select:
+                        dialog_lines.append("[dim](Comma-separated for multiple, e.g. 1,3)[/dim]")
+
+                log.write(
+                    Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2))
+                )
+
+                sel_hint = "s" if multi_select else ""
+                placeholder = (
+                    f"Q{qi + 1}/{total} — Your answer (Enter to skip): "
+                    if free_text
+                    else f"Q{qi + 1}/{total} — Select option{sel_hint}: "
+                )
+                answer = (await self._ask_user(placeholder=placeholder)).strip()
+
+                if free_text:
+                    all_answers.append(
+                        {
+                            "question": question,
+                            "answer": answer or None,
+                            "skipped": not bool(answer),
+                            "header": header,
+                        }
+                    )
+                    continue
+
                 if multi_select:
-                    dialog_lines.append("[dim](Comma-separated for multiple, e.g. 1,3)[/dim]")
+                    indices = [
+                        x.strip()
+                        for x in answer.replace(",", " ").split()
+                        if x.strip().isdigit()
+                    ]
+                    chosen = []
+                    for idx_str in indices:
+                        try:
+                            idx = int(idx_str)
+                            matched = [opt for opt in options if opt.get("index") == idx]
+                            if matched:
+                                chosen.append(matched[0])
+                        except ValueError:
+                            pass
+                    if not chosen:
+                        all_answers.append(
+                            {
+                                "question": question,
+                                "answer": answer or None,
+                                "skipped": True,
+                                "header": header,
+                            }
+                        )
+                    else:
+                        labels = [opt.get("label", "") for opt in chosen]
+                        all_answers.append(
+                            {
+                                "question": question,
+                                "answer": ", ".join(labels),
+                                "selected_options": chosen,
+                                "skipped": False,
+                                "header": header,
+                            }
+                        )
+                    continue
 
-            log.write(
-                Panel("\n".join(dialog_lines), border_style="cyan", padding=(1, 2))
-            )
-
-            sel_hint = "s" if multi_select else ""
-            placeholder = (
-                f"Q{qi + 1}/{total} — Your answer (Enter to skip): "
-                if free_text
-                else f"Q{qi + 1}/{total} — Select option{sel_hint}: "
-            )
-            answer = await self._ask_user(placeholder=placeholder)
-            answer = answer.strip()
-
-            if free_text:
-                if not answer:
-                    all_answers.append({
-                        "question": question,
-                        "answer": None,
-                        "skipped": True,
-                        "header": header,
-                    })
-                else:
-                    all_answers.append({
-                        "question": question,
-                        "answer": answer,
-                        "skipped": False,
-                        "header": header,
-                    })
-                continue
-
-            # Choice mode
-            if multi_select:
-                indices = [x.strip() for x in answer.replace(",", " ").split() if x.strip().isdigit()]
-                chosen = []
-                for idx_str in indices:
-                    try:
-                        idx = int(idx_str)
-                        matched = [opt for opt in options if opt.get("index") == idx]
-                        if matched:
-                            chosen.append(matched[0])
-                    except ValueError:
-                        pass
-                if not chosen:
-                    all_answers.append({
-                        "question": question,
-                        "answer": answer or None,
-                        "skipped": True,
-                        "header": header,
-                    })
-                else:
-                    labels = [opt.get("label", "") for opt in chosen]
-                    all_answers.append({
-                        "question": question,
-                        "answer": ", ".join(labels),
-                        "selected_options": chosen,
-                        "skipped": False,
-                        "header": header,
-                    })
-            else:
                 chosen = [opt for opt in options if opt.get("label", "") == answer]
-                if not chosen:
+                if not chosen and answer:
                     try:
                         idx = int(answer)
                         chosen = [opt for opt in options if opt.get("index") == idx]
                     except ValueError:
                         pass
                 if not chosen:
-                    all_answers.append({
-                        "question": question,
-                        "answer": answer or None,
-                        "skipped": True,
-                        "header": header,
-                    })
+                    all_answers.append(
+                        {
+                            "question": question,
+                            "answer": answer or None,
+                            "skipped": True,
+                            "header": header,
+                        }
+                    )
                 else:
                     opt = chosen[0]
-                    all_answers.append({
-                        "question": question,
-                        "answer": opt.get("label", answer),
-                        "selected_options": [opt],
-                        "skipped": False,
-                        "header": header,
-                    })
+                    all_answers.append(
+                        {
+                            "question": question,
+                            "answer": opt.get("label", answer),
+                            "selected_options": [opt],
+                            "skipped": False,
+                            "header": header,
+                        }
+                    )
 
-        # Build return dict
-        all_skipped = all(a.get("skipped") for a in all_answers)
-        answers_map = {a["question"]: a.get("answer") for a in all_answers}
-        display_parts = []
-        for a in all_answers:
-            q_text = a["question"]
-            ans = a.get("answer")
-            if a.get("skipped"):
-                display_parts.append(f"Q: {q_text} → (skipped)")
-            else:
-                display_parts.append(f"Q: {q_text} → {ans}")
+            all_skipped = all(a.get("skipped") for a in all_answers)
+            answers_map = {a["question"]: a.get("answer") for a in all_answers}
+            display_parts = []
+            for a in all_answers:
+                q_text = a["question"]
+                ans = a.get("answer")
+                if a.get("skipped"):
+                    display_parts.append(f"Q: {q_text} → (skipped)")
+                else:
+                    display_parts.append(f"Q: {q_text} → {ans}")
 
-        return {
-            "skipped": all_skipped,
-            "answers": answers_map,
-            "all_answers": all_answers,
-            "display": "\n".join(display_parts),
-        }
+            return {
+                "skipped": all_skipped,
+                "answers": answers_map,
+                "all_answers": all_answers,
+                "display": "\n".join(display_parts),
+            }
+        finally:
+            self._tool_progress.clear_interaction()
 
     # ── diff display ─────────────────────────────────────────────
 

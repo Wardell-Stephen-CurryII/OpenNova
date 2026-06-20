@@ -12,20 +12,22 @@ import json
 import os
 import subprocess
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from contextlib import suppress
+from typing import Any
 
 from opennova.mcp.types import (
     MCPConnectionState,
     MCPMessage,
+    MCPResource,
+    MCPResourceContent,
     MCPServerConfig,
     MCPServerInfo,
     MCPTool,
     MCPToolResult,
     TransportType,
 )
-from opennova.tools.base import BaseTool, ToolResult, ToolRegistry
+from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 
 
 class Transport(ABC):
@@ -100,16 +102,14 @@ class StdioTransport(Transport):
         """Terminate the MCP server process."""
         if self._reader_task:
             self._reader_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._reader_task
-            except asyncio.CancelledError:
-                pass
 
         if self.process:
             self.process.terminate()
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.process.kill()
                 await self.process.wait()
             self.process = None
@@ -319,10 +319,8 @@ class MCPConnector:
             self._fail_pending_requests(e)
             if self._listener_task:
                 self._listener_task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await self._listener_task
-                except asyncio.CancelledError:
-                    pass
                 self._listener_task = None
             if self.transport:
                 try:
@@ -337,10 +335,8 @@ class MCPConnector:
 
         if self._listener_task:
             self._listener_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._listener_task
-            except asyncio.CancelledError:
-                pass
             self._listener_task = None
 
         if self.transport:
@@ -411,12 +407,12 @@ class MCPConnector:
         try:
             await self.transport.send(message)
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending_requests.pop(request_id, None)
-            raise RuntimeError(f"Request {method} timed out")
-        except Exception as e:
+            raise RuntimeError(f"Request {method} timed out") from None
+        except Exception:
             self._pending_requests.pop(request_id, None)
-            raise e
+            raise
 
     async def _initialize(self) -> MCPServerInfo:
         """Initialize connection with the server."""
@@ -493,6 +489,72 @@ class MCPConnector:
                 success=False,
                 content="",
                 error=str(e),
+            )
+
+    async def list_resources(self) -> list[MCPResource]:
+        """List resources advertised by the MCP server."""
+        if self.state != MCPConnectionState.CONNECTED:
+            raise RuntimeError("Not connected to MCP server")
+
+        result = await self._send_request("resources/list", timeout=self.config.timeout)
+        resources = []
+        for resource_data in result.get("resources", []):
+            resources.append(
+                MCPResource(
+                    uri=resource_data.get("uri", ""),
+                    name=resource_data.get("name", ""),
+                    description=resource_data.get("description", ""),
+                    mime_type=resource_data.get("mimeType", resource_data.get("mime_type", "")),
+                    server_name=self.config.name,
+                    metadata={
+                        key: value
+                        for key, value in resource_data.items()
+                        if key not in {"uri", "name", "description", "mimeType", "mime_type"}
+                    },
+                )
+            )
+        return resources
+
+    async def read_resource(self, uri: str) -> MCPResourceContent:
+        """Read a resource by URI from the MCP server."""
+        if self.state != MCPConnectionState.CONNECTED:
+            raise RuntimeError("Not connected to MCP server")
+
+        try:
+            result = await self._send_request(
+                "resources/read",
+                {"uri": uri},
+                timeout=self.config.timeout,
+            )
+            contents = result.get("contents", [])
+            rendered_parts: list[str] = []
+            metadata: dict[str, Any] = {"server_name": self.config.name, "uri": uri}
+
+            if isinstance(contents, list):
+                for block in contents:
+                    if not isinstance(block, dict):
+                        rendered_parts.append(str(block))
+                        continue
+                    if block.get("text") is not None:
+                        rendered_parts.append(str(block.get("text", "")))
+                    elif block.get("blob") is not None:
+                        rendered_parts.append(str(block.get("blob", "")))
+                    if block.get("mimeType") or block.get("mime_type"):
+                        metadata["mime_type"] = block.get("mimeType", block.get("mime_type"))
+            else:
+                rendered_parts.append(str(contents))
+
+            return MCPResourceContent(
+                success=True,
+                content="\n".join(rendered_parts),
+                metadata=metadata,
+            )
+        except Exception as e:
+            return MCPResourceContent(
+                success=False,
+                content="",
+                error=str(e),
+                metadata={"server_name": self.config.name, "uri": uri},
             )
 
     def get_tools(self) -> list[MCPTool]:
@@ -631,6 +693,38 @@ class MCPManager:
         for connector in self.connectors.values():
             tools.extend(connector.get_tools())
         return tools
+
+    async def list_resources(self, server_name: str | None = None) -> list[MCPResource]:
+        """List resources from one or all connected MCP servers."""
+        resources: list[MCPResource] = []
+        connectors = (
+            [self.connectors[server_name]]
+            if server_name and server_name in self.connectors
+            else list(self.connectors.values())
+        )
+        for connector in connectors:
+            resources.extend(await connector.list_resources())
+        return resources
+
+    async def read_resource(
+        self,
+        uri: str,
+        server_name: str | None = None,
+    ) -> MCPResourceContent:
+        """Read a resource from a specific server or the first server that can provide it."""
+        if server_name:
+            connector = self.connectors.get(server_name)
+            if not connector:
+                return MCPResourceContent(False, "", error=f"MCP server not connected: {server_name}")
+            return await connector.read_resource(uri)
+
+        last_error = ""
+        for connector in self.connectors.values():
+            result = await connector.read_resource(uri)
+            if result.success:
+                return result
+            last_error = result.error or last_error
+        return MCPResourceContent(False, "", error=last_error or f"MCP resource not found: {uri}")
 
     def get_server_for_tool(self, tool_name: str) -> MCPConnector | None:
         """Get the connector that provides a tool."""

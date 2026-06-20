@@ -9,11 +9,11 @@ Defines the types used in MCP communication:
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class TransportType(str, Enum):
+class TransportType(StrEnum):
     """MCP transport types."""
 
     STDIO = "stdio"
@@ -21,7 +21,7 @@ class TransportType(str, Enum):
     WEBSOCKET = "websocket"
 
 
-class MCPConnectionState(str, Enum):
+class MCPConnectionState(StrEnum):
     """MCP connection states."""
 
     DISCONNECTED = "disconnected"
@@ -164,6 +164,39 @@ class MCPToolResult:
         if self.success:
             return self.content
         return f"Error: {self.error}\n{self.content}"
+
+
+@dataclass
+class MCPResource:
+    """Resource advertised by an MCP server."""
+
+    uri: str
+    name: str = ""
+    description: str = ""
+    mime_type: str = ""
+    server_name: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for tool metadata."""
+        return {
+            "uri": self.uri,
+            "name": self.name,
+            "description": self.description,
+            "mime_type": self.mime_type,
+            "server_name": self.server_name,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class MCPResourceContent:
+    """Content returned from reading an MCP resource."""
+
+    success: bool
+    content: str
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

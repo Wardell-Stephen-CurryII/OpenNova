@@ -12,19 +12,32 @@ import asyncio
 import os
 import shlex
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from opennova.security.guardrails import Guardrails
+from opennova.security.guardrails import Guardrails, GuardResult
 from opennova.tools.base import BaseTool, ToolResult
 
 DEFAULT_TIMEOUT = 30
 MAX_OUTPUT_SIZE = 100 * 1024
 
+
+@dataclass
+class PreparedCommand:
+    command: str
+    timeout: int | float
+    working_dir: str
+    run_with_shell: bool
+    argv: list[str] | None
+    guard_result: GuardResult
+
+
 class ExecuteCommandTool(BaseTool):
     """Execute shell commands with safety controls."""
 
     name = "execute_command"
+    search_hint = "Run tests, scripts, git commands, package managers, and shell commands"
     description = (
         "Execute a shell command in a subprocess. "
         "Commands have timeout limits and are monitored for dangerous patterns. "
@@ -42,6 +55,99 @@ class ExecuteCommandTool(BaseTool):
             blocked_commands=self.config.get("blocked_commands", []),
             auto_confirm_safe=bool(self.config.get("auto_confirm_safe", True)),
             allow_network=bool(self.config.get("allow_network", True)),
+            permission_mode=self.config.get("permission_mode", "default"),
+            always_allow_tools=self.config.get("always_allow_tools", []),
+            always_deny_tools=self.config.get("always_deny_tools", []),
+            always_ask_tools=self.config.get("always_ask_tools", []),
+        )
+
+    def _prepare_command_execution(
+        self,
+        command: str,
+        timeout: int | float | None,
+        working_dir: str | None,
+    ) -> PreparedCommand | ToolResult:
+        """Validate guardrails, cwd, timeout, and shell mode before execution."""
+        resolved_timeout = timeout if timeout is not None else self.default_timeout
+        if not isinstance(resolved_timeout, (int, float)) or isinstance(resolved_timeout, bool):
+            return ToolResult(
+                success=False,
+                output="",
+                error="timeout must be a number of seconds",
+                metadata={"guard_blocked": True, "risk_level": "block"},
+            )
+
+        work_dir = working_dir or self.working_dir
+
+        guard_result = self.guardrails.check_command(command)
+        if not guard_result.allowed:
+            return ToolResult(
+                success=False,
+                output="",
+                error=guard_result.reason,
+                metadata={
+                    "requires_confirmation": guard_result.requires_confirmation,
+                    "risk_level": guard_result.risk_level.value,
+                    "suggestions": guard_result.suggestions,
+                    "guard_blocked": True,
+                },
+            )
+
+        uses_shell_features = Guardrails.command_uses_shell_features(command)
+        if uses_shell_features and self.strict_shell_parsing:
+            return ToolResult(
+                success=False,
+                output="",
+                error=(
+                    "Command uses shell syntax, but strict shell parsing is enabled. "
+                    "Run a plain argv-style command or disable strict_shell_parsing."
+                ),
+                metadata={
+                    "guard_blocked": True,
+                    "requires_confirmation": True,
+                    "risk_level": "block",
+                },
+            )
+
+        try:
+            work_path = Path(work_dir).resolve()
+            if not work_path.exists():
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Working directory does not exist: {work_dir}",
+                )
+            if not work_path.is_dir():
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Working directory is not a directory: {work_dir}",
+                )
+            work_dir = str(work_path)
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Invalid working directory: {e}",
+            )
+
+        run_with_shell = uses_shell_features and not self.strict_shell_parsing
+        argv: list[str] | None = None
+        if not run_with_shell:
+            try:
+                argv = shlex.split(command, posix=(os.name != "nt"))
+            except ValueError as e:
+                return ToolResult(success=False, output="", error=f"Invalid command syntax: {e}")
+            if not argv:
+                return ToolResult(success=False, output="", error="Empty command")
+
+        return PreparedCommand(
+            command=command,
+            timeout=resolved_timeout,
+            working_dir=work_dir,
+            run_with_shell=run_with_shell,
+            argv=argv,
+            guard_result=guard_result,
         )
 
     def execute(
@@ -63,70 +169,18 @@ class ExecuteCommandTool(BaseTool):
         Returns:
             ToolResult with command output
         """
-        timeout = timeout or self.default_timeout
-        work_dir = working_dir or self.working_dir
-
-        guard_result = self.guardrails.check_command(command)
-        if not guard_result.allowed:
-            return ToolResult(
-                success=False,
-                output="",
-                error=guard_result.reason,
-                metadata={
-                    "requires_confirmation": guard_result.requires_confirmation,
-                    "risk_level": guard_result.risk_level.value,
-                    "suggestions": guard_result.suggestions,
-                    "guard_blocked": True,
-                },
-            )
-        uses_shell_features = Guardrails.command_uses_shell_features(command)
-        if uses_shell_features and self.strict_shell_parsing:
-            return ToolResult(
-                success=False,
-                output="",
-                error=(
-                    "Command uses shell syntax, but strict shell parsing is enabled. "
-                    "Run a plain argv-style command or disable strict_shell_parsing."
-                ),
-                metadata={
-                    "guard_blocked": True,
-                    "requires_confirmation": True,
-                    "risk_level": "block",
-                },
-            )
+        prepared = self._prepare_command_execution(command, timeout, working_dir)
+        if isinstance(prepared, ToolResult):
+            return prepared
 
         try:
-            if working_dir:
-                work_path = Path(work_dir).resolve()
-                if not work_path.exists():
-                    return ToolResult(
-                        success=False,
-                        output="",
-                        error=f"Working directory does not exist: {work_dir}",
-                    )
-                work_dir = str(work_path)
-        except Exception as e:
-            return ToolResult(
-                success=False,
-                output="",
-                error=f"Invalid working directory: {e}",
-            )
-
-        try:
-            run_with_shell = uses_shell_features and not self.strict_shell_parsing
-            argv: list[str] | None = None
-            if not run_with_shell:
-                argv = shlex.split(command, posix=(os.name != "nt"))
-                if not argv:
-                    return ToolResult(success=False, output="", error="Empty command")
-
             result = subprocess.run(
-                command if run_with_shell else argv,
-                shell=run_with_shell,
-                cwd=work_dir,
+                prepared.command if prepared.run_with_shell else prepared.argv,
+                shell=prepared.run_with_shell,
+                cwd=prepared.working_dir,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=prepared.timeout,
             )
 
             stdout = result.stdout or ""
@@ -156,11 +210,11 @@ class ExecuteCommandTool(BaseTool):
                 metadata={
                     "command": command,
                     "exit_code": result.returncode,
-                    "timeout": timeout,
-                    "working_dir": work_dir,
-                    "shell_fallback": run_with_shell,
-                    "requires_confirmation": guard_result.requires_confirmation,
-                    "risk_level": guard_result.risk_level.value,
+                    "timeout": prepared.timeout,
+                    "working_dir": prepared.working_dir,
+                    "shell_fallback": prepared.run_with_shell,
+                    "requires_confirmation": prepared.guard_result.requires_confirmation,
+                    "risk_level": prepared.guard_result.risk_level.value,
                 },
             )
 
@@ -168,10 +222,10 @@ class ExecuteCommandTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Command timed out after {timeout} seconds",
+                error=f"Command timed out after {prepared.timeout} seconds",
                 metadata={
                     "command": command,
-                    "timeout": timeout,
+                    "timeout": prepared.timeout,
                 },
             )
         except Exception as e:
@@ -198,70 +252,38 @@ class ExecuteCommandTool(BaseTool):
         Returns:
             ToolResult with command output
         """
-        timeout = timeout or self.default_timeout
-        work_dir = working_dir or self.working_dir
-
-        guard_result = self.guardrails.check_command(command)
-        if not guard_result.allowed:
-            return ToolResult(
-                success=False,
-                output="",
-                error=guard_result.reason,
-                metadata={
-                    "requires_confirmation": guard_result.requires_confirmation,
-                    "risk_level": guard_result.risk_level.value,
-                    "suggestions": guard_result.suggestions,
-                    "guard_blocked": True,
-                },
-            )
-        uses_shell_features = Guardrails.command_uses_shell_features(command)
-        if uses_shell_features and self.strict_shell_parsing:
-            return ToolResult(
-                success=False,
-                output="",
-                error=(
-                    "Command uses shell syntax, but strict shell parsing is enabled. "
-                    "Run a plain argv-style command or disable strict_shell_parsing."
-                ),
-                metadata={
-                    "guard_blocked": True,
-                    "requires_confirmation": True,
-                    "risk_level": "block",
-                },
-            )
+        prepared = self._prepare_command_execution(command, timeout, working_dir)
+        if isinstance(prepared, ToolResult):
+            return prepared
 
         try:
-            run_with_shell = uses_shell_features and not self.strict_shell_parsing
-            if run_with_shell:
+            if prepared.run_with_shell:
                 process = await asyncio.create_subprocess_shell(
-                    command,
+                    prepared.command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    cwd=work_dir,
+                    cwd=prepared.working_dir,
                 )
             else:
-                argv = shlex.split(command, posix=(os.name != "nt"))
-                if not argv:
-                    return ToolResult(success=False, output="", error="Empty command")
                 process = await asyncio.create_subprocess_exec(
-                    *argv,
+                    *(prepared.argv or []),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    cwd=work_dir,
+                    cwd=prepared.working_dir,
                 )
 
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=timeout,
+                    timeout=prepared.timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
                 return ToolResult(
                     success=False,
                     output="",
-                    error=f"Command timed out after {timeout} seconds",
+                    error=f"Command timed out after {prepared.timeout} seconds",
                 )
 
             stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
@@ -290,10 +312,11 @@ class ExecuteCommandTool(BaseTool):
                 metadata={
                     "command": command,
                     "exit_code": process.returncode,
-                    "timeout": timeout,
-                    "shell_fallback": run_with_shell,
-                    "requires_confirmation": guard_result.requires_confirmation,
-                    "risk_level": guard_result.risk_level.value,
+                    "timeout": prepared.timeout,
+                    "working_dir": prepared.working_dir,
+                    "shell_fallback": prepared.run_with_shell,
+                    "requires_confirmation": prepared.guard_result.requires_confirmation,
+                    "risk_level": prepared.guard_result.risk_level.value,
                 },
             )
 
@@ -313,3 +336,10 @@ class ExecuteCommandTool(BaseTool):
                 + output[-MAX_OUTPUT_SIZE // 2 :]
             )
         return output
+
+    def is_destructive(self, **kwargs: Any) -> bool:
+        """Shell commands can mutate state and should generally be confirmed by policy."""
+        return True
+
+    def requires_permission(self, **kwargs: Any) -> bool:
+        return True

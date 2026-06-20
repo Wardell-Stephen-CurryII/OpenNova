@@ -1,0 +1,133 @@
+"""Local project plugin manifest support."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from opennova.hooks import HookManager
+
+
+@dataclass
+class PluginManifest:
+    """Parsed local plugin manifest."""
+
+    name: str
+    root: Path
+    description: str = ""
+    enabled: bool = True
+    commands: list[dict[str, Any]] = field(default_factory=list)
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    skills: list[Path] = field(default_factory=list)
+    mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    hooks: list[Path] = field(default_factory=list)
+
+    @classmethod
+    def from_file(cls, manifest_path: str | Path, project_path: str | Path = ".") -> PluginManifest:
+        manifest_file = Path(manifest_path).resolve()
+        project_root = Path(project_path).resolve()
+        plugin_root = manifest_file.parent.resolve()
+        plugins_root = project_root / ".opennova" / "plugins"
+
+        plugin_root.relative_to(plugins_root.resolve())
+
+        data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        name = str(data.get("name") or plugin_root.name)
+
+        skills = [
+            cls._resolve_inside_plugin(plugin_root, item, "skill path")
+            for item in data.get("skills", [])
+        ]
+        hooks = [
+            cls._resolve_inside_plugin(plugin_root, item, "hook path")
+            for item in data.get("hooks", [])
+        ]
+
+        return cls(
+            name=name,
+            root=plugin_root,
+            description=str(data.get("description", "")),
+            enabled=bool(data.get("enabled", True)),
+            commands=list(data.get("commands", []) or []),
+            tools=list(data.get("tools", []) or []),
+            skills=skills,
+            mcp_servers=list(data.get("mcp_servers", []) or []),
+            hooks=hooks,
+        )
+
+    @staticmethod
+    def _resolve_inside_plugin(plugin_root: Path, value: str, label: str) -> Path:
+        path = (plugin_root / value).resolve()
+        try:
+            path.relative_to(plugin_root)
+        except ValueError as exc:
+            raise ValueError(f"{label} is outside plugin directory: {value}") from exc
+        return path
+
+
+class PluginManager:
+    """Discover and apply project-local plugins."""
+
+    def __init__(self, project_path: str | Path = "."):
+        self.project_path = Path(project_path).resolve()
+        self.plugins_dir = self.project_path / ".opennova" / "plugins"
+        self.plugins: list[PluginManifest] = []
+        self.errors: dict[str, str] = {}
+
+    def discover_manifests(self) -> list[Path]:
+        """Find plugin.yaml files under .opennova/plugins/*/."""
+        if not self.plugins_dir.exists():
+            return []
+        return sorted(self.plugins_dir.glob("*/plugin.yaml"))
+
+    def load_enabled_plugins(
+        self,
+        config: dict[str, Any],
+        hook_manager: HookManager | None = None,
+    ) -> list[PluginManifest]:
+        """Load enabled plugins and merge their declarative contributions."""
+        self.plugins = []
+        self.errors = {}
+
+        for manifest_path in self.discover_manifests():
+            plugin_name = manifest_path.parent.name
+            try:
+                manifest = PluginManifest.from_file(manifest_path, project_path=self.project_path)
+                if not manifest.enabled:
+                    continue
+                self._apply_manifest(manifest, config=config, hook_manager=hook_manager)
+                self.plugins.append(manifest)
+            except Exception as exc:
+                self.errors[plugin_name] = str(exc)
+
+        return self.plugins
+
+    def _apply_manifest(
+        self,
+        manifest: PluginManifest,
+        config: dict[str, Any],
+        hook_manager: HookManager | None,
+    ) -> None:
+        skills_config = config.setdefault("skills", {})
+        skill_dirs = skills_config.setdefault("dirs", [])
+        for skill_dir in manifest.skills:
+            skill_path = str(skill_dir)
+            if skill_path not in skill_dirs:
+                skill_dirs.append(skill_path)
+
+        mcp_config = config.setdefault("mcp", {})
+        mcp_servers = mcp_config.setdefault("servers", [])
+        existing_names = {server.get("name") for server in mcp_servers if isinstance(server, dict)}
+        for server in manifest.mcp_servers:
+            if server.get("name") not in existing_names:
+                mcp_servers.append(server)
+
+        if hook_manager:
+            for hook_path in manifest.hooks:
+                hook_manager.load_hook_file(
+                    hook_path,
+                    module_prefix=f"opennova_plugin_hook_{manifest.name}",
+                )

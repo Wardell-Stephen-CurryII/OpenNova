@@ -17,7 +17,6 @@ from opennova.diff.engine import DiffEngine
 from opennova.security.sandbox import Sandbox, SandboxConfig
 from opennova.tools.base import BaseTool, ToolResult
 
-
 MAX_FILE_SIZE = 10 * 1024 * 1024
 MAX_OUTPUT_SIZE = 100 * 1024
 
@@ -67,35 +66,6 @@ def _is_binary_file(file_path: str) -> bool:
         return False
 
 
-def _validate_path(file_path: str, working_dir: str | None = None) -> tuple[bool, str, str | None]:
-    """
-    Validate file path for safety.
-
-    Args:
-        file_path: Path to validate
-        working_dir: Optional working directory to restrict to
-
-    Returns:
-        Tuple of (is_valid, resolved_path, error_message)
-    """
-    try:
-        path = Path(file_path).resolve()
-    except Exception as e:
-        return False, "", f"Invalid path: {e}"
-
-    if not path.exists() and "delete" not in file_path:
-        return False, str(path), f"Path does not exist: {file_path}"
-
-    if working_dir:
-        work_path = Path(working_dir).resolve()
-        try:
-            path.relative_to(work_path)
-        except ValueError:
-            return False, str(path), f"Path outside allowed directory: {file_path}"
-
-    return True, str(path), None
-
-
 def _truncate_output(output: str, max_size: int = MAX_OUTPUT_SIZE) -> str:
     """Truncate output if too large."""
     if len(output) > max_size:
@@ -135,6 +105,9 @@ class ReadFileTool(BaseTool):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
+
+    def is_read_only(self, **kwargs: Any) -> bool:
+        return True
 
     def execute(
         self,
@@ -238,6 +211,9 @@ class WriteFileTool(BaseTool):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
 
+    def is_destructive(self, **kwargs: Any) -> bool:
+        return True
+
     def execute(self, file_path: str, content: str) -> ToolResult:
         """
         Write content to a file.
@@ -316,6 +292,9 @@ class CreateFileTool(BaseTool):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
 
+    def is_destructive(self, **kwargs: Any) -> bool:
+        return True
+
     def execute(self, file_path: str, content: str = "") -> ToolResult:
         """
         Create a new file.
@@ -375,6 +354,144 @@ class CreateFileTool(BaseTool):
             )
 
 
+class EditFileTool(BaseTool):
+    """Replace one exact text occurrence in a file."""
+
+    name = "edit_file"
+    search_hint = "Make a precise text replacement in an existing file"
+    description = (
+        "Edit a file by replacing an exact old_text string with new_text. "
+        "Fails if old_text is missing or appears multiple times unless replace_all is true."
+    )
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.sandbox = _build_sandbox(config)
+
+    def execute(
+        self,
+        file_path: str,
+        old_text: str,
+        new_text: str,
+        replace_all: bool = False,
+    ) -> ToolResult:
+        is_allowed, reason = self.sandbox.is_path_allowed(file_path)
+        if not is_allowed:
+            return ToolResult(success=False, output="", error=reason)
+        path = Path(file_path).resolve()
+
+        if not old_text:
+            return ToolResult(success=False, output="", error="old_text must not be empty")
+        if _is_binary_file(str(path)):
+            return ToolResult(success=False, output="", error=f"Cannot edit binary file: {file_path}")
+
+        read_ok, read_result = self.sandbox.safe_read(path)
+        if not read_ok:
+            return ToolResult(success=False, output="", error=str(read_result))
+
+        old_content = read_result.decode("utf-8", errors="replace") if isinstance(read_result, bytes) else ""
+        occurrences = old_content.count(old_text)
+        if occurrences == 0:
+            return ToolResult(success=False, output="", error="old_text not found in file")
+        if occurrences > 1 and not replace_all:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"old_text appears {occurrences} times; set replace_all=True or provide more context",
+            )
+
+        new_content = old_content.replace(old_text, new_text) if replace_all else old_content.replace(old_text, new_text, 1)
+        write_ok, write_result = self.sandbox.safe_write(path, new_content.encode("utf-8"))
+        if not write_ok:
+            return ToolResult(success=False, output="", error=str(write_result))
+
+        diff_text = DiffEngine().generate_diff(old_content, new_content, str(path))
+        return ToolResult(
+            success=True,
+            output=f"Edited file: {file_path}",
+            metadata={
+                "file_path": str(path),
+                "change_type": "edit",
+                "occurrences_replaced": occurrences if replace_all else 1,
+                "diff": diff_text,
+            },
+        )
+
+    def is_destructive(self, **kwargs: Any) -> bool:
+        return True
+
+
+class MultiEditFileTool(BaseTool):
+    """Apply multiple exact text replacements to a file."""
+
+    name = "multi_edit_file"
+    search_hint = "Apply multiple precise replacements to one file"
+    description = (
+        "Apply multiple exact text replacements to one file. "
+        "Each edit requires old_text and new_text, and all edits must match before writing."
+    )
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        self.sandbox = _build_sandbox(config)
+
+    def execute(self, file_path: str, edits: list[dict[str, Any]]) -> ToolResult:
+        is_allowed, reason = self.sandbox.is_path_allowed(file_path)
+        if not is_allowed:
+            return ToolResult(success=False, output="", error=reason)
+        path = Path(file_path).resolve()
+
+        if not edits:
+            return ToolResult(success=False, output="", error="edits must contain at least one edit")
+        if _is_binary_file(str(path)):
+            return ToolResult(success=False, output="", error=f"Cannot edit binary file: {file_path}")
+
+        read_ok, read_result = self.sandbox.safe_read(path)
+        if not read_ok:
+            return ToolResult(success=False, output="", error=str(read_result))
+
+        old_content = read_result.decode("utf-8", errors="replace") if isinstance(read_result, bytes) else ""
+        new_content = old_content
+        replaced = 0
+
+        for index, edit in enumerate(edits, 1):
+            old_text = str(edit.get("old_text", ""))
+            new_text = str(edit.get("new_text", ""))
+            replace_all = bool(edit.get("replace_all", False))
+            if not old_text:
+                return ToolResult(success=False, output="", error=f"edit {index}: old_text must not be empty")
+            occurrences = new_content.count(old_text)
+            if occurrences == 0:
+                return ToolResult(success=False, output="", error=f"edit {index}: old_text not found")
+            if occurrences > 1 and not replace_all:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"edit {index}: old_text appears {occurrences} times; set replace_all=True",
+                )
+            new_content = new_content.replace(old_text, new_text) if replace_all else new_content.replace(old_text, new_text, 1)
+            replaced += occurrences if replace_all else 1
+
+        write_ok, write_result = self.sandbox.safe_write(path, new_content.encode("utf-8"))
+        if not write_ok:
+            return ToolResult(success=False, output="", error=str(write_result))
+
+        diff_text = DiffEngine().generate_diff(old_content, new_content, str(path))
+        return ToolResult(
+            success=True,
+            output=f"Edited file: {file_path} ({replaced} replacements)",
+            metadata={
+                "file_path": str(path),
+                "change_type": "multi_edit",
+                "occurrences_replaced": replaced,
+                "diff": diff_text,
+            },
+        )
+
+    def is_destructive(self, **kwargs: Any) -> bool:
+        return True
+
+
 class DeleteFileTool(BaseTool):
     """Delete a file (requires confirmation)."""
 
@@ -388,6 +505,9 @@ class DeleteFileTool(BaseTool):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
+
+    def is_destructive(self, **kwargs: Any) -> bool:
+        return True
 
     def execute(self, file_path: str, confirm: bool = False) -> ToolResult:
         """
@@ -458,6 +578,9 @@ class ListDirectoryTool(BaseTool):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
+
+    def is_read_only(self, **kwargs: Any) -> bool:
+        return True
 
     def execute(
         self,

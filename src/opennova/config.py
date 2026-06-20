@@ -15,7 +15,6 @@ from typing import Any
 
 import yaml
 
-
 DEFAULT_CONFIG: dict[str, Any] = {
     "default_provider": "deepseek",
     "providers": {
@@ -53,6 +52,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "allowed_paths": [],
         "blocked_commands": [],
         "strict_shell_parsing": False,
+        "permission_mode": "default",
+        "always_allow_tools": [],
+        "always_deny_tools": [],
+        "always_ask_tools": [],
         "read_only": False,
         "max_file_size": 104857600,
     },

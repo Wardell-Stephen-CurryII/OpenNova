@@ -7,18 +7,22 @@ This module provides:
 - Tool discovery and execution
 """
 
+from opennova.mcp.connector import MCPConnector, MCPManager
 from opennova.mcp.types import (
+    MCPConnectionState,
+    MCPResource,
+    MCPResourceContent,
     MCPServerConfig,
     MCPTool,
     MCPToolResult,
-    MCPConnectionState,
 )
-from opennova.mcp.connector import MCPConnector, MCPManager
 
 __all__ = [
     "MCPServerConfig",
     "MCPTool",
     "MCPToolResult",
+    "MCPResource",
+    "MCPResourceContent",
     "MCPConnectionState",
     "MCPConnector",
     "MCPManager",

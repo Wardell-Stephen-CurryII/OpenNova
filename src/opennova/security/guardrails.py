@@ -10,18 +10,28 @@ Provides:
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     """Risk level of an action."""
 
     SAFE = "safe"
     WARN = "warn"
     DANGER = "danger"
     BLOCK = "block"
+
+
+class PermissionMode(StrEnum):
+    """High-level permission mode for tool execution."""
+
+    DEFAULT = "default"
+    ASK = "ask"
+    ALLOW_EDITS = "allowEdits"
+    READ_ONLY = "readOnly"
+    BYPASS = "bypass"
 
 
 @dataclass
@@ -133,6 +143,10 @@ class Guardrails:
         blocked_commands: list[str] | None = None,
         auto_confirm_safe: bool = True,
         allow_network: bool = True,
+        permission_mode: str | PermissionMode = PermissionMode.DEFAULT,
+        always_allow_tools: list[str] | None = None,
+        always_deny_tools: list[str] | None = None,
+        always_ask_tools: list[str] | None = None,
     ):
         """
         Initialize guardrails.
@@ -148,6 +162,76 @@ class Guardrails:
         self.blocked_commands = blocked_commands or []
         self.auto_confirm_safe = auto_confirm_safe
         self.allow_network = allow_network
+        self.permission_mode = PermissionMode(permission_mode)
+        self.always_allow_tools = set(always_allow_tools or [])
+        self.always_deny_tools = set(always_deny_tools or [])
+        self.always_ask_tools = set(always_ask_tools or [])
+
+    @staticmethod
+    def _tool_category(tool_name: str) -> str:
+        if tool_name in {
+            "read_file",
+            "list_directory",
+            "glob_files",
+            "grep_code",
+            "web_search",
+            "web_fetch",
+            "list_mcp_resources",
+            "read_mcp_resource",
+            "python_diagnostics",
+            "python_symbols",
+            "python_definition",
+            "python_references",
+        }:
+            return "read"
+        if tool_name in {
+            "write_file",
+            "create_file",
+            "edit_file",
+            "multi_edit_file",
+            "delete_file",
+            "enter_worktree",
+            "exit_worktree",
+        }:
+            return "edit"
+        if tool_name == "execute_command":
+            return "command"
+        return "other"
+
+    def _check_permission_mode(self, tool_name: str) -> GuardResult | None:
+        if tool_name in self.always_deny_tools:
+            return GuardResult(False, RiskLevel.BLOCK, f"Tool is denied by policy: {tool_name}")
+        if self.permission_mode == PermissionMode.BYPASS:
+            return GuardResult(True, RiskLevel.SAFE, f"Tool is allowed by policy: {tool_name}")
+
+        category = self._tool_category(tool_name)
+        if self.permission_mode == PermissionMode.READ_ONLY and category != "read":
+            return GuardResult(False, RiskLevel.BLOCK, f"Read-only mode blocks tool: {tool_name}")
+        if tool_name in self.always_ask_tools:
+            return GuardResult(True, RiskLevel.WARN, f"Tool requires confirmation by policy: {tool_name}", True)
+        if self.permission_mode == PermissionMode.ASK and category != "read":
+            return GuardResult(True, RiskLevel.WARN, f"Permission required for tool: {tool_name}", True)
+        if self.permission_mode == PermissionMode.ALLOW_EDITS and category == "command":
+            return GuardResult(True, RiskLevel.WARN, f"Command requires confirmation by policy: {tool_name}", True)
+        return None
+
+    def _apply_permission_overlay(
+        self,
+        tool_name: str,
+        safety_result: GuardResult,
+        permission_result: GuardResult | None,
+    ) -> GuardResult:
+        """Apply permission policy without letting it bypass hard safety blocks."""
+        if not safety_result.allowed:
+            return safety_result
+        if tool_name in self.always_allow_tools:
+            safety_result.requires_confirmation = False
+            if safety_result.risk_level == RiskLevel.WARN:
+                safety_result.risk_level = RiskLevel.SAFE
+            return safety_result
+        if permission_result and permission_result.requires_confirmation:
+            return permission_result
+        return safety_result
 
     @staticmethod
     def command_uses_shell_features(command: str) -> bool:
@@ -341,7 +425,7 @@ class Guardrails:
                 reason=f"Invalid URL: {e}",
             )
 
-        if not parsed.scheme in ("http", "https"):
+        if parsed.scheme not in ("http", "https"):
             return GuardResult(
                 allowed=False,
                 risk_level=RiskLevel.BLOCK,
@@ -421,36 +505,57 @@ class Guardrails:
         Returns:
             GuardResult with tool call safety assessment
         """
+        permission_result = self._check_permission_mode(tool_name)
+        if permission_result is not None and (
+            not permission_result.allowed or self.permission_mode == PermissionMode.BYPASS
+        ):
+            return permission_result
+
         if tool_name == "execute_command":
             command = arguments.get("command", "")
-            return self.check_command(command)
+            result = self.check_command(command)
 
         elif tool_name == "read_file":
             file_path = arguments.get("file_path", "")
-            return self.check_file_path(file_path, "read", working_dir)
+            result = self.check_file_path(file_path, "read", working_dir)
 
-        elif tool_name in ("write_file", "create_file"):
+        elif tool_name in ("write_file", "create_file", "edit_file", "multi_edit_file"):
             file_path = arguments.get("file_path", "")
-            return self.check_file_path(file_path, "write", working_dir)
+            result = self.check_file_path(file_path, "write", working_dir)
 
         elif tool_name == "delete_file":
             file_path = arguments.get("file_path", "")
-            return self.check_file_path(file_path, "delete", working_dir)
-        elif tool_name == "list_directory":
+            result = self.check_file_path(file_path, "delete", working_dir)
+        elif tool_name in ("list_directory", "glob_files", "grep_code"):
             directory = arguments.get("directory", ".")
-            return self.check_file_path(directory, "read", working_dir)
+            result = self.check_file_path(directory, "read", working_dir)
+
+        elif tool_name in ("enter_worktree", "exit_worktree"):
+            result = GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.WARN,
+                reason="Git worktree operation changes repository checkout state",
+                requires_confirmation=True,
+                suggestions=[
+                    "Confirm the target path and branch name before proceeding",
+                    "Review uncommitted changes before removing a worktree",
+                ],
+            )
 
         elif tool_name == "http_request":
             url = arguments.get("url", "")
             method = arguments.get("method", "GET")
-            return self.check_http_request(url, method)
+            result = self.check_http_request(url, method)
         elif tool_name == "web_fetch":
             url = arguments.get("url", "")
-            return self.check_http_request(url, "GET")
+            result = self.check_http_request(url, "GET")
 
-        return GuardResult(
-            allowed=True,
-            risk_level=RiskLevel.SAFE,
-            reason="Tool not in high-risk category",
-            requires_confirmation=False,
-        )
+        else:
+            result = GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.SAFE,
+                reason="Tool not in high-risk category",
+                requires_confirmation=False,
+            )
+
+        return self._apply_permission_overlay(tool_name, result, permission_result)

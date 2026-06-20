@@ -5,10 +5,8 @@ in ``~/.opennova/sessions/<sanitized-project-path>/``.
 """
 
 import json
-import os
 import re
 import uuid
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,6 +37,16 @@ class CompressionMarker:
     session_id: str
     summary: str
     message_count: int
+
+
+@dataclass
+class LoadedSession:
+    """Messages and compression state loaded from a persisted session."""
+
+    session_id: str
+    messages: list[Any]
+    compression_summary: str | None = None
+    compression_markers: list[CompressionMarker] | None = None
 
 
 class SessionManager:
@@ -195,6 +203,20 @@ class SessionManager:
                         continue
                     messages.append(Message.from_dict(entry["message"]))
         return messages
+
+    def load_session_with_summary(
+        self, session_id: str, apply_compression: bool = True
+    ) -> LoadedSession:
+        """Load messages and the latest compression summary together."""
+        markers = self.get_compression_markers(session_id) if apply_compression else []
+        messages = self.load_session(session_id, apply_compression=apply_compression)
+        summary = markers[-1].summary if markers else None
+        return LoadedSession(
+            session_id=session_id,
+            messages=messages,
+            compression_summary=summary,
+            compression_markers=markers,
+        )
 
     # ── list ────────────────────────────────────────────────────────
 

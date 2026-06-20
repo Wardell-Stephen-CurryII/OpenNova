@@ -7,11 +7,11 @@ This module provides the foundation for OpenNova's tool system:
 - ToolResult: Standard return structure for tool execution
 """
 
+import types
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-import types
-from typing import Union, get_args, get_origin
-from typing import Any
+from enum import Enum
+from typing import Any, Literal, Union, get_args, get_origin
 
 from opennova.providers.base import ToolSchema
 
@@ -99,6 +99,10 @@ class BaseTool(ABC):
 
     name: str = ""
     description: str = ""
+    aliases: list[str] = []
+    search_hint: str = ""
+    max_result_chars: int = 100_000
+    progress_metadata: dict[str, Any] = {}
 
     def __init__(self, config: dict[str, Any] | None = None):
         """Initialize tool with optional configuration."""
@@ -141,9 +145,7 @@ class BaseTool(ABC):
                 continue
 
             param_type = hints.get(param_name, str)
-            json_type = self._python_type_to_json(param_type)
-
-            prop: dict[str, Any] = {"type": json_type}
+            prop = self._python_type_to_schema(param_type)
 
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
@@ -174,6 +176,13 @@ class BaseTool(ABC):
     @staticmethod
     def _python_type_to_json(python_type: type) -> str:
         """Convert Python type annotation to JSON Schema type."""
+        schema = BaseTool._python_type_to_schema(python_type)
+        schema_type = schema.get("type")
+        return schema_type if isinstance(schema_type, str) else "string"
+
+    @staticmethod
+    def _python_type_to_schema(python_type: Any) -> dict[str, Any]:
+        """Convert Python type annotation to a JSON Schema fragment."""
         type_mapping = {
             str: "string",
             int: "integer",
@@ -181,20 +190,63 @@ class BaseTool(ABC):
             bool: "boolean",
             list: "array",
             dict: "object",
+            Any: "object",
         }
+
+        if python_type is None or python_type is type(None):
+            return {"type": "null"}
+
+        if isinstance(python_type, type) and issubclass(python_type, Enum):
+            values = [member.value for member in python_type]
+            return {"type": BaseTool._json_type_for_values(values), "enum": values}
 
         origin = get_origin(python_type)
         if origin is not None:
-            if origin is list:
-                return "array"
+            if origin in (list, tuple, set):
+                args = get_args(python_type)
+                item_schema = BaseTool._python_type_to_schema(args[0]) if args else {"type": "string"}
+                return {"type": "array", "items": item_schema}
             if origin is dict:
-                return "object"
+                return {"type": "object"}
+            if origin is Literal:
+                values = list(get_args(python_type))
+                return {"type": BaseTool._json_type_for_values(values), "enum": values}
             if origin in (Union, types.UnionType):
                 non_none_args = [arg for arg in get_args(python_type) if arg is not type(None)]
                 if len(non_none_args) == 1:
-                    return BaseTool._python_type_to_json(non_none_args[0])
+                    return BaseTool._python_type_to_schema(non_none_args[0])
+                return {
+                    "anyOf": [BaseTool._python_type_to_schema(arg) for arg in non_none_args],
+                }
 
-        return type_mapping.get(python_type, "string")
+        return {"type": type_mapping.get(python_type, "string")}
+
+    @staticmethod
+    def _json_type_for_values(values: list[Any]) -> str:
+        """Infer a scalar JSON type from enum or literal values."""
+        if values and all(isinstance(value, bool) for value in values):
+            return "boolean"
+        if values and all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            return "integer"
+        if values and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+            return "number"
+        return "string"
+
+    def is_read_only(self, **kwargs: Any) -> bool:
+        """Return whether this tool call only reads state."""
+        return False
+
+    def is_destructive(self, **kwargs: Any) -> bool:
+        """Return whether this tool call can destroy or overwrite data."""
+        return False
+
+    def requires_permission(self, **kwargs: Any) -> bool:
+        """Return whether this tool call should go through user approval."""
+        return self.is_destructive(**kwargs)
+
+    def is_concurrency_safe(self, **kwargs: Any) -> bool:
+        """Return whether this tool call can safely run in parallel."""
+        return self.is_read_only(**kwargs)
 
     def __repr__(self) -> str:
         return f"Tool({self.name})"
@@ -202,20 +254,25 @@ class BaseTool(ABC):
 
 class ToolRegistry:
     """
-    Singleton registry for managing all tools.
+    Registry for managing tools.
 
-    Provides centralized tool registration and retrieval.
-    Tools are registered once and accessed globally throughout the application.
+    Runtime instances should own their registry so tool configuration and
+    runtime references do not leak between sessions or child agents.
     """
 
-    _instance: "ToolRegistry | None" = None
-    _tools: dict[str, BaseTool] = {}
+    _global_registry: "ToolRegistry | None" = None
 
-    def __new__(cls) -> "ToolRegistry":
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._tools = {}
-        return cls._instance
+    def __init__(self, tools: list[BaseTool] | None = None):
+        self._tools: dict[str, BaseTool] = {}
+        for tool in tools or []:
+            self.register(tool)
+
+    @classmethod
+    def global_registry(cls) -> "ToolRegistry":
+        """Return an explicitly shared registry for legacy/global use cases."""
+        if cls._global_registry is None:
+            cls._global_registry = cls()
+        return cls._global_registry
 
     def register(self, tool: BaseTool) -> None:
         """
@@ -283,8 +340,8 @@ class ToolRegistry:
 
     @classmethod
     def reset(cls) -> None:
-        """Reset the singleton instance (mainly for testing)."""
-        cls._instance = None
+        """Reset the explicitly shared registry (mainly for testing)."""
+        cls._global_registry = None
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools
@@ -309,22 +366,45 @@ def register_builtin_tools(registry: ToolRegistry | None = None) -> ToolRegistry
     if registry is None:
         registry = ToolRegistry()
 
+    from opennova.tools.diagnostics_tools import (
+        PythonDefinitionTool,
+        PythonDiagnosticsTool,
+        PythonReferencesTool,
+        PythonSymbolsTool,
+    )
     from opennova.tools.file_tools import (
-        ReadFileTool,
-        WriteFileTool,
         CreateFileTool,
         DeleteFileTool,
+        EditFileTool,
         ListDirectoryTool,
+        MultiEditFileTool,
+        ReadFileTool,
+        WriteFileTool,
     )
-    from opennova.tools.shell_tools import ExecuteCommandTool
+    from opennova.tools.mcp_resource_tools import ListMCPResourcesTool, ReadMCPResourceTool
     from opennova.tools.project_guide_tool import InitProjectGuideTool
+    from opennova.tools.search_tools import GlobFilesTool, GrepCodeTool
+    from opennova.tools.shell_tools import ExecuteCommandTool
+    from opennova.tools.worktree_tools import EnterWorktreeTool, ExitWorktreeTool
 
     registry.register(ReadFileTool())
     registry.register(WriteFileTool())
     registry.register(CreateFileTool())
+    registry.register(EditFileTool())
+    registry.register(MultiEditFileTool())
     registry.register(DeleteFileTool())
     registry.register(ListDirectoryTool())
     registry.register(ExecuteCommandTool())
+    registry.register(GlobFilesTool())
+    registry.register(GrepCodeTool())
+    registry.register(PythonDiagnosticsTool())
+    registry.register(PythonSymbolsTool())
+    registry.register(PythonDefinitionTool())
+    registry.register(PythonReferencesTool())
     registry.register(InitProjectGuideTool())
+    registry.register(ListMCPResourcesTool())
+    registry.register(ReadMCPResourceTool())
+    registry.register(EnterWorktreeTool())
+    registry.register(ExitWorktreeTool())
 
     return registry

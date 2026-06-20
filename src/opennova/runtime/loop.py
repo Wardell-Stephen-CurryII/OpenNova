@@ -9,12 +9,13 @@ Implements the core Reason-Act-Observe cycle:
 """
 
 import asyncio
-import json
 import re
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
+from opennova.hooks import HookManager
 from opennova.memory.context import ContextManager
 from opennova.memory.working import ActionStatus, WorkingMemory
 from opennova.providers.base import (
@@ -22,14 +23,12 @@ from opennova.providers.base import (
     FinishReason,
     LLMResponse,
     Message,
-    StreamChunk,
     ToolCall,
-    ToolSchema,
 )
-from opennova.runtime.state import AgentState, Plan
-from opennova.security.guardrails import GuardResult, Guardrails, RiskLevel
+from opennova.runtime.state import AgentState
+from opennova.security.guardrails import Guardrails, GuardResult, RiskLevel
 from opennova.skills.registry import SkillRegistry
-from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
+from opennova.tools.base import ToolRegistry, ToolResult
 
 
 @dataclass
@@ -84,6 +83,7 @@ class ReActLoop:
         working_memory: WorkingMemory | None = None,
         guardrails: Guardrails | None = None,
         working_dir: str | None = None,
+        hook_manager: HookManager | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -108,6 +108,7 @@ class ReActLoop:
         self.working_memory = working_memory
         self.guardrails = guardrails
         self.working_dir = working_dir
+        self.hook_manager = hook_manager
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
@@ -159,7 +160,6 @@ class ReActLoop:
         Returns:
             Final result string
         """
-        import traceback
 
         if preserve_plan_state:
             self.state.reset_execution(task)
@@ -493,6 +493,17 @@ class ReActLoop:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
 
         try:
+            if self.hook_manager:
+                hook_event = {
+                    "tool_name": action.tool_name,
+                    "arguments": dict(action.arguments),
+                    "metadata": {},
+                }
+                hook_result = self.hook_manager.run_pre_tool_use(hook_event)
+                if isinstance(hook_result, ToolResult):
+                    return hook_result
+                action.arguments = dict(hook_result.get("arguments", action.arguments))
+
             guard_result = self._check_tool_guard(action)
             if not guard_result.allowed:
                 if self.working_memory and action_record:
@@ -531,6 +542,19 @@ class ReActLoop:
 
             if result.success and result.metadata.get("interaction_required"):
                 result = await self._resolve_interaction(result)
+            if self.hook_manager:
+                hook_result = self.hook_manager.run_post_tool_use(
+                    {
+                        "tool_name": action.tool_name,
+                        "arguments": dict(action.arguments),
+                        "result": result,
+                        "metadata": {},
+                    }
+                )
+                if isinstance(hook_result, ToolResult):
+                    result = hook_result
+                elif isinstance(hook_result, dict) and isinstance(hook_result.get("result"), ToolResult):
+                    result = hook_result["result"]
             if self.working_memory and action_record:
                 status = ActionStatus.SUCCESS if result.success else ActionStatus.FAILED
                 self.working_memory.update_action(
