@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import py_compile
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,15 @@ from opennova.security.sandbox import Sandbox, SandboxConfig
 from opennova.tools.base import BaseTool, ToolResult
 
 IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules"}
+
+
+def detect_python_analysis_backend() -> dict[str, Any]:
+    """Detect optional Python analysis backends while keeping AST fallback."""
+    if shutil.which("pyright"):
+        return {"name": "pyright", "available": True, "fallback": "ast"}
+    if shutil.which("ruff"):
+        return {"name": "ruff", "available": True, "fallback": "ast"}
+    return {"name": "ast", "available": True, "fallback": None}
 
 
 @dataclass
@@ -253,6 +263,7 @@ class _PythonCodeTool(BaseTool):
             )
         )
         self.indexer = PythonASTIndexer(self.sandbox)
+        self.backend = detect_python_analysis_backend()
 
     def is_read_only(self, **kwargs: Any) -> bool:
         return True
@@ -307,7 +318,7 @@ class PythonDiagnosticsTool(_PythonCodeTool):
         return ToolResult(
             success=True,
             output=f"No Python syntax diagnostics found in {path}",
-            metadata={"diagnostics": []},
+            metadata={"diagnostics": [], "backend": self.backend},
         )
 
 

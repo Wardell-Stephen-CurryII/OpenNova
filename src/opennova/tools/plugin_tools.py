@@ -21,13 +21,15 @@ class PluginCommandTool(BaseTool):
         args: list[str] | None = None,
         config: dict[str, Any] | None = None,
         read_only: bool = False,
+        permission: str = "command",
     ):
         super().__init__(config)
         self.name = name
         self.description = description
         self.command = command
         self.args = args or []
-        self._read_only = read_only
+        self.permission = permission
+        self._read_only = read_only or permission == "read"
 
     def execute(self) -> ToolResult:
         try:
@@ -45,7 +47,11 @@ class PluginCommandTool(BaseTool):
                 success=result.returncode == 0,
                 output=output or "(no output)",
                 error=None if result.returncode == 0 else f"Plugin tool exited {result.returncode}",
-                metadata={"plugin_tool": True, "returncode": result.returncode},
+                metadata={
+                    "plugin_tool": True,
+                    "returncode": result.returncode,
+                    "permission": self.permission,
+                },
             )
         except Exception as exc:
             return ToolResult(success=False, output="", error=str(exc), metadata={"plugin_tool": True})

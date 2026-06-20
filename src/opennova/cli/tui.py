@@ -34,6 +34,7 @@ from textual.widgets import Header, Input, Label, RichLog
 
 from opennova.cli.ask_question_dialog import AskQuestionDialog
 from opennova.cli.commands import SlashCommandRegistry
+from opennova.cli.tool_cards import ToolCardStore
 from opennova.cli.tool_progress import ToolProgressTracker
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
@@ -325,6 +326,7 @@ class OpenNovaTUI(App):
         self._completion_state: dict[str, Any] = {}
         self._start_time: float = 0.0
         self._tool_progress = ToolProgressTracker()
+        self._tool_cards = ToolCardStore()
         self.command_registry = SlashCommandRegistry.default()
         for command in getattr(getattr(self.agent, "plugin_manager", None), "commands", []):
             self.command_registry.register_plugin_command(command)
@@ -698,6 +700,7 @@ class OpenNovaTUI(App):
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
+- `/checkpoint list|diff|restore <id>` - Manage checkpoint snapshots
 - `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation (starts a new session)
@@ -1075,11 +1078,14 @@ class OpenNovaTUI(App):
         log.write(table)
 
     async def _cmd_checkpoint(self, args: str) -> None:
+        from opennova.cli.checkpoint_commands import handle_checkpoint_command
+
         log = self.query_one("#messages")
-        log.write(
-            "[yellow]Checkpoint restore commands are not yet persisted; "
-            "tool events include checkpoint metadata for the next pass.[/yellow]"
-        )
+        result = handle_checkpoint_command(Path.cwd(), args)
+        if result.success:
+            log.write(result.output)
+        else:
+            log.write(f"[red]{result.error or 'Checkpoint command failed'}[/red]")
 
     async def _cmd_export(self, args: str) -> None:
         from opennova.transcript import TranscriptExporter
@@ -1293,6 +1299,8 @@ class OpenNovaTUI(App):
 
         def on_tool_event(event: Any) -> None:
             _canonical_tools["seen"] = True
+            if hasattr(event, "type"):
+                self._tool_cards.apply_event(event)
             data = event.to_dict() if hasattr(event, "to_dict") else dict(event)
             event_type = data.get("type")
             tool_name = data.get("tool_name", "tool")

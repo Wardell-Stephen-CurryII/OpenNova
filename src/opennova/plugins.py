@@ -136,9 +136,13 @@ class PluginManager:
                 continue
             for tool_data in manifest.tools:
                 name = str(tool_data.get("name", "")).strip()
-                command = str(tool_data.get("command", "")).strip()
-                if not name or not command:
+                error_key = f"{manifest.name}.{name or 'tool'}"
+                error = self._validate_tool_manifest(tool_data)
+                if error:
+                    self.errors[error_key] = error
                     continue
+                command = str(tool_data.get("command", "")).strip()
+                permission = str(tool_data.get("permission") or "read" if tool_data.get("read_only") else tool_data.get("permission") or "command")
                 tools.append(
                     PluginCommandTool(
                         name=name,
@@ -147,9 +151,23 @@ class PluginManager:
                         args=[str(item) for item in tool_data.get("args", [])],
                         config=config,
                         read_only=bool(tool_data.get("read_only", False)),
+                        permission=permission,
                     )
                 )
         return tools
+
+    def _validate_tool_manifest(self, tool_data: dict[str, Any]) -> str | None:
+        """Return an error message for invalid plugin tool declarations."""
+        for field_name in ("name", "description", "command"):
+            if not str(tool_data.get(field_name, "")).strip():
+                return f"Plugin tool missing required field: {field_name}"
+        args = tool_data.get("args", [])
+        if args and not (isinstance(args, list) and all(isinstance(item, str) for item in args)):
+            return "Plugin tool args must be a list of strings"
+        permission = str(tool_data.get("permission") or "read" if tool_data.get("read_only") else tool_data.get("permission") or "command")
+        if permission not in {"read", "edit", "command"}:
+            return "Plugin tool permission must be one of: read, edit, command"
+        return None
 
     def _apply_manifest(
         self,
