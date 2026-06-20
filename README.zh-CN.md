@@ -168,10 +168,14 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/plugins [trust\|untrust name]` | 查看或信任本地项目插件 |
 | `/hooks` | 查看已加载 hooks |
 | `/automations` | 查看本地自动化任务 |
+| `/automations once <name> <run_at> <prompt>` | 创建一次性本地自动化任务 |
+| `/automations interval <name> <seconds> <prompt>` | 创建周期本地自动化任务 |
+| `/automations pause\|resume\|delete\|run-now <id>` | 管理本地自动化任务 |
 | `/diagnostics [path]` | 运行 Python 诊断 |
 | `/status` | 查看运行时状态 |
 | `/todos` | 查看 TodoWrite 任务板 |
 | `/checkpoint` | 查看 checkpoint/rollback 状态 |
+| `/export [dir]` | 导出当前 transcript 为 Markdown |
 | `/history [n]` | 显示最近的会话历史 |
 | `/resume <id>` | 恢复之前的会话 |
 | `/sessions` | 列出已保存的会话 |

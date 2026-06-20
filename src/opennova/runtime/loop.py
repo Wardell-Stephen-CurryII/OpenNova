@@ -608,10 +608,13 @@ class ReActLoop:
                         )
                     return confirm_result
 
+            checkpoint_metadata = self._create_checkpoint_for_action(action)
             if hasattr(tool, "async_execute"):
                 result = await tool.async_execute(**action.arguments)
             else:
                 result = tool.execute(**action.arguments)
+            if checkpoint_metadata:
+                result.metadata.update(checkpoint_metadata)
 
             if result.success and result.metadata.get("interaction_required"):
                 result = await self._resolve_interaction(result)
@@ -650,6 +653,32 @@ class ReActLoop:
                 output="",
                 error=f"Tool execution failed: {e}",
             )
+
+    def _create_checkpoint_for_action(self, action: ParsedAction) -> dict[str, Any]:
+        """Create a best-effort checkpoint before destructive file mutations."""
+        if action.tool_name not in {"write_file", "edit_file", "multi_edit_file", "delete_file"}:
+            return {}
+
+        file_path = action.arguments.get("file_path")
+        if not file_path:
+            return {}
+
+        try:
+            from pathlib import Path
+
+            from opennova.checkpoints import CheckpointManager
+
+            project_path = Path(self.working_dir or ".").resolve()
+            target = Path(file_path).expanduser().resolve()
+            if not target.exists():
+                return {"checkpoint_warning": f"No existing file to checkpoint: {file_path}"}
+            checkpoint_id = CheckpointManager(project_path).create(
+                f"Before {action.tool_name}",
+                [target],
+            )
+            return {"checkpoint_id": checkpoint_id}
+        except Exception as exc:
+            return {"checkpoint_warning": str(exc)}
 
     def _normalize_tool_arguments(
         self,
