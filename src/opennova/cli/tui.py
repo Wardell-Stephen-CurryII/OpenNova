@@ -52,6 +52,23 @@ _REDACTED_ACTION_PARAMS = {"content"}
 # Max diff lines shown per tool; fallback is 120.
 _MAX_DIFF_LINES: dict[str, int] = {"write_file": 30}
 
+_USER_MESSAGE_STYLE = "bright_cyan on #2a2a2a"
+_USER_MESSAGE_LABEL_STYLE = "bold bright_cyan on #2a2a2a"
+_TOOL_ICON = "⏺"
+
+
+def _format_user_message(text: str) -> Text:
+    """Render a user input line with a subtle background."""
+    message = Text("You: ", style=_USER_MESSAGE_LABEL_STYLE)
+    message.append(text, style=_USER_MESSAGE_STYLE)
+    return message
+
+
+def _format_tool_execution(tool_name: str, detail: str) -> str:
+    """Render a tool execution line with a leading marker."""
+    suffix = f" {detail}" if detail else ""
+    return f"{_TOOL_ICON} [cyan]Executing:[/cyan] {tool_name}{suffix}"
+
 
 class _MessagesLog(RichLog):
     """RichLog that stores plain text alongside rich renderables."""
@@ -603,7 +620,7 @@ class OpenNovaTUI(App):
         self._add_to_history(text)
 
         log = self.query_one("#messages")
-        log.write(f"[bold bright_cyan]You:[/bold bright_cyan] [bright_cyan]{text}[/bright_cyan]")
+        log.write(_format_user_message(text))
         log.scroll_end(animate=False)
 
         # Fast commands: handle synchronously (they return quickly).
@@ -1237,7 +1254,7 @@ class OpenNovaTUI(App):
                     else:
                         parts.append(f"{k}={repr(v)}")
                 args_str = ", ".join(parts)
-                log.write(f"[cyan]Executing:[/cyan] {tool_name}({args_str})")
+                log.write(_format_tool_execution(tool_name, f"({args_str})"))
             except Exception:
                 pass
 
@@ -1280,7 +1297,7 @@ class OpenNovaTUI(App):
                 try:
                     log = self.query_one("#messages")
                     log.write(
-                        f"[cyan]Executing:[/cyan] {tool_name} [dim]{data.get('tool_id')}[/dim]"
+                        _format_tool_execution(tool_name, f"[dim]{data.get('tool_id')}[/dim]")
                     )
                 except Exception:
                     pass

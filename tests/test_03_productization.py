@@ -624,6 +624,22 @@ def test_tui_ctrl_c_still_cancels_running_agent(monkeypatch):
     assert "Cancelling" in statuses[-1]
 
 
+def test_tui_user_message_uses_subtle_background():
+    from opennova.cli.tui import _USER_MESSAGE_STYLE, _format_user_message
+
+    message = _format_user_message("hello")
+
+    assert message.plain == "You: hello"
+    assert any(span.style == _USER_MESSAGE_STYLE for span in message.spans)
+
+
+def test_tui_tool_execution_line_uses_solid_circle_icon():
+    from opennova.cli.tui import _format_tool_execution
+
+    assert _format_tool_execution("read_file", "path='README.md'").startswith("⏺ ")
+    assert "Executing:" in _format_tool_execution("read_file", "path='README.md'")
+
+
 def test_ask_question_dialog_options_always_include_custom_answer():
     from opennova.cli.ask_question_dialog import CUSTOM_OPTION_ID, options_with_custom_answer
 
