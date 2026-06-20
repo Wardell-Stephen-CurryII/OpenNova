@@ -179,10 +179,14 @@ Inside the interactive REPL:
 | `/plugins [trust\|untrust name]` | List local project plugins or trust/untrust active plugin contributions |
 | `/hooks` | Show loaded hook counts |
 | `/automations` | List local scheduled automations |
+| `/automations once <name> <run_at> <prompt>` | Schedule a one-shot local automation |
+| `/automations interval <name> <seconds> <prompt>` | Schedule a recurring local automation |
+| `/automations pause\|resume\|delete\|run-now <id>` | Manage local automations |
 | `/diagnostics [path]` | Run Python syntax diagnostics |
 | `/status` | Show runtime/session status |
 | `/todos` | Show the current TodoWrite task board |
 | `/checkpoint` | Show checkpoint/rollback status |
+| `/export [dir]` | Export the current transcript to Markdown |
 | `/history [n]` | Show recent conversation history |
 | `/resume <id>` | Resume a previous session |
 | `/sessions` | List saved sessions |

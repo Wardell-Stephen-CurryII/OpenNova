@@ -287,10 +287,14 @@ class Renderer:
 - `/plugins [trust|untrust name]` - List or trust local project plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
+- `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
+- `/automations interval <name> <seconds> <prompt>` - Schedule an interval automation
+- `/automations pause|resume|delete|run-now <id>` - Manage local automations
 - `/diagnostics [path]` - Run Python syntax diagnostics
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
+- `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation state
 - `/help` - Show this help
@@ -919,20 +923,18 @@ class REPL:
     async def _cmd_automations(self, args: str) -> None:
         """List local automations."""
         from opennova.automation import LocalAutomationScheduler
+        from opennova.cli.automation_commands import handle_automation_command
 
         scheduler = LocalAutomationScheduler(Path(".opennova") / "automations.json")
-        tasks = scheduler.list_tasks()
-        if not tasks:
-            self.renderer.print("No local automations scheduled.")
-            return
-        table = Table(title="Local Automations")
-        table.add_column("ID", style="cyan")
-        table.add_column("Name")
-        table.add_column("Enabled")
-        table.add_column("Next Run")
-        for task in tasks:
-            table.add_row(task.id[:8], task.name, "yes" if task.enabled else "no", str(task.next_run_at))
-        self.renderer.print(table)
+        result = handle_automation_command(
+            scheduler,
+            args,
+            runner=lambda task: f"Automation prompt ready for execution: {task.prompt}",
+        )
+        if result.success:
+            self.renderer.print(result.output)
+        else:
+            self.renderer.print_error(result.error or "Automation command failed")
 
     async def _cmd_diagnostics(self, args: str) -> None:
         """Run Python diagnostics."""
@@ -979,6 +981,14 @@ class REPL:
             "Checkpoint/rollback metadata is emitted through tool events. "
             "Full restore commands are reserved for the next persistence pass."
         )
+
+    async def _cmd_export(self, args: str) -> None:
+        """Export current session transcript."""
+        from opennova.transcript import TranscriptExporter
+
+        output_dir = Path(args.strip()).expanduser() if args.strip() else Path(".opennova") / "exports"
+        path = TranscriptExporter(output_dir).export_runtime(self.agent)
+        self.renderer.print_success(f"Transcript exported to {path}")
 
     async def _cmd_exit(self, args: str) -> None:
         """Exit the REPL."""

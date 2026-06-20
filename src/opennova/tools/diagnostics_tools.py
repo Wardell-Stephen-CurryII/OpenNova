@@ -43,6 +43,7 @@ class PythonASTIndexer:
 
     def __init__(self, sandbox: Sandbox):
         self.sandbox = sandbox
+        self.imports: list[dict[str, Any]] = []
 
     def python_files(self, path: str) -> tuple[bool, str | list[Path]]:
         allowed, reason = self.sandbox.is_path_allowed(path)
@@ -67,6 +68,7 @@ class PythonASTIndexer:
             return False, str(files_or_error)
 
         symbols: list[PythonSymbol] = []
+        self.imports = []
         for file_path in files_or_error:
             source = file_path.read_text(encoding="utf-8", errors="replace")
             try:
@@ -74,8 +76,38 @@ class PythonASTIndexer:
             except SyntaxError:
                 continue
             lines = source.splitlines()
+            self.imports.extend(self._collect_imports_from_tree(tree, file_path, lines))
             symbols.extend(self._collect_symbols_from_tree(tree, file_path, lines))
         return True, symbols
+
+    def resolve_import_definition(
+        self,
+        symbol: str,
+        search_path: str,
+        symbols: list[PythonSymbol],
+    ) -> PythonSymbol | None:
+        """Resolve an import alias to a symbol in another local Python file."""
+        target_root = Path(search_path).resolve()
+        if target_root.is_file():
+            target_root = target_root.parent
+
+        for import_entry in self.imports:
+            if import_entry.get("alias") != symbol:
+                continue
+            module = str(import_entry.get("module") or "")
+            imported_name = str(import_entry.get("name") or "")
+            if not module or not imported_name:
+                continue
+            module_file = (target_root / Path(*module.split("."))).with_suffix(".py")
+            if not module_file.exists():
+                continue
+            for item in symbols:
+                if Path(item.file).resolve() == module_file.resolve() and imported_name in {
+                    item.name,
+                    item.qualified_name,
+                }:
+                    return item
+        return None
 
     def collect_references(self, symbol: str, path: str, max_results: int) -> tuple[bool, str | list[dict[str, Any]]]:
         ok, files_or_error = self.python_files(path)
@@ -126,6 +158,40 @@ class PythonASTIndexer:
 
         visit_body(getattr(tree, "body", []), [])
         return symbols
+
+    def _collect_imports_from_tree(
+        self,
+        tree: ast.AST,
+        file_path: Path,
+        lines: list[str],
+    ) -> list[dict[str, Any]]:
+        imports: list[dict[str, Any]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append(
+                        {
+                            "file": str(file_path),
+                            "line": node.lineno,
+                            "module": alias.name,
+                            "name": alias.name.split(".")[0],
+                            "alias": alias.asname or alias.name.split(".")[0],
+                            "context": lines[node.lineno - 1].strip() if node.lineno <= len(lines) else "",
+                        }
+                    )
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                for alias in node.names:
+                    imports.append(
+                        {
+                            "file": str(file_path),
+                            "line": node.lineno,
+                            "module": node.module,
+                            "name": alias.name,
+                            "alias": alias.asname or alias.name,
+                            "context": lines[node.lineno - 1].strip() if node.lineno <= len(lines) else "",
+                        }
+                    )
+        return imports
 
     def _symbol_from_node(
         self,
@@ -262,7 +328,11 @@ class PythonSymbolsTool(_PythonCodeTool):
             f"{item['file']}:{item['line']}: {item['kind']} {item['name']}"
             for item in symbols
         ) or "No Python symbols found."
-        return ToolResult(success=True, output=output, metadata={"symbols": symbols})
+        return ToolResult(
+            success=True,
+            output=output,
+            metadata={"symbols": symbols, "imports": self.indexer.imports},
+        )
 
 
 class PythonDefinitionTool(_PythonCodeTool):
@@ -279,7 +349,22 @@ class PythonDefinitionTool(_PythonCodeTool):
 
         for item in symbols_or_error:
             names = {item.name, item.qualified_name or item.name}
-            if symbol in names and item.kind in {"class", "function", "assignment", "import"}:
+            if symbol in names and item.kind in {"class", "function", "assignment"}:
+                return ToolResult(
+                    success=True,
+                    output=f"{item.file}:{item.line}: {item.context}",
+                    metadata={"definition": item.to_dict()},
+                )
+        resolved = self.indexer.resolve_import_definition(symbol, path, symbols_or_error)
+        if resolved:
+            return ToolResult(
+                success=True,
+                output=f"{resolved.file}:{resolved.line}: {resolved.context}",
+                metadata={"definition": resolved.to_dict()},
+            )
+        for item in symbols_or_error:
+            names = {item.name, item.qualified_name or item.name}
+            if symbol in names and item.kind == "import":
                 return ToolResult(
                     success=True,
                     output=f"{item.file}:{item.line}: {item.context}",

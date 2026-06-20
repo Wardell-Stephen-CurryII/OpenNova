@@ -113,6 +113,7 @@ class AgentRuntime:
 
         self.loop: ReActLoop | None = None
         self._callbacks: dict[str, Callable] = {}
+        self.tool_events: list[dict[str, Any]] = []
         self.planner = Planner(self.llm)
 
         self.mcp_manager = None
@@ -141,6 +142,7 @@ class AgentRuntime:
 
         if register_default_tools:
             self._register_builtin_tools()
+            self._register_plugin_tools()
 
         if enable_skills:
             self._init_skills()
@@ -267,6 +269,16 @@ class AgentRuntime:
         self.tool_registry.register(GitBranchTool())
         self.tool_registry.register(EnterWorktreeTool(config=tool_config))
         self.tool_registry.register(ExitWorktreeTool(config=tool_config))
+
+    def _register_plugin_tools(self) -> None:
+        """Register trusted project plugin tools."""
+        security_config = self.config.get("security", {})
+        tool_config = {
+            "working_dir": os.getcwd(),
+            "allowed_paths": security_config.get("allowed_paths", []),
+        }
+        for tool in self.plugin_manager.build_tools(config=tool_config):
+            self.tool_registry.register(tool)
 
     def _init_skills(self) -> None:
         """Initialize markdown skill loading."""
@@ -708,6 +720,7 @@ class AgentRuntime:
             self._emit("stream", chunk)
 
         def on_tool_event(event: ToolEvent) -> None:
+            self.tool_events.append(event.to_dict())
             self._emit("tool_event", event)
 
         try:

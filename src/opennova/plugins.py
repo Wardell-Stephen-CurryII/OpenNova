@@ -126,6 +126,31 @@ class PluginManager:
 
         return self.plugins
 
+    def build_tools(self, config: dict[str, Any] | None = None) -> list[Any]:
+        """Build trusted plugin-declared tools."""
+        from opennova.tools.plugin_tools import PluginCommandTool
+
+        tools: list[Any] = []
+        for manifest in self.plugins:
+            if not self.is_trusted(manifest.name):
+                continue
+            for tool_data in manifest.tools:
+                name = str(tool_data.get("name", "")).strip()
+                command = str(tool_data.get("command", "")).strip()
+                if not name or not command:
+                    continue
+                tools.append(
+                    PluginCommandTool(
+                        name=name,
+                        description=str(tool_data.get("description", f"Plugin tool: {name}")),
+                        command=command,
+                        args=[str(item) for item in tool_data.get("args", [])],
+                        config=config,
+                        read_only=bool(tool_data.get("read_only", False)),
+                    )
+                )
+        return tools
+
     def _apply_manifest(
         self,
         manifest: PluginManifest,

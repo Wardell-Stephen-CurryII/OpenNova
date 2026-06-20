@@ -52,6 +52,7 @@ class SlashCommandRegistry:
             SlashCommand("/status", "_cmd_status", "Show runtime status"),
             SlashCommand("/todos", "_cmd_todos", "Show task/todo summary"),
             SlashCommand("/checkpoint", "_cmd_checkpoint", "Show checkpoint guidance"),
+            SlashCommand("/export", "_cmd_export", "Export current transcript"),
         ]:
             registry.register(command)
         return registry

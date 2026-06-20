@@ -42,3 +42,27 @@ class TranscriptExporter:
             )
         path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
         return path
+
+    def export_runtime(self, runtime: Any, output_path: str | Path | None = None) -> Path:
+        """Export transcript data from an AgentRuntime-like object."""
+        session_id = getattr(getattr(runtime, "session_manager", None), "session_id", "session")
+        context_manager = getattr(runtime, "context_manager", None)
+        raw_messages = getattr(context_manager, "messages", []) if context_manager else []
+        messages: list[dict[str, Any]] = []
+        for message in raw_messages:
+            if hasattr(message, "to_openai_format"):
+                messages.append(message.to_openai_format())
+            elif isinstance(message, dict):
+                messages.append(message)
+            else:
+                messages.append(
+                    {
+                        "role": getattr(message, "role", "message"),
+                        "content": getattr(message, "content", str(message)),
+                    }
+                )
+        events = list(getattr(runtime, "tool_events", []))
+        if output_path:
+            self.output_dir = Path(output_path).parent
+            session_id = Path(output_path).stem
+        return self.export(session_id=session_id, messages=messages, tool_events=events)

@@ -691,10 +691,14 @@ class OpenNovaTUI(App):
 - `/plugins [trust|untrust name]` - List or trust local project plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
+- `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
+- `/automations interval <name> <seconds> <prompt>` - Schedule an interval automation
+- `/automations pause|resume|delete|run-now <id>` - Manage local automations
 - `/diagnostics [path]` - Run Python syntax diagnostics
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
+- `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation (starts a new session)
 - `/resume [id]` - Resume a past session (empty = pick from list)
@@ -1017,23 +1021,19 @@ class OpenNovaTUI(App):
 
     async def _cmd_automations(self, args: str) -> None:
         from opennova.automation import LocalAutomationScheduler
+        from opennova.cli.automation_commands import handle_automation_command
 
         log = self.query_one("#messages")
         scheduler = LocalAutomationScheduler(Path(".opennova") / "automations.json")
-        tasks = scheduler.list_tasks()
-        if not tasks:
-            log.write("[yellow]No local automations scheduled.[/yellow]")
-            return
-        table = Table(title="Local Automations")
-        table.add_column("ID", style="cyan")
-        table.add_column("Name")
-        table.add_column("Enabled")
-        table.add_column("Next Run")
-        for task in tasks:
-            table.add_row(
-                task.id[:8], task.name, "yes" if task.enabled else "no", str(task.next_run_at)
-            )
-        log.write(table)
+        result = handle_automation_command(
+            scheduler,
+            args,
+            runner=lambda task: f"Automation prompt ready for execution: {task.prompt}",
+        )
+        if result.success:
+            log.write(result.output)
+        else:
+            log.write(f"[red]{result.error or 'Automation command failed'}[/red]")
 
     async def _cmd_diagnostics(self, args: str) -> None:
         log = self.query_one("#messages")
@@ -1080,6 +1080,14 @@ class OpenNovaTUI(App):
             "[yellow]Checkpoint restore commands are not yet persisted; "
             "tool events include checkpoint metadata for the next pass.[/yellow]"
         )
+
+    async def _cmd_export(self, args: str) -> None:
+        from opennova.transcript import TranscriptExporter
+
+        log = self.query_one("#messages")
+        output_dir = Path(args.strip()).expanduser() if args.strip() else Path(".opennova") / "exports"
+        path = TranscriptExporter(output_dir).export_runtime(self.agent)
+        log.write(f"[green]Transcript exported to {path}[/green]")
 
     async def _cmd_plan(self, args: str) -> None:
         log = self.query_one("#messages")
