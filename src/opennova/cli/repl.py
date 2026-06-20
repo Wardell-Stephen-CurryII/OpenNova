@@ -294,6 +294,7 @@ class Renderer:
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
+- `/checkpoint list|diff|restore <id>` - Manage checkpoint snapshots
 - `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation state
@@ -977,10 +978,13 @@ class REPL:
 
     async def _cmd_checkpoint(self, args: str) -> None:
         """Show checkpoint guidance for the current lightweight implementation."""
-        self.renderer.print(
-            "Checkpoint/rollback metadata is emitted through tool events. "
-            "Full restore commands are reserved for the next persistence pass."
-        )
+        from opennova.cli.checkpoint_commands import handle_checkpoint_command
+
+        result = handle_checkpoint_command(Path.cwd(), args)
+        if result.success:
+            self.renderer.print(result.output)
+        else:
+            self.renderer.print_error(result.error or "Checkpoint command failed")
 
     async def _cmd_export(self, args: str) -> None:
         """Export current session transcript."""

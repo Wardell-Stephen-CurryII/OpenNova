@@ -165,3 +165,29 @@ class LocalAutomationScheduler:
             self.tasks[task.id] = task
         for run_data in payload.get("history", []):
             self.history.append(ScheduledRun(**run_data))
+
+
+class LocalAutomationMonitor:
+    """Single-tick local automation monitor."""
+
+    def __init__(self, scheduler: LocalAutomationScheduler):
+        self.scheduler = scheduler
+
+    def tick(self, runner: Callable[[ScheduledTask], object]) -> list[dict[str, object]]:
+        """Run due tasks once and return monitor events."""
+        due = self.scheduler.due_tasks()
+        events: list[dict[str, object]] = []
+        for task in due:
+            run = self.scheduler.run_now(task.id, runner)
+            events.append(
+                {
+                    "type": "automation_run",
+                    "task_id": task.id,
+                    "task_name": task.name,
+                    "success": run.success,
+                    "output": run.output,
+                    "error": run.error,
+                    "ran_at": run.ran_at,
+                }
+            )
+        return events

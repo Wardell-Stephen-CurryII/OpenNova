@@ -127,6 +127,7 @@ opennova> /init
 | `/diagnostics [path]` | 运行 Python 诊断 |
 | `/status` | 查看当前运行时状态 |
 | `/todos` | 查看 TodoWrite 任务板 |
+| `/checkpoint list\|diff\|restore <id>` | 管理 checkpoint 快照 |
 | `/export [dir]` | 导出当前 transcript |
 | `/help` | 查看交互命令帮助 |
 | `/exit` | 退出当前会话 |
