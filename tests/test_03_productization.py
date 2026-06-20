@@ -410,6 +410,69 @@ def test_tui_system_clipboard_returns_false_on_command_failure():
     assert _copy_to_system_clipboard("hello", system_name="Darwin", run=run) is False
 
 
+def test_tui_messages_log_extracts_selected_rendered_text():
+    from rich.segment import Segment
+    from textual.geometry import Offset
+    from textual.selection import Selection
+    from textual.strip import Strip
+
+    from opennova.cli.tui import _MessagesLog
+
+    messages = _MessagesLog()
+    messages.lines = [
+        Strip([Segment("hello")]),
+        Strip([Segment("world")]),
+    ]
+
+    selected = messages.get_selection(Selection.from_offsets(Offset(1, 0), Offset(3, 1)))
+
+    assert selected == ("ello\nwor", "\n")
+
+
+def test_tui_messages_log_extracts_wide_character_selection():
+    from rich.segment import Segment
+    from textual.geometry import Offset
+    from textual.selection import Selection
+    from textual.strip import Strip
+
+    from opennova.cli.tui import _MessagesLog
+
+    messages = _MessagesLog()
+    messages.lines = [Strip([Segment("中文abc")])]
+
+    selected = messages.get_selection(Selection.from_offsets(Offset(0, 0), Offset(2, 0)))
+
+    assert selected == ("中文", "\n")
+
+
+@pytest.mark.asyncio
+async def test_tui_messages_log_supports_mouse_selection_in_place():
+    from textual.app import App, ComposeResult
+
+    from opennova.cli.tui import _MessagesLog
+
+    class MessagesHarness(App):
+        def compose(self) -> ComposeResult:
+            yield _MessagesLog(
+                id="messages",
+                highlight=False,
+                markup=False,
+                wrap=True,
+            )
+
+        def on_mount(self) -> None:
+            self.query_one("#messages", _MessagesLog).write("hello world", width=20)
+
+    app = MessagesHarness()
+    async with app.run_test(size=(40, 5)) as pilot:
+        await pilot.pause()
+        await pilot.mouse_down("#messages", offset=(0, 0))
+        await pilot.mouse_up("#messages", offset=(4, 0))
+        await pilot.pause()
+
+        assert app.screen.get_selected_text() == "hello"
+
+
 def test_tui_copy_selection_copies_current_screen_selection(monkeypatch):
     from opennova.cli.tui import OpenNovaTUI
 

@@ -21,12 +21,15 @@ from typing import Any
 
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.segment import Segment
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
+from textual.selection import Selection
 from textual.widgets import Header, Input, Label, RichLog
 
 from opennova.cli.ask_question_dialog import AskQuestionDialog
@@ -69,6 +72,84 @@ class _MessagesLog(RichLog):
 
     def get_plain_text(self) -> str:
         return "\n".join(self._plain_lines)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Return text from the rendered log lines for Textual's screen selection."""
+        text = "\n".join(line.text.rstrip() for line in self.lines)
+        selected_text = selection.extract(text)
+        if not selected_text:
+            return None
+        return selected_text, "\n"
+
+    def render_line(self, y: int):
+        scroll_x, scroll_y = self.scroll_offset
+        content_y = scroll_y + y
+        line = self._render_line(
+            content_y,
+            scroll_x,
+            self.scrollable_content_region.width,
+        )
+        line = line.apply_offsets(scroll_x, content_y).apply_style(self.rich_style)
+
+        if (selection := self.text_selection) is not None:
+            span = selection.get_span(content_y)
+            if span is not None:
+                start, end = span
+                visible_start = max(start - scroll_x, 0)
+                visible_end = None if end == -1 else max(end - scroll_x, 0)
+                line = _style_strip_range(
+                    line,
+                    visible_start,
+                    visible_end,
+                    self.selection_style,
+                )
+        return line
+
+
+def _style_strip_range(
+    line: Any,
+    start: int,
+    end: int | None,
+    style: Style,
+):
+    """Apply a style to a character range in a rendered Strip."""
+    if end is None:
+        end = len(line.text)
+    if end <= start:
+        return line
+
+    styled_segments: list[Segment] = []
+    cursor = 0
+    for segment in line:
+        segment_text = segment.text
+        segment_end = cursor + len(segment_text)
+        overlap_start = max(start, cursor)
+        overlap_end = min(end, segment_end)
+
+        if overlap_start >= overlap_end:
+            styled_segments.append(segment)
+            cursor = segment_end
+            continue
+
+        local_start = overlap_start - cursor
+        local_end = overlap_end - cursor
+        if local_start:
+            styled_segments.append(
+                Segment(segment_text[:local_start], segment.style, segment.control)
+            )
+
+        selected_style = segment.style + style if segment.style is not None else style
+        styled_segments.append(
+            Segment(segment_text[local_start:local_end], selected_style, segment.control)
+        )
+
+        if local_end < len(segment_text):
+            styled_segments.append(
+                Segment(segment_text[local_end:], segment.style, segment.control)
+            )
+        cursor = segment_end
+
+    return type(line)(styled_segments)
 
 
 def _copy_to_system_clipboard(
