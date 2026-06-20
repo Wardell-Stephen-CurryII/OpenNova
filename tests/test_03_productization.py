@@ -640,6 +640,44 @@ def test_tui_tool_execution_line_uses_solid_circle_icon():
     assert "Executing:" in _format_tool_execution("read_file", "path='README.md'")
 
 
+def test_tui_stream_callback_does_not_duplicate_final_answer():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.providers.base import StreamChunk
+
+    class Agent:
+        def __init__(self):
+            self.callbacks = {}
+
+        def register_callback(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    class Log:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, value):
+            self.writes.append(value)
+
+    log = Log()
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "_tool_progress": type("Progress", (), {})(),
+            "query_one": lambda self, selector: log,
+        },
+    )()
+
+    OpenNovaTUI._register_callbacks(app)
+    app.agent.callbacks["stream"](
+        StreamChunk(content="现在北京时间是 **2026 年 6 月 20 日（周六）23:31:16**。")
+    )
+    app.agent.callbacks["stream"](StreamChunk(content="", finish_reason="stop"))
+
+    assert log.writes == []
+
+
 def test_ask_question_dialog_options_always_include_custom_answer():
     from opennova.cli.ask_question_dialog import CUSTOM_OPTION_ID, options_with_custom_answer
 

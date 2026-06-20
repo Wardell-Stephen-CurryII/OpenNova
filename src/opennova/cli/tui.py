@@ -52,8 +52,9 @@ _REDACTED_ACTION_PARAMS = {"content"}
 # Max diff lines shown per tool; fallback is 120.
 _MAX_DIFF_LINES: dict[str, int] = {"write_file": 30}
 
-_USER_MESSAGE_STYLE = "bright_cyan on #2a2a2a"
-_USER_MESSAGE_LABEL_STYLE = "bold bright_cyan on #2a2a2a"
+# 2a2a2a 001a1a
+_USER_MESSAGE_STYLE = "bright_cyan on #001a1a"
+_USER_MESSAGE_LABEL_STYLE = "bold bright_cyan on #001a1a"
 _TOOL_ICON = "⏺"
 
 
@@ -1228,8 +1229,6 @@ class OpenNovaTUI(App):
         _current_tool: dict[str, str] = {"name": ""}
         _canonical_tools: dict[str, bool] = {"seen": False}
 
-        _stream_buffer: list[str] = [""]  # mutable so closure can reassign
-
         def on_thought(thought: str) -> None:
             try:
                 log = self.query_one("#messages")
@@ -1328,27 +1327,7 @@ class OpenNovaTUI(App):
                 self._tool_progress.current_tool_name = ""
 
         def on_stream(chunk: StreamChunk) -> None:
-            try:
-                log = self.query_one("#messages")
-                if chunk.content:
-                    content = chunk.content
-                    # Buffer content and write only on natural line breaks
-                    # to avoid each tiny chunk becoming its own RichLog line.
-                    combined = _stream_buffer[0] + content
-                    lines = combined.split("\n")
-                    # Write all complete lines; keep the last (possibly partial) line in buffer
-                    for line in lines[:-1]:
-                        if line:
-                            log.write(line)
-                    _stream_buffer[0] = lines[-1]
-                if chunk.finish_reason:
-                    # Flush any remaining buffered content
-                    if _stream_buffer[0]:
-                        log.write(_stream_buffer[0])
-                        _stream_buffer[0] = ""
-                    log.write("")
-            except Exception:
-                pass
+            return None
 
         self.agent.register_callback("thought", on_thought)
         self.agent.register_callback("action", on_action)
