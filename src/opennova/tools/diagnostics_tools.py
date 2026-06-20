@@ -22,10 +22,14 @@ class PythonSymbol:
     line: int
     end_line: int
     context: str
+    qualified_name: str = ""
+    parent: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "qualified_name": self.qualified_name or self.name,
+            "parent": self.parent,
             "kind": self.kind,
             "file": self.file,
             "line": self.line,
@@ -70,10 +74,7 @@ class PythonASTIndexer:
             except SyntaxError:
                 continue
             lines = source.splitlines()
-            for node in ast.walk(tree):
-                symbol = self._symbol_from_node(node, file_path, lines)
-                if symbol:
-                    symbols.append(symbol)
+            symbols.extend(self._collect_symbols_from_tree(tree, file_path, lines))
         return True, symbols
 
     def collect_references(self, symbol: str, path: str, max_results: int) -> tuple[bool, str | list[dict[str, Any]]]:
@@ -103,7 +104,36 @@ class PythonASTIndexer:
                         return True, refs
         return True, refs
 
-    def _symbol_from_node(self, node: ast.AST, file_path: Path, lines: list[str]) -> PythonSymbol | None:
+    def _collect_symbols_from_tree(
+        self,
+        tree: ast.AST,
+        file_path: Path,
+        lines: list[str],
+    ) -> list[PythonSymbol]:
+        symbols: list[PythonSymbol] = []
+
+        def visit_body(nodes: list[ast.stmt], parents: list[str]) -> None:
+            for node in nodes:
+                symbol = self._symbol_from_node(node, file_path, lines, parents)
+                next_parents = parents
+                if symbol:
+                    symbols.append(symbol)
+                    if symbol.kind in {"class", "function"}:
+                        next_parents = [*parents, symbol.name]
+                child_body = getattr(node, "body", None)
+                if isinstance(child_body, list):
+                    visit_body(child_body, next_parents)
+
+        visit_body(getattr(tree, "body", []), [])
+        return symbols
+
+    def _symbol_from_node(
+        self,
+        node: ast.AST,
+        file_path: Path,
+        lines: list[str],
+        parents: list[str],
+    ) -> PythonSymbol | None:
         kind = ""
         name = ""
         if isinstance(node, ast.ClassDef):
@@ -130,6 +160,8 @@ class PythonASTIndexer:
         line = int(getattr(node, "lineno", 1))
         end_line = int(getattr(node, "end_lineno", line))
         context = lines[line - 1].strip() if 0 < line <= len(lines) else ""
+        parent = ".".join(parents)
+        qualified_name = ".".join([*parents, name]) if parents else name
         return PythonSymbol(
             name=name,
             kind=kind,
@@ -137,6 +169,8 @@ class PythonASTIndexer:
             line=line,
             end_line=end_line,
             context=context,
+            qualified_name=qualified_name,
+            parent=parent,
         )
 
 
@@ -244,7 +278,8 @@ class PythonDefinitionTool(_PythonCodeTool):
             return ToolResult(success=False, output="", error=str(symbols_or_error))
 
         for item in symbols_or_error:
-            if item.name == symbol and item.kind in {"class", "function", "assignment", "import"}:
+            names = {item.name, item.qualified_name or item.name}
+            if symbol in names and item.kind in {"class", "function", "assignment", "import"}:
                 return ToolResult(
                     success=True,
                     output=f"{item.file}:{item.line}: {item.context}",

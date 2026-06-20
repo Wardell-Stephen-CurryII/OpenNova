@@ -26,6 +26,7 @@ from opennova.planning.planner import Planner
 from opennova.plugins import PluginManager
 from opennova.providers.base import Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
+from opennova.runtime.events import ToolEvent
 from opennova.runtime.loop import ReActLoop
 from opennova.runtime.state import (
     AgentState,
@@ -118,7 +119,9 @@ class AgentRuntime:
         self._mcp_server_configs = []
         self.skill_registry = None
         from opennova.security.guardrails import Guardrails
+        from opennova.security.permissions import PermissionStore
 
+        self.permission_store = PermissionStore(Path(os.getcwd()) / ".opennova" / "permissions.json")
         self.guardrails = Guardrails(
             sandbox_mode=self.security_config.get("sandbox_mode", True),
             allowed_paths=self.security_config.get("allowed_paths", []),
@@ -129,6 +132,7 @@ class AgentRuntime:
             always_allow_tools=self.security_config.get("always_allow_tools", []),
             always_deny_tools=self.security_config.get("always_deny_tools", []),
             always_ask_tools=self.security_config.get("always_ask_tools", []),
+            permission_store=self.permission_store,
         )
 
         # Set global task manager for task tools
@@ -205,6 +209,7 @@ class AgentRuntime:
             TaskStopTool,
             TaskUpdateTool,
         )
+        from opennova.tools.todo_tools import TodoWriteTool
         from opennova.tools.web_tools import WebFetchTool, WebSearchTool
         from opennova.tools.worktree_tools import EnterWorktreeTool, ExitWorktreeTool
 
@@ -231,6 +236,7 @@ class AgentRuntime:
         self.tool_registry.register(TaskUpdateTool())
         self.tool_registry.register(TaskStopTool())
         self.tool_registry.register(TaskOutputTool())
+        self.tool_registry.register(TodoWriteTool())
 
         # Agent tools (Claude Code-style)
         self.tool_registry.register(AgentTool(config={"runtime": self}))
@@ -701,6 +707,9 @@ class AgentRuntime:
         def on_stream(chunk: StreamChunk) -> None:
             self._emit("stream", chunk)
 
+        def on_tool_event(event: ToolEvent) -> None:
+            self._emit("tool_event", event)
+
         try:
             result = await self.loop.run(
                 task,
@@ -708,6 +717,7 @@ class AgentRuntime:
                 on_action=on_action,
                 on_result=on_result,
                 on_stream=on_stream if stream else None,
+                on_tool_event=on_tool_event,
                 preserve_plan_state=preserve_plan_state,
                 preserve_context=preserve_context,
             )

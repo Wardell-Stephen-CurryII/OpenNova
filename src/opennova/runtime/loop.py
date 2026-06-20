@@ -13,6 +13,7 @@ import re
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 from opennova.hooks import HookManager
@@ -25,6 +26,7 @@ from opennova.providers.base import (
     Message,
     ToolCall,
 )
+from opennova.runtime.events import ToolEvent, ToolUseContext
 from opennova.runtime.state import AgentState
 from opennova.security.guardrails import Guardrails, GuardResult, RiskLevel
 from opennova.skills.registry import SkillRegistry
@@ -113,6 +115,8 @@ class ReActLoop:
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
         self.on_stream: Callable | None = None
+        self.on_tool_event: Callable[[ToolEvent], None] | None = None
+        self._current_tool_context: ToolUseContext | None = None
         self._errors: list[str] = []
         self._skill_listing_sent: bool = False
         self._skill_routed: bool = False
@@ -144,6 +148,7 @@ class ReActLoop:
         on_action: Callable | None = None,
         on_result: Callable | None = None,
         on_stream: Callable | None = None,
+        on_tool_event: Callable[[ToolEvent], None] | None = None,
         preserve_plan_state: bool = False,
         preserve_context: bool = False,
     ) -> str:
@@ -169,6 +174,7 @@ class ReActLoop:
         self.on_action = on_action
         self.on_result = on_result
         self.on_stream = on_stream
+        self.on_tool_event = on_tool_event
         self._errors = []
 
         if preserve_context:
@@ -219,11 +225,23 @@ class ReActLoop:
                     break
 
                 if action.tool_name and action.tool_name in self.tool_registry:
+                    tool_context = self._start_tool_context(action)
+                    self._emit_tool_event(
+                        ToolEvent(
+                            type="tool_start",
+                            tool_id=tool_context.tool_id,
+                            tool_name=action.tool_name,
+                            arguments=dict(action.arguments),
+                            started_at=tool_context.started_at,
+                            risk_level=tool_context.risk_level,
+                        )
+                    )
                     if self.on_action:
                         self.on_action(action.tool_name, action.arguments)
 
                     self._report_progress(activity=f"Running tool: {action.tool_name}", last_tool_name=action.tool_name)
                     result = await self._act(action)
+                    self._finish_tool_context(result)
 
                     if self.on_result:
                         self.on_result(result)
@@ -292,6 +310,59 @@ class ReActLoop:
         """Notify listeners before a new iteration begins."""
         if self.iteration_start_callback:
             self.iteration_start_callback(self.messages)
+
+    def _start_tool_context(self, action: ParsedAction) -> ToolUseContext:
+        """Create and store canonical context for the current tool call."""
+        tool = self.tool_registry.get(action.tool_name)
+        tool_id = f"tool_{self.state.iteration:04d}"
+        max_result_chars = getattr(tool, "max_result_chars", None)
+        self._current_tool_context = ToolUseContext(
+            tool_id=tool_id,
+            tool_name=action.tool_name,
+            arguments=dict(action.arguments),
+            started_at=perf_counter(),
+            max_result_chars=max_result_chars,
+        )
+        return self._current_tool_context
+
+    def _finish_tool_context(self, result: ToolResult) -> None:
+        """Emit the final canonical event for a tool invocation."""
+        context = self._current_tool_context
+        if not context:
+            return
+        elapsed = max(0.0, perf_counter() - context.started_at)
+        output = result.output or ""
+        diff = result.metadata.get("diff") if isinstance(result.metadata, dict) else None
+        risk_level = str(
+            result.metadata.get("risk_level", context.risk_level)
+            if isinstance(result.metadata, dict)
+            else context.risk_level
+        )
+        event_type = "tool_result" if result.success else "tool_error"
+        self._emit_tool_event(
+            ToolEvent(
+                type=event_type,
+                tool_id=context.tool_id,
+                tool_name=context.tool_name,
+                arguments=dict(context.arguments),
+                started_at=context.started_at,
+                duration_ms=int(elapsed * 1000),
+                risk_level=risk_level,
+                success=result.success,
+                output=output,
+                error=result.error,
+                diff=diff,
+                collapsible=len(output) > 1200,
+                metadata=dict(result.metadata or {}),
+            )
+        )
+        result.metadata.setdefault("tool_id", context.tool_id)
+        result.metadata.setdefault("duration_ms", int(elapsed * 1000))
+        self._current_tool_context = None
+
+    def _emit_tool_event(self, event: ToolEvent) -> None:
+        if self.on_tool_event:
+            self.on_tool_event(event)
 
     async def _think(self) -> LLMResponse:
         """
@@ -644,6 +715,21 @@ class ReActLoop:
                 },
             },
         )
+        if self._current_tool_context:
+            self._emit_tool_event(
+                ToolEvent(
+                    type="permission_request",
+                    tool_id=self._current_tool_context.tool_id,
+                    tool_name=action.tool_name,
+                    arguments=dict(action.arguments),
+                    started_at=self._current_tool_context.started_at,
+                    risk_level=guard_result.risk_level.value,
+                    metadata={
+                        "reason": guard_result.reason,
+                        "suggestions": guard_result.suggestions,
+                    },
+                )
+            )
         resolved = await self._resolve_interaction(prompt_result)
         if not resolved.success:
             return ToolResult(

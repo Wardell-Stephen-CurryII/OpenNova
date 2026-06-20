@@ -14,6 +14,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from opennova.security.permissions import PermissionDecision, PermissionStore
+
 
 class RiskLevel(StrEnum):
     """Risk level of an action."""
@@ -147,6 +149,7 @@ class Guardrails:
         always_allow_tools: list[str] | None = None,
         always_deny_tools: list[str] | None = None,
         always_ask_tools: list[str] | None = None,
+        permission_store: PermissionStore | None = None,
     ):
         """
         Initialize guardrails.
@@ -163,9 +166,14 @@ class Guardrails:
         self.auto_confirm_safe = auto_confirm_safe
         self.allow_network = allow_network
         self.permission_mode = PermissionMode(permission_mode)
+        self.permission_store = permission_store
         self.always_allow_tools = set(always_allow_tools or [])
         self.always_deny_tools = set(always_deny_tools or [])
         self.always_ask_tools = set(always_ask_tools or [])
+        if permission_store:
+            self.always_allow_tools.update(permission_store.allowed_tools())
+            self.always_deny_tools.update(permission_store.denied_tools())
+            self.always_ask_tools.update(permission_store.ask_tools())
 
     @staticmethod
     def _tool_category(tool_name: str) -> str:
@@ -201,6 +209,12 @@ class Guardrails:
     def _check_permission_mode(self, tool_name: str) -> GuardResult | None:
         if tool_name in self.always_deny_tools:
             return GuardResult(False, RiskLevel.BLOCK, f"Tool is denied by policy: {tool_name}")
+        if self.permission_store:
+            decision = self.permission_store.decision_for(tool_name)
+            if decision == PermissionDecision.ALWAYS_DENY:
+                return GuardResult(False, RiskLevel.BLOCK, f"Tool is denied by policy: {tool_name}")
+            if decision == PermissionDecision.ALWAYS_ASK:
+                return GuardResult(True, RiskLevel.WARN, f"Tool requires confirmation by policy: {tool_name}", True)
         if self.permission_mode == PermissionMode.BYPASS:
             return GuardResult(True, RiskLevel.SAFE, f"Tool is allowed by policy: {tool_name}")
 

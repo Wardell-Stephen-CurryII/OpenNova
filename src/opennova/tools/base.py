@@ -103,6 +103,7 @@ class BaseTool(ABC):
     search_hint: str = ""
     max_result_chars: int = 100_000
     progress_metadata: dict[str, Any] = {}
+    output_schema: dict[str, Any] | None = None
 
     def __init__(self, config: dict[str, Any] | None = None):
         """Initialize tool with optional configuration."""
@@ -173,6 +174,10 @@ class BaseTool(ABC):
             parameters=self.get_parameters_schema(),
         )
 
+    def describe(self, **kwargs: Any) -> str:
+        """Return a context-aware tool description for UI/model surfaces."""
+        return self.description
+
     @staticmethod
     def _python_type_to_json(python_type: type) -> str:
         """Convert Python type annotation to JSON Schema type."""
@@ -236,6 +241,10 @@ class BaseTool(ABC):
         """Return whether this tool call only reads state."""
         return False
 
+    def is_enabled(self) -> bool:
+        """Return whether this tool should be exposed in the current runtime."""
+        return True
+
     def is_destructive(self, **kwargs: Any) -> bool:
         """Return whether this tool call can destroy or overwrite data."""
         return False
@@ -247,6 +256,18 @@ class BaseTool(ABC):
     def is_concurrency_safe(self, **kwargs: Any) -> bool:
         """Return whether this tool call can safely run in parallel."""
         return self.is_read_only(**kwargs)
+
+    def interrupt_behavior(self) -> str:
+        """Return how the runtime should handle cancellation: cancel or block."""
+        return "cancel"
+
+    def inputs_equivalent(self, a: dict[str, Any], b: dict[str, Any]) -> bool:
+        """Return whether two input dictionaries represent the same tool call."""
+        return a == b
+
+    def is_open_world(self, **kwargs: Any) -> bool:
+        """Return whether this tool reaches outside the local project context."""
+        return False
 
     def __repr__(self) -> str:
         return f"Tool({self.name})"
