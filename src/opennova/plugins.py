@@ -13,6 +13,16 @@ from opennova.hooks import HookManager
 
 
 @dataclass
+class PluginTestReport:
+    """Validation result for one local plugin."""
+
+    name: str
+    success: bool
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
 class PluginManifest:
     """Parsed local plugin manifest."""
 
@@ -142,7 +152,7 @@ class PluginManager:
                     self.errors[error_key] = error
                     continue
                 command = str(tool_data.get("command", "")).strip()
-                permission = str(tool_data.get("permission") or "read" if tool_data.get("read_only") else tool_data.get("permission") or "command")
+                permission = self._tool_permission(tool_data)
                 tools.append(
                     PluginCommandTool(
                         name=name,
@@ -156,6 +166,64 @@ class PluginManager:
                 )
         return tools
 
+    def build_lockfile(self) -> dict[str, Any]:
+        """Build a local trust snapshot for discovered plugins."""
+        plugins: list[dict[str, Any]] = []
+        for manifest in self.plugins:
+            plugins.append(
+                {
+                    "name": manifest.name,
+                    "description": manifest.description,
+                    "path": str(manifest.root.relative_to(self.project_path)),
+                    "enabled": manifest.enabled,
+                    "trusted": self.is_trusted(manifest.name),
+                    "commands": [dict(command) for command in manifest.commands],
+                    "tools": [
+                        {
+                            "name": str(tool.get("name", "")),
+                            "permission": self._tool_permission(tool),
+                            "read_only": bool(tool.get("read_only", False)),
+                        }
+                        for tool in manifest.tools
+                    ],
+                    "skills": [
+                        str(skill.relative_to(manifest.root))
+                        for skill in manifest.skills
+                    ],
+                    "hooks": [
+                        str(hook.relative_to(manifest.root))
+                        for hook in manifest.hooks
+                    ],
+                    "mcp_servers": [
+                        str(server.get("name", ""))
+                        for server in manifest.mcp_servers
+                        if isinstance(server, dict)
+                    ],
+                }
+            )
+        return {"version": 1, "plugins": plugins}
+
+    def test_plugin(self, name: str) -> PluginTestReport:
+        """Validate one discovered plugin without executing its hooks or tools."""
+        manifest = next((plugin for plugin in self.plugins if plugin.name == name), None)
+        if manifest is None:
+            return PluginTestReport(name=name, success=False, errors=[f"Plugin not found: {name}"])
+
+        errors: list[str] = []
+        for tool in manifest.tools:
+            error = self._validate_tool_manifest(tool)
+            if error:
+                tool_name = str(tool.get("name") or "tool")
+                errors.append(f"{tool_name}: {error}")
+        for hook in manifest.hooks:
+            if not hook.exists():
+                errors.append(f"Hook path does not exist: {hook}")
+        for skill in manifest.skills:
+            if not skill.exists():
+                errors.append(f"Skill path does not exist: {skill}")
+
+        return PluginTestReport(name=name, success=not errors, errors=errors)
+
     def _validate_tool_manifest(self, tool_data: dict[str, Any]) -> str | None:
         """Return an error message for invalid plugin tool declarations."""
         for field_name in ("name", "description", "command"):
@@ -164,10 +232,18 @@ class PluginManager:
         args = tool_data.get("args", [])
         if args and not (isinstance(args, list) and all(isinstance(item, str) for item in args)):
             return "Plugin tool args must be a list of strings"
-        permission = str(tool_data.get("permission") or "read" if tool_data.get("read_only") else tool_data.get("permission") or "command")
+        permission = self._tool_permission(tool_data)
         if permission not in {"read", "edit", "command"}:
             return "Plugin tool permission must be one of: read, edit, command"
         return None
+
+    def _tool_permission(self, tool_data: dict[str, Any]) -> str:
+        """Normalize plugin tool permission declarations."""
+        if tool_data.get("permission"):
+            return str(tool_data["permission"])
+        if tool_data.get("read_only"):
+            return "read"
+        return "command"
 
     def _apply_manifest(
         self,

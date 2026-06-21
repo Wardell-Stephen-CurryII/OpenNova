@@ -175,7 +175,7 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/status` | 查看运行时状态 |
 | `/todos` | 查看 TodoWrite 任务板 |
 | `/checkpoint` | 查看 checkpoint/rollback 状态 |
-| `/checkpoint list\|diff\|restore <id>` | 列出、预览或恢复 checkpoint 快照 |
+| `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint 快照 |
 | `/export [dir]` | 导出当前 transcript 为 Markdown |
 | `/history [n]` | 显示最近的会话历史 |
 | `/resume <id>` | 恢复之前的会话 |

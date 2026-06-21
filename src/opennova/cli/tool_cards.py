@@ -57,6 +57,8 @@ class ToolCardStore:
             card.status = "cancelled"
             card.cancelled = True
 
+        if event.duration_ms is not None:
+            card.metadata = {**(card.metadata or {}), "duration_ms": event.duration_ms}
         card.metadata = {**(card.metadata or {}), **event.metadata}
         return card
 
@@ -68,3 +70,34 @@ class ToolCardStore:
 
     def get(self, tool_id: str) -> ToolCard:
         return self.cards[tool_id]
+
+
+def render_tool_card(card: ToolCard) -> str:
+    """Render one tool card as plain text for TUI/SDK adapters."""
+    header = f"[{card.status}] {card.tool_name} ({card.tool_id})"
+    details: list[str] = []
+    metadata = card.metadata or {}
+    if "duration_ms" in metadata:
+        details.append(f"duration={metadata['duration_ms']}ms")
+    if card.cancelled:
+        details.append("cancelled=yes")
+    if card.collapsible:
+        details.append("collapsible=yes")
+    if details:
+        header = f"{header} {' '.join(details)}"
+
+    parts = [header]
+    if card.permission_reason:
+        parts.append(f"permission: {card.permission_reason}")
+    if card.output_preview:
+        parts.append(card.output_preview)
+    if card.diff:
+        parts.append(card.diff.rstrip())
+    if card.error:
+        parts.append(f"error: {card.error}")
+    return "\n".join(parts)
+
+
+def render_tool_cards(store: ToolCardStore) -> str:
+    """Render all tracked cards in insertion order."""
+    return "\n\n".join(render_tool_card(card) for card in store.cards.values())

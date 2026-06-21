@@ -186,7 +186,7 @@ Inside the interactive REPL:
 | `/status` | Show runtime/session status |
 | `/todos` | Show the current TodoWrite task board |
 | `/checkpoint` | Show checkpoint/rollback status |
-| `/checkpoint list\|diff\|restore <id>` | List, preview, or restore checkpoint snapshots |
+| `/checkpoint list\|diff\|restore [--preview] <id>` | List, preview, or restore checkpoint snapshots |
 | `/export [dir]` | Export the current transcript to Markdown |
 | `/history [n]` | Show recent conversation history |
 | `/resume <id>` | Resume a previous session |
