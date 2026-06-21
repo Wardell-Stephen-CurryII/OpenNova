@@ -24,10 +24,20 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
             ) or "No checkpoints found."
             return ToolResult(success=True, output=output, metadata={"checkpoints": checkpoints})
 
-        if command in {"diff", "restore"} and len(tokens) == 2:
-            checkpoint_id = tokens[1]
+        if command in {"diff", "restore"}:
+            preview = command == "restore" and len(tokens) == 3 and tokens[1] == "--preview"
+            if len(tokens) != 2 and not preview:
+                raise ValueError("Usage: /checkpoint [list|diff <id>|restore [--preview] <id>]")
+
+            checkpoint_id = tokens[2] if preview else tokens[1]
             if command == "diff":
                 return ToolResult(success=True, output=_diff_checkpoint(manager, checkpoint_id))
+            if preview:
+                return ToolResult(
+                    success=True,
+                    output=_diff_checkpoint(manager, checkpoint_id),
+                    metadata={"preview": True, "checkpoint_id": checkpoint_id},
+                )
             manager.restore(checkpoint_id)
             return ToolResult(success=True, output=f"Restored checkpoint: {checkpoint_id}")
     except Exception as exc:
@@ -36,7 +46,7 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
     return ToolResult(
         success=False,
         output="",
-        error="Usage: /checkpoint [list|diff <id>|restore <id>]",
+        error="Usage: /checkpoint [list|diff <id>|restore [--preview] <id>]",
     )
 
 

@@ -191,3 +191,27 @@ class LocalAutomationMonitor:
                 }
             )
         return events
+
+
+class LocalAutomationDaemon:
+    """Small in-process daemon facade around the automation monitor."""
+
+    def __init__(self, scheduler: LocalAutomationScheduler):
+        self.monitor = LocalAutomationMonitor(scheduler)
+        self.running = False
+        self.last_events: list[dict[str, object]] = []
+
+    def start(self) -> None:
+        """Mark the daemon as running."""
+        self.running = True
+
+    def stop(self) -> None:
+        """Mark the daemon as stopped."""
+        self.running = False
+
+    def run_once(self, runner: Callable[[ScheduledTask], object]) -> list[dict[str, object]]:
+        """Run one monitor tick when started."""
+        if not self.running:
+            return []
+        self.last_events = self.monitor.tick(runner)
+        return self.last_events

@@ -909,7 +909,7 @@ class OpenNovaTUI(App):
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
-- `/checkpoint list|diff|restore <id>` - Manage checkpoint snapshots
+- `/checkpoint list|diff|restore [--preview] <id>` - Manage checkpoint snapshots
 - `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation (starts a new session)

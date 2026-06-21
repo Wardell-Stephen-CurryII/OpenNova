@@ -17,11 +17,47 @@ IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_
 
 def detect_python_analysis_backend() -> dict[str, Any]:
     """Detect optional Python analysis backends while keeping AST fallback."""
-    if shutil.which("pyright"):
-        return {"name": "pyright", "available": True, "fallback": "ast"}
-    if shutil.which("ruff"):
-        return {"name": "ruff", "available": True, "fallback": "ast"}
-    return {"name": "ast", "available": True, "fallback": None}
+    status = get_python_backend_status()
+    return {
+        "name": status.backend,
+        "available": True,
+        "fallback": status.fallback if status.backend != "ast" else None,
+    }
+
+
+@dataclass
+class PythonBackendStatus:
+    """Availability of optional Python analysis backends."""
+
+    backend: str
+    pyright_available: bool
+    ruff_available: bool
+    fallback: str = "ast"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "pyright_available": self.pyright_available,
+            "ruff_available": self.ruff_available,
+            "fallback": self.fallback,
+        }
+
+
+def get_python_backend_status() -> PythonBackendStatus:
+    """Return detailed Python analysis backend availability."""
+    pyright_available = shutil.which("pyright") is not None
+    ruff_available = shutil.which("ruff") is not None
+    if pyright_available:
+        backend = "pyright"
+    elif ruff_available:
+        backend = "ruff"
+    else:
+        backend = "ast"
+    return PythonBackendStatus(
+        backend=backend,
+        pyright_available=pyright_available,
+        ruff_available=ruff_available,
+    )
 
 
 @dataclass

@@ -287,7 +287,7 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/status` | 查看运行时状态 | `/status` |
 | `/todos` | 查看 TodoWrite 任务板 | `/todos` |
 | `/checkpoint` | 查看 checkpoint/rollback 状态 | `/checkpoint` |
-| `/checkpoint list\|diff\|restore <id>` | 列出、预览或恢复 checkpoint | `/checkpoint diff abc123` |
+| `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint | `/checkpoint restore --preview abc123` |
 | `/export [dir]` | 导出当前 transcript | `/export .opennova/exports` |
 | `/history [n]` | 显示最近会话历史 | `/history 5` |
 | `/resume [id]` | 恢复历史会话 | `/resume abc123` |
