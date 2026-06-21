@@ -43,6 +43,15 @@ class PythonBackendStatus:
         }
 
 
+@dataclass
+class PythonAnalysisCommandPlan:
+    """Planned external Python analyzer command."""
+
+    backend: str
+    argv: list[str]
+    fallback_reason: str = ""
+
+
 def get_python_backend_status() -> PythonBackendStatus:
     """Return detailed Python analysis backend availability."""
     pyright_available = shutil.which("pyright") is not None
@@ -58,6 +67,31 @@ def get_python_backend_status() -> PythonBackendStatus:
         pyright_available=pyright_available,
         ruff_available=ruff_available,
     )
+
+
+class PythonExternalAnalyzer:
+    """Plan external analyzer invocations while preserving AST fallback."""
+
+    def __init__(self, status: PythonBackendStatus | None = None):
+        self.status = status or get_python_backend_status()
+
+    def plan_diagnostics(self, path: str | Path) -> PythonAnalysisCommandPlan:
+        target = str(path)
+        if self.status.backend == "pyright" and self.status.pyright_available:
+            return PythonAnalysisCommandPlan(
+                backend="pyright",
+                argv=["pyright", target, "--outputjson"],
+            )
+        if self.status.backend == "ruff" and self.status.ruff_available:
+            return PythonAnalysisCommandPlan(
+                backend="ruff",
+                argv=["ruff", "check", target, "--output-format=json"],
+            )
+        return PythonAnalysisCommandPlan(
+            backend="ast",
+            argv=[],
+            fallback_reason="No external Python analyzer available; using AST fallback",
+        )
 
 
 @dataclass

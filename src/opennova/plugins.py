@@ -224,6 +224,42 @@ class PluginManager:
 
         return PluginTestReport(name=name, success=not errors, errors=errors)
 
+    def compare_lockfile(self, lockfile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        """Compare a lockfile snapshot with currently loaded plugin manifests."""
+        current = {plugin["name"]: plugin for plugin in self.build_lockfile().get("plugins", [])}
+        locked = {plugin["name"]: plugin for plugin in lockfile.get("plugins", [])}
+
+        added = [{"name": name} for name in sorted(set(current) - set(locked))]
+        removed = [{"name": name} for name in sorted(set(locked) - set(current))]
+        changed: list[dict[str, Any]] = []
+        for name in sorted(set(current) & set(locked)):
+            changes = self._plugin_lock_changes(locked[name], current[name])
+            if changes:
+                changed.append({"name": name, "changes": changes})
+        return {"added": added, "removed": removed, "changed": changed}
+
+    def _plugin_lock_changes(
+        self,
+        locked: dict[str, Any],
+        current: dict[str, Any],
+    ) -> list[str]:
+        changes: list[str] = []
+        if locked.get("trusted") != current.get("trusted"):
+            changes.append("trusted changed")
+
+        locked_tools = {tool.get("name"): tool for tool in locked.get("tools", [])}
+        current_tools = {tool.get("name"): tool for tool in current.get("tools", [])}
+        for tool_name in sorted(set(locked_tools) | set(current_tools)):
+            if tool_name not in locked_tools:
+                changes.append(f"tool added: {tool_name}")
+                continue
+            if tool_name not in current_tools:
+                changes.append(f"tool removed: {tool_name}")
+                continue
+            if locked_tools[tool_name].get("permission") != current_tools[tool_name].get("permission"):
+                changes.append(f"tool {tool_name} permission changed")
+        return changes
+
     def _validate_tool_manifest(self, tool_data: dict[str, Any]) -> str | None:
         """Return an error message for invalid plugin tool declarations."""
         for field_name in ("name", "description", "command"):

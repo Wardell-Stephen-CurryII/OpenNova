@@ -24,6 +24,20 @@ class ToolCard:
     metadata: dict[str, Any] | None = None
 
 
+@dataclass
+class ToolCardViewState:
+    """Textual-friendly view state for one tool card."""
+
+    tool_id: str
+    tool_name: str
+    status: str
+    expanded: bool
+    rendered: str
+    diff_panel: str = ""
+    approval_state: str = "none"
+    cancelled: bool = False
+
+
 class ToolCardStore:
     """Maintain tool card state from canonical tool events."""
 
@@ -47,6 +61,7 @@ class ToolCardStore:
             card.error = event.error
             card.diff = event.diff
             output = event.output or ""
+            card.metadata = {**(card.metadata or {}), "full_output": output}
             card.collapsible = len(output) > self.collapse_threshold
             card.output_preview = (
                 output[: self.collapse_threshold] + "\n... (output collapsed)"
@@ -101,3 +116,34 @@ def render_tool_card(card: ToolCard) -> str:
 def render_tool_cards(store: ToolCardStore) -> str:
     """Render all tracked cards in insertion order."""
     return "\n\n".join(render_tool_card(card) for card in store.cards.values())
+
+
+def build_tool_card_view(card: ToolCard, expanded: bool = False) -> ToolCardViewState:
+    """Build a Textual-friendly view model for one tool card."""
+    output = card.output_preview
+    if expanded and card.metadata and "full_output" in card.metadata:
+        output = str(card.metadata["full_output"])
+
+    preview_card = ToolCard(
+        tool_id=card.tool_id,
+        tool_name=card.tool_name,
+        status=card.status,
+        output_preview=output,
+        error=card.error,
+        diff=card.diff,
+        collapsible=card.collapsible,
+        permission_reason=card.permission_reason,
+        cancelled=card.cancelled,
+        metadata=card.metadata,
+    )
+    approval_state = "requested" if card.permission_reason else "none"
+    return ToolCardViewState(
+        tool_id=card.tool_id,
+        tool_name=card.tool_name,
+        status=card.status,
+        expanded=expanded,
+        rendered=render_tool_card(preview_card),
+        diff_panel=(card.diff or "").rstrip(),
+        approval_state=approval_state,
+        cancelled=card.cancelled,
+    )

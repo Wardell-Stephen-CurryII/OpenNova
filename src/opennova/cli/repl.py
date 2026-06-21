@@ -284,12 +284,13 @@ class Renderer:
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
-- `/plugins [trust|untrust name]` - List or trust local project plugins
+- `/plugins [trust|untrust|test name]` - List, trust, or validate local project plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
 - `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
 - `/automations interval <name> <seconds> <prompt>` - Schedule an interval automation
 - `/automations pause|resume|delete|run-now <id>` - Manage local automations
+- `/automations daemon start|stop|status|tick` - Control the local automation daemon
 - `/diagnostics [path]` - Run Python syntax diagnostics
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary
@@ -415,6 +416,7 @@ class REPL:
         self.running = True
         self.current_task: str = ""
         self._last_ctrl_c: float = 0.0
+        self._automation_daemon = None
 
     def _get_command_handlers(self) -> dict[str, Callable[[str], Any]]:
         """Return canonical slash command handlers."""
@@ -897,6 +899,16 @@ class REPL:
             manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
             self.renderer.print_success(f"Untrusted plugin: {tokens[1]}")
             return
+        if tokens and tokens[0] == "test":
+            from opennova.cli.plugin_commands import handle_plugin_command
+
+            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+            result = handle_plugin_command(manager, args)
+            if result.success:
+                self.renderer.print_success(result.output)
+            else:
+                self.renderer.print_error(result.error or "Plugin command failed")
+            return
 
         plugins = manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
         if not plugins:
@@ -927,10 +939,15 @@ class REPL:
         from opennova.cli.automation_commands import handle_automation_command
 
         scheduler = LocalAutomationScheduler(Path(".opennova") / "automations.json")
+        if self._automation_daemon is None:
+            from opennova.automation import LocalAutomationDaemon
+
+            self._automation_daemon = LocalAutomationDaemon(scheduler)
         result = handle_automation_command(
             scheduler,
             args,
             runner=lambda task: f"Automation prompt ready for execution: {task.prompt}",
+            daemon=self._automation_daemon,
         )
         if result.success:
             self.renderer.print(result.output)
