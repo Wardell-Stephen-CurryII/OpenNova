@@ -165,19 +165,20 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
 | `/config` | 显示当前配置 |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
-| `/plugins [trust\|untrust\|test name]` | 查看、信任或校验本地项目插件 |
+| `/plugins [trust\|untrust\|test name\|lock\|drift]` | 管理、锁定和校验本地项目插件 |
 | `/hooks` | 查看已加载 hooks |
 | `/automations` | 查看本地自动化任务 |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性本地自动化任务 |
 | `/automations interval <name> <seconds> <prompt>` | 创建周期本地自动化任务 |
 | `/automations pause\|resume\|delete\|run-now <id>` | 管理本地自动化任务 |
-| `/automations daemon start\|stop\|status\|tick` | 控制本地 automation daemon |
+| `/automations daemon start\|stop\|status\|tick\|run` | 控制本地 automation daemon |
 | `/diagnostics [path]` | 运行 Python 诊断 |
 | `/status` | 查看运行时状态 |
 | `/todos` | 查看 TodoWrite 任务板 |
 | `/checkpoint` | 查看 checkpoint/rollback 状态 |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint 快照 |
 | `write_file` checkpoint metadata | 覆盖已有文件时会自动创建 checkpoint 并返回 `checkpoint_id` |
+| `edit_file` checkpoint metadata | edit 和 multi-edit 操作也会为已有文件创建可恢复 checkpoint |
 | `/export [dir]` | 导出当前 transcript 为 Markdown |
 | `/history [n]` | 显示最近的会话历史 |
 | `/resume <id>` | 恢复之前的会话 |

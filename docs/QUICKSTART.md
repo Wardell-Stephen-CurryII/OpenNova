@@ -119,17 +119,18 @@ opennova> /init
 | `uv run opennova init` | 初始化全局配置 |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
-| `/plugins [trust\|untrust\|test name]` | 查看、信任或校验本地项目插件 |
+| `/plugins [trust\|untrust\|test name\|lock\|drift]` | 管理、锁定和校验本地项目插件 |
 | `/automations` | 查看本地自动化任务 |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性自动化任务 |
 | `/automations interval <name> <seconds> <prompt>` | 创建周期自动化任务 |
 | `/automations pause\|resume\|delete\|run-now <id>` | 管理自动化任务 |
-| `/automations daemon start\|stop\|status\|tick` | 控制本地 automation daemon |
+| `/automations daemon start\|stop\|status\|tick\|run` | 控制本地 automation daemon |
 | `/diagnostics [path]` | 运行 Python 诊断 |
 | `/status` | 查看当前运行时状态 |
 | `/todos` | 查看 TodoWrite 任务板 |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 管理 checkpoint 快照 |
 | `write_file` checkpoint metadata | 覆盖已有文件时自动创建 checkpoint |
+| `edit_file` checkpoint metadata | edit 和 multi-edit 也会自动创建 checkpoint |
 | `/export [dir]` | 导出当前 transcript |
 | `/help` | 查看交互命令帮助 |
 | `/exit` | 退出当前会话 |

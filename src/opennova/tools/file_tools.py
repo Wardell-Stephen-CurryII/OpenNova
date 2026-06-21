@@ -93,6 +93,17 @@ def _build_sandbox(tool_config: dict[str, Any] | None = None) -> Sandbox:
     return Sandbox(sandbox_config)
 
 
+def _create_write_checkpoint(
+    tool_config: dict[str, Any],
+    path: Path,
+    label: str,
+) -> str | None:
+    """Create a checkpoint before mutating an existing file when enabled."""
+    if not bool(tool_config.get("checkpoint_writes", True)):
+        return None
+    return CheckpointManager(tool_config.get("working_dir", os.getcwd())).create(label, [path])
+
+
 class ReadFileTool(BaseTool):
     """Read file contents with optional line range support."""
 
@@ -244,10 +255,7 @@ class WriteFileTool(BaseTool):
                     if isinstance(read_result, bytes)
                     else ""
                 )
-                if bool(self.config.get("checkpoint_writes", True)):
-                    checkpoint_id = CheckpointManager(
-                        self.config.get("working_dir", os.getcwd())
-                    ).create("before write_file", [path])
+                checkpoint_id = _create_write_checkpoint(self.config, path, "before write_file")
 
             write_ok, write_result = self.sandbox.safe_write(path, content.encode("utf-8"))
             if not write_ok:
@@ -409,20 +417,24 @@ class EditFileTool(BaseTool):
             )
 
         new_content = old_content.replace(old_text, new_text) if replace_all else old_content.replace(old_text, new_text, 1)
+        checkpoint_id = _create_write_checkpoint(self.config, path, "before edit_file")
         write_ok, write_result = self.sandbox.safe_write(path, new_content.encode("utf-8"))
         if not write_ok:
             return ToolResult(success=False, output="", error=str(write_result))
 
         diff_text = DiffEngine().generate_diff(old_content, new_content, str(path))
+        metadata: dict[str, Any] = {
+            "file_path": str(path),
+            "change_type": "edit",
+            "occurrences_replaced": occurrences if replace_all else 1,
+            "diff": diff_text,
+        }
+        if checkpoint_id:
+            metadata["checkpoint_id"] = checkpoint_id
         return ToolResult(
             success=True,
             output=f"Edited file: {file_path}",
-            metadata={
-                "file_path": str(path),
-                "change_type": "edit",
-                "occurrences_replaced": occurrences if replace_all else 1,
-                "diff": diff_text,
-            },
+            metadata=metadata,
         )
 
     def is_destructive(self, **kwargs: Any) -> bool:
@@ -480,20 +492,24 @@ class MultiEditFileTool(BaseTool):
             new_content = new_content.replace(old_text, new_text) if replace_all else new_content.replace(old_text, new_text, 1)
             replaced += occurrences if replace_all else 1
 
+        checkpoint_id = _create_write_checkpoint(self.config, path, "before multi_edit_file")
         write_ok, write_result = self.sandbox.safe_write(path, new_content.encode("utf-8"))
         if not write_ok:
             return ToolResult(success=False, output="", error=str(write_result))
 
         diff_text = DiffEngine().generate_diff(old_content, new_content, str(path))
+        metadata: dict[str, Any] = {
+            "file_path": str(path),
+            "change_type": "multi_edit",
+            "occurrences_replaced": replaced,
+            "diff": diff_text,
+        }
+        if checkpoint_id:
+            metadata["checkpoint_id"] = checkpoint_id
         return ToolResult(
             success=True,
             output=f"Edited file: {file_path} ({replaced} replacements)",
-            metadata={
-                "file_path": str(path),
-                "change_type": "multi_edit",
-                "occurrences_replaced": replaced,
-                "diff": diff_text,
-            },
+            metadata=metadata,
         )
 
     def is_destructive(self, **kwargs: Any) -> bool:

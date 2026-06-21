@@ -40,6 +40,10 @@ def handle_automation_command(
                 events = daemon.run_once(runner)
                 output = "\n".join(str(event) for event in events) or "No automation events."
                 return ToolResult(success=True, output=output, metadata={"events": events})
+            if action == "run":
+                events = daemon.run_until_idle(runner)
+                output = "\n".join(str(event) for event in events) or "No automation events."
+                return ToolResult(success=True, output=output, metadata={"events": events})
 
         if subcommand == "list":
             tasks = scheduler.list_tasks()
@@ -93,6 +97,6 @@ def handle_automation_command(
         error=(
             "Usage: /automations [list|once <name> <run_at> <prompt>|"
             "interval <name> <seconds> <prompt>|pause <id>|resume <id>|delete <id>|"
-            "run-now <id>|daemon start|daemon stop|daemon status|daemon tick]"
+            "run-now <id>|daemon start|daemon stop|daemon status|daemon tick|daemon run]"
         ),
     )
