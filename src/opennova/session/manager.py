@@ -90,6 +90,15 @@ class SessionManager:
         self._title = None
         return self._session_id
 
+    def resume_session(self, session_id: str) -> str:
+        """Switch the active writer back to an existing session file."""
+        self._session_id = session_id
+        self._file = self._sessions_dir / f"{session_id}.jsonl"
+        self._message_count = 0
+        self._first_prompt = None
+        self._title = None
+        return self._session_id
+
     @property
     def session_id(self) -> str | None:
         return self._session_id

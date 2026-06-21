@@ -817,9 +817,8 @@ class AgentRuntime:
         self.context_manager.set_compressed_summary(loaded.compression_summary)
         for msg in loaded.messages:
             self.context_manager.add_message(msg)
-        # Re-start session with resumed messages
-        self.session_manager.clear_session()
-        self.session_manager.start_session()
+        # Keep writing to the resumed session instead of spawning a duplicate file.
+        self.session_manager.resume_session(session_id)
         self.session_transcript = [dict(event.payload) for event in loaded.transcript_events]
         self._save_session_messages()
         return loaded

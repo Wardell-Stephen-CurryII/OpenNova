@@ -361,6 +361,41 @@ def test_runtime_resume_session_restores_messages_summary_and_transcript(
     assert runtime.session_transcript[0]["kind"] == "user_message"
 
 
+def test_runtime_resume_session_keeps_writing_to_original_session_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opennova.memory.context import ContextManager
+    from opennova.runtime.agent import AgentRuntime
+    from opennova.session import SessionManager
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    manager = SessionManager(project_path=str(project_path))
+    session_id = manager.start_session()
+    manager.save_snapshot(
+        [Message(role="user", content="hello"), Message(role="assistant", content="world")]
+    )
+    original_file = manager._sessions_dir / f"{session_id}.jsonl"
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.context_manager = ContextManager(model="gpt-4o")
+    runtime.session_manager = manager
+    runtime.session_transcript = []
+
+    AgentRuntime.resume_session(runtime, session_id)
+    runtime.context_manager.add_message(Message(role="user", content="again"))
+    runtime._save_session_messages()
+
+    session_files = sorted(manager._sessions_dir.glob("*.jsonl"))
+
+    assert runtime.session_manager.session_id == session_id
+    assert session_files == [original_file]
+    loaded = manager.load_session(session_id, apply_compression=False)
+    assert [message.content for message in loaded] == ["hello", "world", "again"]
+
+
 def test_slash_command_registry_exposes_03_productization_commands():
     from opennova.cli.commands import SlashCommandRegistry
 
