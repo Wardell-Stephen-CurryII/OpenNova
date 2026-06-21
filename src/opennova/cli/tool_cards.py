@@ -48,18 +48,33 @@ class ToolCardPanelState:
     actions: dict[str, bool] | None = None
 
 
+@dataclass
+class ToolCardInteractionState:
+    """User interaction state for tool card panels."""
+
+    selected_tool_id: str | None = None
+    expanded_tool_ids: set[str] | None = None
+    approval_states: dict[str, str] | None = None
+
+
 class ToolCardStore:
     """Maintain tool card state from canonical tool events."""
 
     def __init__(self, collapse_threshold: int = 1200):
         self.collapse_threshold = collapse_threshold
         self.cards: dict[str, ToolCard] = {}
+        self.interaction = ToolCardInteractionState(
+            expanded_tool_ids=set(),
+            approval_states={},
+        )
 
     def apply_event(self, event: ToolEvent) -> ToolCard:
         card = self.cards.get(event.tool_id)
         if card is None:
             card = ToolCard(tool_id=event.tool_id, tool_name=event.tool_name, metadata={})
             self.cards[event.tool_id] = card
+            if self.interaction.selected_tool_id is None:
+                self.interaction.selected_tool_id = event.tool_id
 
         if event.type == "tool_start":
             card.status = "running"
@@ -95,6 +110,40 @@ class ToolCardStore:
 
     def get(self, tool_id: str) -> ToolCard:
         return self.cards[tool_id]
+
+    def select_next(self) -> str | None:
+        """Select the next card in insertion order."""
+        ids = list(self.cards)
+        if not ids:
+            self.interaction.selected_tool_id = None
+            return None
+        if self.interaction.selected_tool_id not in ids:
+            self.interaction.selected_tool_id = ids[0]
+            return ids[0]
+        index = ids.index(self.interaction.selected_tool_id)
+        self.interaction.selected_tool_id = ids[(index + 1) % len(ids)]
+        return self.interaction.selected_tool_id
+
+    def toggle_expanded(self, tool_id: str | None = None) -> bool:
+        """Toggle expanded state for one card."""
+        target = tool_id or self.interaction.selected_tool_id
+        if not target:
+            return False
+        if self.interaction.expanded_tool_ids is None:
+            self.interaction.expanded_tool_ids = set()
+        expanded = self.interaction.expanded_tool_ids
+        if target in expanded:
+            expanded.remove(target)
+            return False
+        expanded.add(target)
+        return True
+
+    def apply_approval(self, tool_id: str, state: str) -> None:
+        """Record user approval state for a card."""
+        if self.interaction.approval_states is None:
+            self.interaction.approval_states = {}
+        approvals = self.interaction.approval_states
+        approvals[tool_id] = state
 
 
 def render_tool_card(card: ToolCard) -> str:
@@ -165,14 +214,20 @@ def build_tool_card_panel(
     expanded: bool = False,
 ) -> ToolCardPanelState:
     """Build a UI-ready panel model from tracked tool cards."""
-    selected_tool_id = selected_tool_id or next(iter(store.cards), None)
+    selected_tool_id = selected_tool_id or store.interaction.selected_tool_id or next(iter(store.cards), None)
     views: list[ToolCardViewState] = []
     selected_card: ToolCard | None = None
     for tool_id, card in store.cards.items():
         is_selected = tool_id == selected_tool_id
         if is_selected:
             selected_card = card
-        views.append(build_tool_card_view(card, expanded=expanded and is_selected))
+        is_expanded = expanded and is_selected
+        is_expanded = is_expanded or tool_id in (store.interaction.expanded_tool_ids or set())
+        view = build_tool_card_view(card, expanded=is_expanded)
+        approval_state = (store.interaction.approval_states or {}).get(tool_id)
+        if approval_state:
+            view.approval_state = approval_state
+        views.append(view)
 
     actions = {
         "approve": bool(selected_card and selected_card.permission_reason),

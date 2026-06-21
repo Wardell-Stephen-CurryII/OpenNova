@@ -131,7 +131,8 @@ opennova> /init
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 管理 checkpoint 快照 |
 | `write_file` checkpoint metadata | 覆盖已有文件时自动创建 checkpoint |
 | `edit_file` checkpoint metadata | edit 和 multi-edit 也会自动创建 checkpoint |
-| `/export [dir]` | 导出当前 transcript |
+| `/export [dir]` | 导出当前 transcript，并包含工具 checkpoint/diff 详情 |
+| automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 |
 | `/help` | 查看交互命令帮助 |
 | `/exit` | 退出当前会话 |
 
