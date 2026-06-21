@@ -233,3 +233,50 @@ class LocalAutomationDaemon:
             all_events.extend(events)
         self.last_events = all_events
         return all_events
+
+    def run_with_retry(
+        self,
+        runner: Callable[[ScheduledTask], object],
+        max_retries: int = 1,
+        archive_callback: Callable[[dict[str, object]], object] | None = None,
+    ) -> list[dict[str, object]]:
+        """Run due tasks with a small local retry loop and optional archive callback."""
+        if not self.running:
+            return []
+
+        events: list[dict[str, object]] = []
+        for task in list(self.monitor.scheduler.due_tasks()):
+            attempts = 0
+            while True:
+                run = self.monitor.scheduler.run_now(task.id, runner)
+                if run.success:
+                    event = self._event_from_run(run, "automation_run")
+                    events.append(event)
+                    break
+                if attempts >= max_retries:
+                    event = self._event_from_run(run, "automation_run")
+                    events.append(event)
+                    break
+                attempts += 1
+                task.enabled = True
+                task.next_run_at = self.monitor.scheduler.clock()
+                self.monitor.scheduler.tasks[task.id] = task
+                retry_event = self._event_from_run(run, "automation_retry")
+                retry_event["attempt"] = attempts
+                events.append(retry_event)
+        self.last_events = events
+        if archive_callback:
+            for event in events:
+                archive_callback(event)
+        return events
+
+    def _event_from_run(self, run: ScheduledRun, event_type: str) -> dict[str, object]:
+        return {
+            "type": event_type,
+            "task_id": run.task_id,
+            "task_name": run.task_name,
+            "success": run.success,
+            "output": run.output,
+            "error": run.error,
+            "ran_at": run.ran_at,
+        }

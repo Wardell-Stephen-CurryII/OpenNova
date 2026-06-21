@@ -40,6 +40,16 @@ class TranscriptExporter:
                 f"- `{event.get('type', 'event')}` "
                 f"{event.get('tool_name', '')} {event.get('tool_id', '')}".rstrip()
             )
+            metadata = event.get("metadata", {}) if isinstance(event.get("metadata", {}), dict) else {}
+            checkpoint_id = metadata.get("checkpoint_id") or event.get("checkpoint_id")
+            if checkpoint_id:
+                lines.append(f"  - checkpoint_id: `{checkpoint_id}`")
+            if event.get("duration_ms") is not None:
+                lines.append(f"  - duration_ms: `{event['duration_ms']}`")
+            if event.get("error"):
+                lines.append(f"  - error: {event['error']}")
+            if event.get("diff"):
+                lines.extend(["", "```diff", str(event["diff"]).rstrip(), "```", ""])
         path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
         return path
 

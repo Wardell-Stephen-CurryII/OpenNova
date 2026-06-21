@@ -22,6 +22,16 @@ def handle_plugin_command(manager: PluginManager, args: str) -> ToolResult:
             ) or "No local plugins discovered."
             return ToolResult(success=True, output=output, metadata={"plugins": plugins})
 
+        if subcommand in {"trust", "untrust"} and len(tokens) == 2:
+            name = tokens[1]
+            if subcommand == "trust":
+                manager.trust_plugin(name)
+                output = f"Trusted plugin: {name}"
+            else:
+                manager.untrust_plugin(name)
+                output = f"Untrusted plugin: {name}"
+            return ToolResult(success=True, output=output, metadata={"plugin": name})
+
         if subcommand == "test" and len(tokens) == 2:
             name = tokens[1]
             report = manager.test_plugin(name)
@@ -71,5 +81,5 @@ def handle_plugin_command(manager: PluginManager, args: str) -> ToolResult:
     return ToolResult(
         success=False,
         output="",
-        error="Usage: /plugins [list|test <name>|lock|drift]",
+        error="Usage: /plugins [list|trust <name>|untrust <name>|test <name>|lock|drift]",
     )

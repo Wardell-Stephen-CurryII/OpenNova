@@ -291,7 +291,8 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint | `/checkpoint restore --preview abc123` |
 | `write_file` checkpoint metadata | 覆盖已有文件时自动创建 checkpoint | 查看工具结果中的 `checkpoint_id` |
 | `edit_file` checkpoint metadata | edit 和 multi-edit 也会自动创建 checkpoint | `/checkpoint restore abc123` |
-| `/export [dir]` | 导出当前 transcript | `/export .opennova/exports` |
+| `/export [dir]` | 导出当前 transcript，并包含 checkpoint/diff | `/export .opennova/exports` |
+| automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 | `run_with_retry(...)` |
 | `/history [n]` | 显示最近会话历史 | `/history 5` |
 | `/resume [id]` | 恢复历史会话 | `/resume abc123` |
 | `/sessions` | 列出历史会话 | `/sessions` |

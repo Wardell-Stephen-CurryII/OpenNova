@@ -190,7 +190,8 @@ Inside the interactive REPL:
 | `/checkpoint list\|diff\|restore [--preview] <id>` | List, preview, or restore checkpoint snapshots |
 | `write_file` checkpoint metadata | Existing-file overwrites automatically create a checkpoint and return `checkpoint_id` |
 | `edit_file` checkpoint metadata | Edit and multi-edit operations also create restore checkpoints for existing files |
-| `/export [dir]` | Export the current transcript to Markdown |
+| `/export [dir]` | Export the current transcript to Markdown, including tool checkpoint/diff details |
+| automation retry/archive | Local daemon retry events can be archived by an injected callback |
 | `/history [n]` | Show recent conversation history |
 | `/resume <id>` | Resume a previous session |
 | `/sessions` | List saved sessions |

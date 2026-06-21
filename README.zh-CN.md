@@ -179,7 +179,8 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint 快照 |
 | `write_file` checkpoint metadata | 覆盖已有文件时会自动创建 checkpoint 并返回 `checkpoint_id` |
 | `edit_file` checkpoint metadata | edit 和 multi-edit 操作也会为已有文件创建可恢复 checkpoint |
-| `/export [dir]` | 导出当前 transcript 为 Markdown |
+| `/export [dir]` | 导出当前 transcript 为 Markdown，并包含工具 checkpoint/diff 详情 |
+| automation retry/archive | 本地 daemon retry 事件可通过注入 callback 归档 |
 | `/history [n]` | 显示最近的会话历史 |
 | `/resume <id>` | 恢复之前的会话 |
 | `/sessions` | 列出已保存的会话 |

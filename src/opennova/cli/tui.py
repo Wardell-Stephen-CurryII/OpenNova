@@ -1181,21 +1181,12 @@ class OpenNovaTUI(App):
             log.write("[yellow]No plugin manager available.[/yellow]")
             return
         tokens = args.split()
-        if len(tokens) == 2 and tokens[0] == "trust":
-            manager.trust_plugin(tokens[1])
-            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
-            log.write(f"[green]Trusted plugin: {tokens[1]}[/green]")
-            return
-        if len(tokens) == 2 and tokens[0] == "untrust":
-            manager.untrust_plugin(tokens[1])
-            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
-            log.write(f"[green]Untrusted plugin: {tokens[1]}[/green]")
-            return
-        if tokens and tokens[0] == "test":
+        if tokens and tokens[0] in {"trust", "untrust", "test", "lock", "drift"}:
             from opennova.cli.plugin_commands import handle_plugin_command
 
             manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
             result = handle_plugin_command(manager, args)
+            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
             if result.success:
                 log.write(f"[green]{result.output}[/green]")
             else:
