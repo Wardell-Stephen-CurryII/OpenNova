@@ -156,6 +156,32 @@ class PythonExternalAnalyzer:
             payload=payload,
         )
 
+    def _symbol_event(self, kind: str, path: str | Path, symbol: str) -> PythonAnalysisEvent:
+        payload = {
+            "symbol": symbol,
+            "backend": self.status.backend,
+            "fallback": self.status.backend == "ast",
+        }
+        return PythonAnalysisEvent(
+            kind=kind,
+            backend=self.status.backend,
+            path=str(path),
+            success=True,
+            payload=payload,
+        )
+
+    def event_for_hover(self, path: str | Path, symbol: str) -> PythonAnalysisEvent:
+        """Return a unified hover event placeholder."""
+        return self._symbol_event("hover", path, symbol)
+
+    def event_for_definition(self, path: str | Path, symbol: str) -> PythonAnalysisEvent:
+        """Return a unified definition event placeholder."""
+        return self._symbol_event("definition", path, symbol)
+
+    def event_for_references(self, path: str | Path, symbol: str) -> PythonAnalysisEvent:
+        """Return a unified references event placeholder."""
+        return self._symbol_event("references", path, symbol)
+
 
 @dataclass
 class PythonSymbol:

@@ -23,6 +23,19 @@ class PluginTestReport:
 
 
 @dataclass
+class PluginPolicy:
+    """Local plugin policy used for non-blocking audits."""
+
+    require_signature: bool = False
+    allow_hooks: bool = True
+    allow_mcp: bool = True
+
+    @classmethod
+    def strict(cls) -> PluginPolicy:
+        return cls(require_signature=True, allow_hooks=False, allow_mcp=False)
+
+
+@dataclass
 class PluginManifest:
     """Parsed local plugin manifest."""
 
@@ -250,6 +263,26 @@ class PluginManager:
                 }
             )
         return audits
+
+    def audit_policy(self, policy: PluginPolicy) -> list[dict[str, Any]]:
+        """Return policy violations for discovered plugins without blocking load."""
+        reports: list[dict[str, Any]] = []
+        for manifest in self.plugins:
+            violations: list[str] = []
+            if policy.require_signature and not manifest.signature:
+                violations.append("missing-signature")
+            if not policy.allow_hooks and manifest.hooks:
+                violations.append("hooks-disallowed")
+            if not policy.allow_mcp and manifest.mcp_servers:
+                violations.append("mcp-disallowed")
+            reports.append(
+                {
+                    "name": manifest.name,
+                    "trusted": self.is_trusted(manifest.name),
+                    "violations": violations,
+                }
+            )
+        return reports
 
     def compare_lockfile(self, lockfile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         """Compare a lockfile snapshot with currently loaded plugin manifests."""

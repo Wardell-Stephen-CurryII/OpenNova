@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from opennova.plugins import PluginManager
+from opennova.plugins import PluginManager, PluginPolicy
 from opennova.tools.base import ToolResult
 
 
@@ -77,6 +77,17 @@ def handle_plugin_command(manager: PluginManager, args: str) -> ToolResult:
             )
 
         if subcommand == "audit":
+            if tokens[1:] == ["--policy", "strict"]:
+                reports = manager.audit_policy(PluginPolicy.strict())
+                lines = [
+                    f"{item['name']} violations={','.join(item['violations']) or 'none'}"
+                    for item in reports
+                ]
+                return ToolResult(
+                    success=True,
+                    output="\n".join(lines) or "No local plugins discovered.",
+                    metadata={"policy": "strict", "audit": reports},
+                )
             audit = manager.audit_permissions()
             lines = [
                 f"{item['name']} trusted={item['trusted']} signature={item['signature'] or 'none'} "

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from opennova.checkpoints import CheckpointManager
 from opennova.tools.base import ToolResult
+from opennova.transcript import extract_checkpoint_index
 
 
 def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult:
@@ -25,9 +26,23 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
             return ToolResult(success=True, output=output, metadata={"checkpoints": checkpoints})
 
         if command in {"diff", "restore"}:
+            if command == "diff" and len(tokens) == 4 and tokens[1] == "--from-transcript":
+                transcript_path = tokens[2]
+                checkpoint_id = tokens[3]
+                for item in extract_checkpoint_index(transcript_path):
+                    if item["checkpoint_id"].startswith(checkpoint_id):
+                        return ToolResult(success=True, output=item["diff"], metadata={"checkpoint": item})
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Checkpoint not found in transcript: {checkpoint_id}",
+                )
             preview = command == "restore" and len(tokens) == 3 and tokens[1] == "--preview"
             if len(tokens) != 2 and not preview:
-                raise ValueError("Usage: /checkpoint [list|diff <id>|restore [--preview] <id>]")
+                raise ValueError(
+                    "Usage: /checkpoint [list|diff <id>|diff --from-transcript <path> <id>|"
+                    "restore [--preview] <id>]"
+                )
 
             checkpoint_id = tokens[2] if preview else tokens[1]
             if command == "diff":
@@ -46,7 +61,7 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
     return ToolResult(
         success=False,
         output="",
-        error="Usage: /checkpoint [list|diff <id>|restore [--preview] <id>]",
+        error="Usage: /checkpoint [list|diff <id>|diff --from-transcript <path> <id>|restore [--preview] <id>]",
     )
 
 

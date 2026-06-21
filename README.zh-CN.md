@@ -165,7 +165,7 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
 | `/config` | 显示当前配置 |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
-| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit]` | 管理、锁定、校验和审计本地项目插件 |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit [--policy strict]]` | 管理、锁定、校验和审计本地项目插件 |
 | `/hooks` | 查看已加载 hooks |
 | `/automations` | 查看本地自动化任务 |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性本地自动化任务 |
@@ -177,12 +177,14 @@ uv run opennova run -m gpt-4o "Create a new Python module"
 | `/todos` | 查看 TodoWrite 任务板 |
 | `/checkpoint` | 查看 checkpoint/rollback 状态 |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint 快照 |
+| `/checkpoint diff --from-transcript <path> <id>` | 从导出的 transcript 反查 checkpoint diff |
 | `write_file` checkpoint metadata | 覆盖已有文件时会自动创建 checkpoint 并返回 `checkpoint_id` |
 | `edit_file` checkpoint metadata | edit 和 multi-edit 操作也会为已有文件创建可恢复 checkpoint |
 | `/export [dir]` | 导出当前 transcript 为 Markdown，并包含工具 checkpoint/diff 详情 |
 | automation retry/archive | 本地 daemon retry 事件可通过注入 callback 归档 |
+| automation backoff/archive summary | 提供 retry delay 和 archive 摘要能力 |
 | transcript checkpoint lookup | 导出的 transcript 可按 `checkpoint_id` 建索引用于后续 diff 反查 |
-| diagnostics events | Python 分析结果可包装成统一事件 payload |
+| diagnostics events | diagnostics、hover、definition、references 可包装成统一事件 payload |
 | `/history [n]` | 显示最近的会话历史 |
 | `/resume <id>` | 恢复之前的会话 |
 | `/sessions` | 列出已保存的会话 |

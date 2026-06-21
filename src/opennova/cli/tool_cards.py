@@ -271,3 +271,15 @@ def apply_tool_card_key(store: ToolCardStore, key: str) -> str:
         store.cancel(selected)
         return f"cancelled:{selected}"
     return "ignored"
+
+
+def tool_card_key_bindings() -> list[dict[str, str]]:
+    """Return stable key binding metadata for Tool Card UI surfaces."""
+    return [
+        {"key": "j", "action": "select_next", "description": "Select next tool card"},
+        {"key": "k", "action": "select_previous", "description": "Select previous tool card"},
+        {"key": "enter", "action": "toggle_expanded", "description": "Expand or collapse selected card"},
+        {"key": "a", "action": "approve", "description": "Approve selected permission request"},
+        {"key": "d", "action": "deny", "description": "Deny selected permission request"},
+        {"key": "c", "action": "cancel", "description": "Cancel selected tool"},
+    ]

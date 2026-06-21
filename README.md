@@ -176,7 +176,7 @@ Inside the interactive REPL:
 | `/init [--force]` | Let the model analyze the repo and generate `OPENNOVA.md` for long-term project memory |
 | `/config` | Show current configuration |
 | `/permissions [tool allow\|deny\|ask]` | Show or update persisted tool permission rules |
-| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit]` | Manage, lock, validate, and audit local project plugins |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit [--policy strict]]` | Manage, lock, validate, and audit local project plugins |
 | `/hooks` | Show loaded hook counts |
 | `/automations` | List local scheduled automations |
 | `/automations once <name> <run_at> <prompt>` | Schedule a one-shot local automation |
@@ -188,12 +188,14 @@ Inside the interactive REPL:
 | `/todos` | Show the current TodoWrite task board |
 | `/checkpoint` | Show checkpoint/rollback status |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | List, preview, or restore checkpoint snapshots |
+| `/checkpoint diff --from-transcript <path> <id>` | Inspect checkpoint diff from an exported transcript |
 | `write_file` checkpoint metadata | Existing-file overwrites automatically create a checkpoint and return `checkpoint_id` |
 | `edit_file` checkpoint metadata | Edit and multi-edit operations also create restore checkpoints for existing files |
 | `/export [dir]` | Export the current transcript to Markdown, including tool checkpoint/diff details |
 | automation retry/archive | Local daemon retry events can be archived by an injected callback |
+| automation backoff/archive summary | Retry delay and archive summaries are available for daemon productization |
 | transcript checkpoint lookup | Exported transcripts can be indexed by `checkpoint_id` for later diff lookup |
-| diagnostics events | Python analysis results can be wrapped in a unified event payload |
+| diagnostics events | Diagnostics, hover, definition, and references can be wrapped in unified event payloads |
 | `/history [n]` | Show recent conversation history |
 | `/resume <id>` | Resume a previous session |
 | `/sessions` | List saved sessions |

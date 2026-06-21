@@ -284,7 +284,7 @@ class Renderer:
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
-- `/plugins [trust|untrust|test name|lock|drift|audit]` - Manage and audit local project plugins
+- `/plugins [trust|untrust|test name|lock|drift|audit [--policy strict]]` - Manage and audit local plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
 - `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
@@ -296,6 +296,7 @@ class Renderer:
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
 - `/checkpoint list|diff|restore [--preview] <id>` - Manage checkpoint snapshots
+- `/checkpoint diff --from-transcript <path> <id>` - Inspect checkpoint diff from transcript
 - `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation state
