@@ -10,6 +10,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
+def compute_retry_delay(attempt: int, base_seconds: float = 1.0, max_seconds: float = 60.0) -> float:
+    """Compute exponential retry delay capped at max_seconds."""
+    return min(max_seconds, base_seconds * (2 ** max(0, attempt)))
+
+
 @dataclass
 class ScheduledTask:
     """A local scheduled automation task."""
@@ -190,6 +195,15 @@ class AutomationArchive:
             for line in self.path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+
+    def summary(self) -> dict[str, object]:
+        """Return a compact archive summary."""
+        events = self.read_events()
+        return {
+            "total": len(events),
+            "failed": sum(1 for event in events if event.get("success") is False),
+            "last_event": events[-1] if events else None,
+        }
 
 
 class LocalAutomationMonitor:
