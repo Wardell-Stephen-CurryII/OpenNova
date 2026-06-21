@@ -240,3 +240,34 @@ def build_tool_card_panel(
         diff_panel=(selected_card.diff or "").rstrip() if selected_card else "",
         actions=actions,
     )
+
+
+def apply_tool_card_key(store: ToolCardStore, key: str) -> str:
+    """Apply a keyboard-style action to the tool card store."""
+    selected = store.interaction.selected_tool_id
+    if key in {"j", "down"}:
+        selected = store.select_next()
+        return f"selected:{selected}" if selected else "selected:none"
+    if key in {"k", "up"}:
+        ids = list(store.cards)
+        if not ids:
+            store.interaction.selected_tool_id = None
+            return "selected:none"
+        if selected not in ids:
+            store.interaction.selected_tool_id = ids[0]
+        else:
+            store.interaction.selected_tool_id = ids[(ids.index(selected) - 1) % len(ids)]
+        return f"selected:{store.interaction.selected_tool_id}"
+    if key in {"enter", "space"}:
+        expanded = store.toggle_expanded(selected)
+        return f"{'expanded' if expanded else 'collapsed'}:{selected}"
+    if key == "a" and selected:
+        store.apply_approval(selected, "approved")
+        return f"approval:{selected}:approved"
+    if key == "d" and selected:
+        store.apply_approval(selected, "denied")
+        return f"approval:{selected}:denied"
+    if key == "c" and selected:
+        store.cancel(selected)
+        return f"cancelled:{selected}"
+    return "ignored"

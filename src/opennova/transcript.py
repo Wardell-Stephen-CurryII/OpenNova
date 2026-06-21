@@ -7,6 +7,57 @@ from pathlib import Path
 from typing import Any
 
 
+def build_checkpoint_index(tool_events: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Build a checkpoint lookup index from tool events."""
+    index: list[dict[str, str]] = []
+    for event in tool_events:
+        metadata = event.get("metadata", {}) if isinstance(event.get("metadata", {}), dict) else {}
+        checkpoint_id = metadata.get("checkpoint_id") or event.get("checkpoint_id")
+        if checkpoint_id:
+            index.append(
+                {
+                    "checkpoint_id": str(checkpoint_id),
+                    "tool_id": str(event.get("tool_id", "")),
+                    "tool_name": str(event.get("tool_name", "")),
+                    "diff": str(event.get("diff", "")).rstrip(),
+                }
+            )
+    return index
+
+
+def extract_checkpoint_index(path: str | Path) -> list[dict[str, str]]:
+    """Extract checkpoint lookup data from an exported Markdown transcript."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    index: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    in_diff = False
+    diff_lines: list[str] = []
+    for line in lines:
+        if line.startswith("- `"):
+            current = {"checkpoint_id": "", "tool_id": "", "tool_name": "", "diff": ""}
+            parts = line.split()
+            if len(parts) >= 3:
+                current["tool_name"] = parts[1]
+                current["tool_id"] = parts[2]
+            continue
+        if current is not None and line.strip().startswith("- checkpoint_id:"):
+            current["checkpoint_id"] = line.split("`", 2)[1]
+            index.append(current)
+            continue
+        if line == "```diff":
+            in_diff = True
+            diff_lines = []
+            continue
+        if in_diff and line == "```":
+            in_diff = False
+            if index:
+                index[-1]["diff"] = "\n".join(diff_lines)
+            continue
+        if in_diff:
+            diff_lines.append(line)
+    return [item for item in index if item["checkpoint_id"]]
+
+
 class TranscriptExporter:
     """Export session messages and tool events to Markdown."""
 

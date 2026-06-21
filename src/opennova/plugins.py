@@ -30,6 +30,7 @@ class PluginManifest:
     root: Path
     description: str = ""
     enabled: bool = True
+    signature: str = ""
     commands: list[dict[str, Any]] = field(default_factory=list)
     tools: list[dict[str, Any]] = field(default_factory=list)
     skills: list[Path] = field(default_factory=list)
@@ -62,6 +63,7 @@ class PluginManifest:
             root=plugin_root,
             description=str(data.get("description", "")),
             enabled=bool(data.get("enabled", True)),
+            signature=str(data.get("signature", "")),
             commands=list(data.get("commands", []) or []),
             tools=list(data.get("tools", []) or []),
             skills=skills,
@@ -176,6 +178,7 @@ class PluginManager:
                     "description": manifest.description,
                     "path": str(manifest.root.relative_to(self.project_path)),
                     "enabled": manifest.enabled,
+                    "signature": manifest.signature,
                     "trusted": self.is_trusted(manifest.name),
                     "commands": [dict(command) for command in manifest.commands],
                     "tools": [
@@ -223,6 +226,30 @@ class PluginManager:
                 errors.append(f"Skill path does not exist: {skill}")
 
         return PluginTestReport(name=name, success=not errors, errors=errors)
+
+    def audit_permissions(self) -> list[dict[str, Any]]:
+        """Return a local permission audit for discovered plugins."""
+        audits: list[dict[str, Any]] = []
+        for manifest in self.plugins:
+            risks: list[str] = []
+            for tool in manifest.tools:
+                permission = self._tool_permission(tool)
+                if permission != "read":
+                    risks.append(f"tool:{tool.get('name', 'tool')}:{permission}")
+            if manifest.hooks:
+                risks.append(f"hooks:{len(manifest.hooks)}")
+            for server in manifest.mcp_servers:
+                if isinstance(server, dict):
+                    risks.append(f"mcp:{server.get('name', 'server')}")
+            audits.append(
+                {
+                    "name": manifest.name,
+                    "trusted": self.is_trusted(manifest.name),
+                    "signature": manifest.signature,
+                    "risks": risks,
+                }
+            )
+        return audits
 
     def compare_lockfile(self, lockfile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         """Compare a lockfile snapshot with currently loaded plugin manifests."""

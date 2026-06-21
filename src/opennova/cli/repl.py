@@ -284,7 +284,7 @@ class Renderer:
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
-- `/plugins [trust|untrust|test name|lock|drift]` - Manage and validate local project plugins
+- `/plugins [trust|untrust|test name|lock|drift|audit]` - Manage and audit local project plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
 - `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
