@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import py_compile
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,46 @@ class PythonExternalAnalyzer:
             argv=[],
             fallback_reason="No external Python analyzer available; using AST fallback",
         )
+
+    def run_diagnostics(
+        self,
+        path: str | Path,
+        runner: Any | None = None,
+    ) -> dict[str, Any]:
+        """Run one external diagnostics command or return AST fallback metadata."""
+        plan = self.plan_diagnostics(path)
+        if not plan.argv:
+            return {
+                "backend": plan.backend,
+                "success": True,
+                "argv": [],
+                "output": plan.fallback_reason,
+                "error": "",
+                "fallback": True,
+            }
+
+        if runner is None:
+            completed = subprocess.run(
+                plan.argv,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        else:
+            completed = runner(plan.argv)
+
+        returncode = int(getattr(completed, "returncode", 0) if not isinstance(completed, dict) else completed.get("returncode", 0))
+        stdout = str(getattr(completed, "stdout", "") if not isinstance(completed, dict) else completed.get("stdout", ""))
+        stderr = str(getattr(completed, "stderr", "") if not isinstance(completed, dict) else completed.get("stderr", ""))
+        return {
+            "backend": plan.backend,
+            "success": returncode == 0,
+            "argv": plan.argv,
+            "output": stdout,
+            "error": stderr,
+            "returncode": returncode,
+            "fallback": False,
+        }
 
 
 @dataclass

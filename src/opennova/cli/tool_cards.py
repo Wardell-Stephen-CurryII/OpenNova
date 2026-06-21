@@ -38,6 +38,16 @@ class ToolCardViewState:
     cancelled: bool = False
 
 
+@dataclass
+class ToolCardPanelState:
+    """UI-ready panel state for a collection of tool cards."""
+
+    cards: list[ToolCardViewState]
+    selected_tool_id: str | None
+    diff_panel: str = ""
+    actions: dict[str, bool] | None = None
+
+
 class ToolCardStore:
     """Maintain tool card state from canonical tool events."""
 
@@ -146,4 +156,32 @@ def build_tool_card_view(card: ToolCard, expanded: bool = False) -> ToolCardView
         diff_panel=(card.diff or "").rstrip(),
         approval_state=approval_state,
         cancelled=card.cancelled,
+    )
+
+
+def build_tool_card_panel(
+    store: ToolCardStore,
+    selected_tool_id: str | None = None,
+    expanded: bool = False,
+) -> ToolCardPanelState:
+    """Build a UI-ready panel model from tracked tool cards."""
+    selected_tool_id = selected_tool_id or next(iter(store.cards), None)
+    views: list[ToolCardViewState] = []
+    selected_card: ToolCard | None = None
+    for tool_id, card in store.cards.items():
+        is_selected = tool_id == selected_tool_id
+        if is_selected:
+            selected_card = card
+        views.append(build_tool_card_view(card, expanded=expanded and is_selected))
+
+    actions = {
+        "approve": bool(selected_card and selected_card.permission_reason),
+        "cancel": bool(selected_card and selected_card.status in {"running", "waiting_for_permission"}),
+        "toggle": bool(selected_card and selected_card.collapsible),
+    }
+    return ToolCardPanelState(
+        cards=views,
+        selected_tool_id=selected_tool_id,
+        diff_panel=(selected_card.diff or "").rstrip() if selected_card else "",
+        actions=actions,
     )

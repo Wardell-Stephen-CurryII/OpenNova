@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from opennova.plugins import PluginManager
 from opennova.tools.base import ToolResult
 
@@ -35,11 +37,39 @@ def handle_plugin_command(manager: PluginManager, args: str) -> ToolResult:
                 error="\n".join(report.errors),
                 metadata={"report": report},
             )
+
+        if subcommand == "lock":
+            lockfile = manager.build_lockfile()
+            lock_path = manager.plugins_dir / "lock.json"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path.write_text(json.dumps(lockfile, indent=2, ensure_ascii=False), encoding="utf-8")
+            return ToolResult(
+                success=True,
+                output=f"Plugin lockfile written: {lock_path}",
+                metadata={"lockfile": lockfile, "path": str(lock_path)},
+            )
+
+        if subcommand == "drift":
+            lock_path = manager.plugins_dir / "lock.json"
+            if not lock_path.exists():
+                return ToolResult(success=False, output="", error=f"Plugin lockfile not found: {lock_path}")
+            lockfile = json.loads(lock_path.read_text(encoding="utf-8"))
+            drift = manager.compare_lockfile(lockfile)
+            lines: list[str] = []
+            for key in ("added", "removed"):
+                lines.extend(f"{key}: {item['name']}" for item in drift[key])
+            for item in drift["changed"]:
+                lines.append(f"changed: {item['name']} ({'; '.join(item['changes'])})")
+            return ToolResult(
+                success=True,
+                output="\n".join(lines) or "No plugin drift detected.",
+                metadata={"drift": drift},
+            )
     except Exception as exc:
         return ToolResult(success=False, output="", error=str(exc))
 
     return ToolResult(
         success=False,
         output="",
-        error="Usage: /plugins [list|test <name>]",
+        error="Usage: /plugins [list|test <name>|lock|drift]",
     )

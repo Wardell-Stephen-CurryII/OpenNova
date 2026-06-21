@@ -284,13 +284,13 @@ class Renderer:
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
-- `/plugins [trust|untrust|test name]` - List, trust, or validate local project plugins
+- `/plugins [trust|untrust|test name|lock|drift]` - Manage and validate local project plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
 - `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
 - `/automations interval <name> <seconds> <prompt>` - Schedule an interval automation
 - `/automations pause|resume|delete|run-now <id>` - Manage local automations
-- `/automations daemon start|stop|status|tick` - Control the local automation daemon
+- `/automations daemon start|stop|status|tick|run` - Control the local automation daemon
 - `/diagnostics [path]` - Run Python syntax diagnostics
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary

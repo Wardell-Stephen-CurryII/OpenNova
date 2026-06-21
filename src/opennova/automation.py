@@ -215,3 +215,21 @@ class LocalAutomationDaemon:
             return []
         self.last_events = self.monitor.tick(runner)
         return self.last_events
+
+    def run_until_idle(
+        self,
+        runner: Callable[[ScheduledTask], object],
+        max_ticks: int = 10,
+    ) -> list[dict[str, object]]:
+        """Run monitor ticks until no due tasks remain or max_ticks is reached."""
+        if not self.running:
+            return []
+
+        all_events: list[dict[str, object]] = []
+        for _ in range(max_ticks):
+            events = self.monitor.tick(runner)
+            if not events:
+                break
+            all_events.extend(events)
+        self.last_events = all_events
+        return all_events
