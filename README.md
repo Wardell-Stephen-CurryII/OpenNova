@@ -176,7 +176,7 @@ Inside the interactive REPL:
 | `/init [--force]` | Let the model analyze the repo and generate `OPENNOVA.md` for long-term project memory |
 | `/config` | Show current configuration |
 | `/permissions [tool allow\|deny\|ask]` | Show or update persisted tool permission rules |
-| `/plugins [trust\|untrust\|test name\|lock\|drift]` | Manage, lock, and validate local project plugins |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit]` | Manage, lock, validate, and audit local project plugins |
 | `/hooks` | Show loaded hook counts |
 | `/automations` | List local scheduled automations |
 | `/automations once <name> <run_at> <prompt>` | Schedule a one-shot local automation |
@@ -192,6 +192,8 @@ Inside the interactive REPL:
 | `edit_file` checkpoint metadata | Edit and multi-edit operations also create restore checkpoints for existing files |
 | `/export [dir]` | Export the current transcript to Markdown, including tool checkpoint/diff details |
 | automation retry/archive | Local daemon retry events can be archived by an injected callback |
+| transcript checkpoint lookup | Exported transcripts can be indexed by `checkpoint_id` for later diff lookup |
+| diagnostics events | Python analysis results can be wrapped in a unified event payload |
 | `/history [n]` | Show recent conversation history |
 | `/resume <id>` | Resume a previous session |
 | `/sessions` | List saved sessions |

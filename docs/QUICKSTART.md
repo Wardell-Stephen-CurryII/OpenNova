@@ -119,7 +119,7 @@ opennova> /init
 | `uv run opennova init` | 初始化全局配置 |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
-| `/plugins [trust\|untrust\|test name\|lock\|drift]` | 管理、锁定和校验本地项目插件 |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit]` | 管理、锁定、校验和审计本地项目插件 |
 | `/automations` | 查看本地自动化任务 |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性自动化任务 |
 | `/automations interval <name> <seconds> <prompt>` | 创建周期自动化任务 |
@@ -133,6 +133,8 @@ opennova> /init
 | `edit_file` checkpoint metadata | edit 和 multi-edit 也会自动创建 checkpoint |
 | `/export [dir]` | 导出当前 transcript，并包含工具 checkpoint/diff 详情 |
 | automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 |
+| transcript checkpoint lookup | 导出的 transcript 可按 `checkpoint_id` 建索引 |
+| diagnostics events | Python 分析结果可包装成统一事件 payload |
 | `/help` | 查看交互命令帮助 |
 | `/exit` | 退出当前会话 |
 

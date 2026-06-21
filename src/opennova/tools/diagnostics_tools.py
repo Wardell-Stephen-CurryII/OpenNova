@@ -53,6 +53,17 @@ class PythonAnalysisCommandPlan:
     fallback_reason: str = ""
 
 
+@dataclass
+class PythonAnalysisEvent:
+    """Unified event shape for Python analysis results."""
+
+    kind: str
+    backend: str
+    path: str
+    success: bool
+    payload: dict[str, Any]
+
+
 def get_python_backend_status() -> PythonBackendStatus:
     """Return detailed Python analysis backend availability."""
     pyright_available = shutil.which("pyright") is not None
@@ -133,6 +144,17 @@ class PythonExternalAnalyzer:
             "returncode": returncode,
             "fallback": False,
         }
+
+    def event_for_diagnostics(self, path: str | Path, runner: Any | None = None) -> PythonAnalysisEvent:
+        """Return a unified diagnostics event."""
+        payload = self.run_diagnostics(path, runner=runner)
+        return PythonAnalysisEvent(
+            kind="diagnostics",
+            backend=str(payload.get("backend", self.status.backend)),
+            path=str(path),
+            success=bool(payload.get("success", False)),
+            payload=payload,
+        )
 
 
 @dataclass

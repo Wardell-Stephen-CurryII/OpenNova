@@ -167,6 +167,31 @@ class LocalAutomationScheduler:
             self.history.append(ScheduledRun(**run_data))
 
 
+class AutomationArchive:
+    """Append-only local archive for automation events."""
+
+    def __init__(self, archive_dir: str | Path):
+        self.archive_dir = Path(archive_dir)
+        self.path = self.archive_dir / "automation-events.jsonl"
+
+    def append_event(self, event: dict[str, object]) -> Path:
+        """Append one automation event to JSONL."""
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        return self.path
+
+    def read_events(self) -> list[dict[str, object]]:
+        """Read archived automation events."""
+        if not self.path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+
 class LocalAutomationMonitor:
     """Single-tick local automation monitor."""
 

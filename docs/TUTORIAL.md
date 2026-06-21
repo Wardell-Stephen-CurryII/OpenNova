@@ -277,7 +277,7 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` | `/init --force` |
 | `/config` | 显示配置 | `/config` |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 | `/permissions execute_command ask` |
-| `/plugins [trust\|untrust\|test name\|lock\|drift]` | 管理、锁定和校验本地项目插件 | `/plugins drift` |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit]` | 管理、锁定、校验和审计本地项目插件 | `/plugins audit` |
 | `/hooks` | 查看已加载 hooks | `/hooks` |
 | `/automations` | 查看本地自动化任务 | `/automations` |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性自动化任务 | `/automations once docs 200 Review docs` |
@@ -293,6 +293,8 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `edit_file` checkpoint metadata | edit 和 multi-edit 也会自动创建 checkpoint | `/checkpoint restore abc123` |
 | `/export [dir]` | 导出当前 transcript，并包含 checkpoint/diff | `/export .opennova/exports` |
 | automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 | `run_with_retry(...)` |
+| transcript checkpoint lookup | 按 `checkpoint_id` 从 transcript 反查 diff | `extract_checkpoint_index(path)` |
+| diagnostics events | Python 分析结果包装为统一事件 payload | `event_for_diagnostics(path)` |
 | `/history [n]` | 显示最近会话历史 | `/history 5` |
 | `/resume [id]` | 恢复历史会话 | `/resume abc123` |
 | `/sessions` | 列出历史会话 | `/sessions` |

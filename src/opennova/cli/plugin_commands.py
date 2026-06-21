@@ -75,11 +75,24 @@ def handle_plugin_command(manager: PluginManager, args: str) -> ToolResult:
                 output="\n".join(lines) or "No plugin drift detected.",
                 metadata={"drift": drift},
             )
+
+        if subcommand == "audit":
+            audit = manager.audit_permissions()
+            lines = [
+                f"{item['name']} trusted={item['trusted']} signature={item['signature'] or 'none'} "
+                f"risks={','.join(item['risks']) or 'none'}"
+                for item in audit
+            ]
+            return ToolResult(
+                success=True,
+                output="\n".join(lines) or "No local plugins discovered.",
+                metadata={"audit": audit},
+            )
     except Exception as exc:
         return ToolResult(success=False, output="", error=str(exc))
 
     return ToolResult(
         success=False,
         output="",
-        error="Usage: /plugins [list|trust <name>|untrust <name>|test <name>|lock|drift]",
+        error="Usage: /plugins [list|trust <name>|untrust <name>|test <name>|lock|drift|audit]",
     )
