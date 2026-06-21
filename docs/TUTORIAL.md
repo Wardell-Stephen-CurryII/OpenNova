@@ -277,17 +277,19 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` | `/init --force` |
 | `/config` | 显示配置 | `/config` |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 | `/permissions execute_command ask` |
-| `/plugins [trust\|untrust name]` | 查看或信任本地项目插件 | `/plugins trust demo` |
+| `/plugins [trust\|untrust\|test name]` | 查看、信任或校验本地项目插件 | `/plugins test demo` |
 | `/hooks` | 查看已加载 hooks | `/hooks` |
 | `/automations` | 查看本地自动化任务 | `/automations` |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性自动化任务 | `/automations once docs 200 Review docs` |
 | `/automations interval <name> <seconds> <prompt>` | 创建周期自动化任务 | `/automations interval docs 3600 Review docs` |
 | `/automations pause\|resume\|delete\|run-now <id>` | 管理自动化任务 | `/automations pause abc123` |
+| `/automations daemon start\|stop\|status\|tick` | 控制本地 automation daemon | `/automations daemon tick` |
 | `/diagnostics [path]` | 运行 Python 诊断 | `/diagnostics src` |
 | `/status` | 查看运行时状态 | `/status` |
 | `/todos` | 查看 TodoWrite 任务板 | `/todos` |
 | `/checkpoint` | 查看 checkpoint/rollback 状态 | `/checkpoint` |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint | `/checkpoint restore --preview abc123` |
+| `write_file` checkpoint metadata | 覆盖已有文件时自动创建 checkpoint | 查看工具结果中的 `checkpoint_id` |
 | `/export [dir]` | 导出当前 transcript | `/export .opennova/exports` |
 | `/history [n]` | 显示最近会话历史 | `/history 5` |
 | `/resume [id]` | 恢复历史会话 | `/resume abc123` |

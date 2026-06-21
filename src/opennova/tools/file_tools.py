@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from opennova.checkpoints import CheckpointManager
 from opennova.diff.engine import DiffEngine
 from opennova.security.sandbox import Sandbox, SandboxConfig
 from opennova.tools.base import BaseTool, ToolResult
@@ -233,6 +234,7 @@ class WriteFileTool(BaseTool):
         try:
             old_content = ""
             file_existed = path.exists()
+            checkpoint_id: str | None = None
             if file_existed:
                 read_ok, read_result = self.sandbox.safe_read(path)
                 if not read_ok:
@@ -242,6 +244,10 @@ class WriteFileTool(BaseTool):
                     if isinstance(read_result, bytes)
                     else ""
                 )
+                if bool(self.config.get("checkpoint_writes", True)):
+                    checkpoint_id = CheckpointManager(
+                        self.config.get("working_dir", os.getcwd())
+                    ).create("before write_file", [path])
 
             write_ok, write_result = self.sandbox.safe_write(path, content.encode("utf-8"))
             if not write_ok:
@@ -257,6 +263,8 @@ class WriteFileTool(BaseTool):
             }
             if diff_text.strip():
                 metadata["diff"] = diff_text
+            if checkpoint_id:
+                metadata["checkpoint_id"] = checkpoint_id
 
             return ToolResult(
                 success=True,

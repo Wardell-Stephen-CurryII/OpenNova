@@ -347,6 +347,7 @@ class OpenNovaTUI(App):
         self._start_time: float = 0.0
         self._tool_progress = ToolProgressTracker()
         self._tool_cards = ToolCardStore()
+        self._automation_daemon = None
         self._startup_resume_mode = startup_resume_mode
         self._replaying_transcript = False
         self.command_registry = SlashCommandRegistry.default()
@@ -899,12 +900,13 @@ class OpenNovaTUI(App):
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
-- `/plugins [trust|untrust name]` - List or trust local project plugins
+- `/plugins [trust|untrust|test name]` - List, trust, or validate local project plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
 - `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
 - `/automations interval <name> <seconds> <prompt>` - Schedule an interval automation
 - `/automations pause|resume|delete|run-now <id>` - Manage local automations
+- `/automations daemon start|stop|status|tick` - Control the local automation daemon
 - `/diagnostics [path]` - Run Python syntax diagnostics
 - `/status` - Show runtime/session status
 - `/todos` - Show current task summary
@@ -1189,6 +1191,16 @@ class OpenNovaTUI(App):
             manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
             log.write(f"[green]Untrusted plugin: {tokens[1]}[/green]")
             return
+        if tokens and tokens[0] == "test":
+            from opennova.cli.plugin_commands import handle_plugin_command
+
+            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+            result = handle_plugin_command(manager, args)
+            if result.success:
+                log.write(f"[green]{result.output}[/green]")
+            else:
+                log.write(f"[red]{result.error or 'Plugin command failed'}[/red]")
+            return
         plugins = manager.load_enabled_plugins(
             self.agent.config, hook_manager=self.agent.hook_manager
         )
@@ -1221,10 +1233,15 @@ class OpenNovaTUI(App):
 
         log = self.query_one("#messages")
         scheduler = LocalAutomationScheduler(Path(".opennova") / "automations.json")
+        if self._automation_daemon is None:
+            from opennova.automation import LocalAutomationDaemon
+
+            self._automation_daemon = LocalAutomationDaemon(scheduler)
         result = handle_automation_command(
             scheduler,
             args,
             runner=lambda task: f"Automation prompt ready for execution: {task.prompt}",
+            daemon=self._automation_daemon,
         )
         if result.success:
             log.write(result.output)

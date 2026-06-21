@@ -176,17 +176,19 @@ Inside the interactive REPL:
 | `/init [--force]` | Let the model analyze the repo and generate `OPENNOVA.md` for long-term project memory |
 | `/config` | Show current configuration |
 | `/permissions [tool allow\|deny\|ask]` | Show or update persisted tool permission rules |
-| `/plugins [trust\|untrust name]` | List local project plugins or trust/untrust active plugin contributions |
+| `/plugins [trust\|untrust\|test name]` | List, trust, or validate local project plugins |
 | `/hooks` | Show loaded hook counts |
 | `/automations` | List local scheduled automations |
 | `/automations once <name> <run_at> <prompt>` | Schedule a one-shot local automation |
 | `/automations interval <name> <seconds> <prompt>` | Schedule a recurring local automation |
 | `/automations pause\|resume\|delete\|run-now <id>` | Manage local automations |
+| `/automations daemon start\|stop\|status\|tick` | Control the local automation daemon |
 | `/diagnostics [path]` | Run Python syntax diagnostics |
 | `/status` | Show runtime/session status |
 | `/todos` | Show the current TodoWrite task board |
 | `/checkpoint` | Show checkpoint/rollback status |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | List, preview, or restore checkpoint snapshots |
+| `write_file` checkpoint metadata | Existing-file overwrites automatically create a checkpoint and return `checkpoint_id` |
 | `/export [dir]` | Export the current transcript to Markdown |
 | `/history [n]` | Show recent conversation history |
 | `/resume <id>` | Resume a previous session |

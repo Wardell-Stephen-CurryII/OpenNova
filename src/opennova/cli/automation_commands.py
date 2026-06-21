@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 from collections.abc import Callable
 
-from opennova.automation import LocalAutomationScheduler, ScheduledTask
+from opennova.automation import LocalAutomationDaemon, LocalAutomationScheduler, ScheduledTask
 from opennova.tools.base import ToolResult
 
 
@@ -13,6 +13,7 @@ def handle_automation_command(
     scheduler: LocalAutomationScheduler,
     args: str,
     runner: Callable[[ScheduledTask], object] | None = None,
+    daemon: LocalAutomationDaemon | None = None,
 ) -> ToolResult:
     """Handle `/automations` subcommands."""
     runner = runner or (lambda task: task.prompt)
@@ -20,6 +21,26 @@ def handle_automation_command(
     subcommand = tokens[0] if tokens else "list"
 
     try:
+        if subcommand == "daemon" and len(tokens) >= 2:
+            daemon = daemon or LocalAutomationDaemon(scheduler)
+            action = tokens[1]
+            if action == "start":
+                daemon.start()
+                return ToolResult(success=True, output="Automation daemon started")
+            if action == "stop":
+                daemon.stop()
+                return ToolResult(success=True, output="Automation daemon stopped")
+            if action == "status":
+                return ToolResult(
+                    success=True,
+                    output=f"Automation daemon running={daemon.running} last_events={len(daemon.last_events)}",
+                    metadata={"running": daemon.running, "last_events": daemon.last_events},
+                )
+            if action == "tick":
+                events = daemon.run_once(runner)
+                output = "\n".join(str(event) for event in events) or "No automation events."
+                return ToolResult(success=True, output=output, metadata={"events": events})
+
         if subcommand == "list":
             tasks = scheduler.list_tasks()
             output = "\n".join(
@@ -71,6 +92,7 @@ def handle_automation_command(
         output="",
         error=(
             "Usage: /automations [list|once <name> <run_at> <prompt>|"
-            "interval <name> <seconds> <prompt>|pause <id>|resume <id>|delete <id>|run-now <id>]"
+            "interval <name> <seconds> <prompt>|pause <id>|resume <id>|delete <id>|"
+            "run-now <id>|daemon start|daemon stop|daemon status|daemon tick]"
         ),
     )
