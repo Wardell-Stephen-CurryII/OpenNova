@@ -284,7 +284,7 @@ class Renderer:
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
 - `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
-- `/plugins [trust|untrust|test name|lock|drift|audit [--policy strict]]` - Manage and audit local plugins
+- `/plugins [trust|untrust|test name|lock|drift|warnings|audit [--policy strict]]` - Manage and audit local plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
 - `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
@@ -296,6 +296,7 @@ class Renderer:
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
 - `/checkpoint list|diff|restore [--preview] <id>` - Manage checkpoint snapshots
+- `/checkpoint diff --session <session> <id>` - Inspect checkpoint diff from exported session transcript
 - `/checkpoint diff --from-transcript <path> <id>` - Inspect checkpoint diff from transcript
 - `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
@@ -890,7 +891,7 @@ class REPL:
             self.renderer.print("No plugin manager available.")
             return
         tokens = args.split()
-        if tokens and tokens[0] in {"trust", "untrust", "test", "lock", "drift"}:
+        if tokens and tokens[0] in {"trust", "untrust", "test", "lock", "drift", "warnings", "audit"}:
             from opennova.cli.plugin_commands import handle_plugin_command
 
             manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
@@ -927,7 +928,7 @@ class REPL:
 
     async def _cmd_automations(self, args: str) -> None:
         """List local automations."""
-        from opennova.automation import LocalAutomationScheduler
+        from opennova.automation import AutomationArchive, LocalAutomationScheduler
         from opennova.cli.automation_commands import handle_automation_command
 
         scheduler = LocalAutomationScheduler(Path(".opennova") / "automations.json")
@@ -940,6 +941,7 @@ class REPL:
             args,
             runner=lambda task: f"Automation prompt ready for execution: {task.prompt}",
             daemon=self._automation_daemon,
+            archive=AutomationArchive(Path(".opennova") / "automation-archive"),
         )
         if result.success:
             self.renderer.print(result.output)

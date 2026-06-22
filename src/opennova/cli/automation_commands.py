@@ -5,7 +5,13 @@ from __future__ import annotations
 import shlex
 from collections.abc import Callable
 
-from opennova.automation import LocalAutomationDaemon, LocalAutomationScheduler, ScheduledTask
+from opennova.automation import (
+    AutomationArchive,
+    LocalAutomationDaemon,
+    LocalAutomationScheduler,
+    ScheduledTask,
+    daemon_status,
+)
 from opennova.tools.base import ToolResult
 
 
@@ -14,6 +20,7 @@ def handle_automation_command(
     args: str,
     runner: Callable[[ScheduledTask], object] | None = None,
     daemon: LocalAutomationDaemon | None = None,
+    archive: AutomationArchive | None = None,
 ) -> ToolResult:
     """Handle `/automations` subcommands."""
     runner = runner or (lambda task: task.prompt)
@@ -31,10 +38,22 @@ def handle_automation_command(
                 daemon.stop()
                 return ToolResult(success=True, output="Automation daemon stopped")
             if action == "status":
+                status = daemon_status(daemon, archive=archive)
+                archive_summary = status.get("archive")
+                archive_text = ""
+                if isinstance(archive_summary, dict):
+                    archive_summary.setdefault("total_events", archive_summary.get("total", 0))
+                    archive_text = (
+                        f" archive_total={archive_summary.get('total', 0)}"
+                        f" archive_failed={archive_summary.get('failed', 0)}"
+                    )
                 return ToolResult(
                     success=True,
-                    output=f"Automation daemon running={daemon.running} last_events={len(daemon.last_events)}",
-                    metadata={"running": daemon.running, "last_events": daemon.last_events},
+                    output=(
+                        f"Automation daemon running={status['running']} "
+                        f"last_events={status['last_events_count']}{archive_text}"
+                    ),
+                    metadata=status,
                 )
             if action == "tick":
                 events = daemon.run_once(runner)

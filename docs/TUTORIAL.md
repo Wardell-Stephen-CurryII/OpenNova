@@ -277,7 +277,7 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` | `/init --force` |
 | `/config` | 显示配置 | `/config` |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 | `/permissions execute_command ask` |
-| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit [--policy strict]]` | 管理、锁定、校验和审计本地项目插件 | `/plugins audit --policy strict` |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|warnings\|audit [--policy strict]]` | 管理、锁定、校验、启动警告和审计本地项目插件 | `/plugins warnings --policy strict` |
 | `/hooks` | 查看已加载 hooks | `/hooks` |
 | `/automations` | 查看本地自动化任务 | `/automations` |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性自动化任务 | `/automations once docs 200 Review docs` |
@@ -289,6 +289,7 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/todos` | 查看 TodoWrite 任务板 | `/todos` |
 | `/checkpoint` | 查看 checkpoint/rollback 状态 | `/checkpoint` |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 列出、预览或恢复 checkpoint | `/checkpoint restore --preview abc123` |
+| `/checkpoint diff --session <session> <id>` | 从 session transcript 反查 checkpoint diff | `/checkpoint diff --session session-1 abc123` |
 | `/checkpoint diff --from-transcript <path> <id>` | 从 transcript 反查 checkpoint diff | `/checkpoint diff --from-transcript session.md abc123` |
 | `write_file` checkpoint metadata | 覆盖已有文件时自动创建 checkpoint | 查看工具结果中的 `checkpoint_id` |
 | `edit_file` checkpoint metadata | edit 和 multi-edit 也会自动创建 checkpoint | `/checkpoint restore abc123` |
@@ -296,7 +297,8 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 | `run_with_retry(...)` |
 | automation backoff/archive summary | 查看 retry delay 和 archive 摘要 | `archive.summary()` |
 | transcript checkpoint lookup | 按 `checkpoint_id` 从 transcript 反查 diff | `extract_checkpoint_index(path)` |
-| transcript session lookup | 按 session id 从导出目录反查 checkpoint diff | `resolve_checkpoint_diff_from_session(dir, session, checkpoint)` |
+| transcript session lookup | 按 session id 从导出目录反查 checkpoint diff | `/checkpoint diff --session session-1 abc123` |
+| plugin startup warnings | 报告插件 lockfile drift 和策略风险 | `/plugins warnings --policy strict` |
 | diagnostics events | 多类 Python 分析结果包装为统一事件 payload | `event_for_definition(path, symbol)` |
 | diagnostics server manager | 管理轻量 analysis server 生命周期 | `PythonAnalysisServerManager().status()` |
 | plugin startup warnings | 生成 drift 和 strict policy 启动警告 | `startup_warnings(...)` |

@@ -342,8 +342,15 @@ class PluginManager:
         current: dict[str, Any],
     ) -> list[str]:
         changes: list[str] = []
-        if locked.get("trusted") != current.get("trusted"):
-            changes.append("trusted changed")
+        scalar_fields = ("description", "enabled", "signature", "trusted")
+        for field_name in scalar_fields:
+            if locked.get(field_name) != current.get(field_name):
+                changes.append(f"{field_name} changed")
+
+        list_fields = ("commands", "skills", "hooks", "mcp_servers")
+        for field_name in list_fields:
+            if locked.get(field_name, []) != current.get(field_name, []):
+                changes.append(f"{field_name} changed")
 
         locked_tools = {tool.get("name"): tool for tool in locked.get("tools", [])}
         current_tools = {tool.get("name"): tool for tool in current.get("tools", [])}

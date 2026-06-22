@@ -189,6 +189,8 @@ class PythonAnalysisServerManager:
     def __init__(self, backend: str = "ast"):
         self.backend = backend
         self.running = False
+        self.argv = self.server_argv(backend)
+        self.process: dict[str, Any] | None = None
         self.analyzer = PythonExternalAnalyzer(
             PythonBackendStatus(
                 backend=backend,
@@ -197,31 +199,62 @@ class PythonAnalysisServerManager:
             )
         )
 
-    def start(self) -> None:
+    @staticmethod
+    def server_argv(backend: str) -> list[str]:
+        """Return the preferred long-running server command for a backend."""
+        if backend == "pyright":
+            return ["pyright-langserver", "--stdio"]
+        if backend == "ruff":
+            return ["ruff", "server"]
+        return []
+
+    def start(self, runner: Any | None = None) -> None:
+        """Start or mark the analysis server as running.
+
+        A runner can be injected by tests or adapters to avoid spawning a real
+        subprocess while still preserving lifecycle metadata.
+        """
+        if self.argv and runner is not None:
+            process = runner(self.argv)
+            self.process = process if isinstance(process, dict) else {"process": process}
+        elif self.argv:
+            self.process = {"argv": self.argv, "started": False}
         self.running = True
 
     def stop(self) -> None:
         self.running = False
 
     def status(self) -> dict[str, object]:
-        return {"backend": self.backend, "running": self.running}
+        return {
+            "backend": self.backend,
+            "running": self.running,
+            "argv": self.argv,
+            "process": self.process or {},
+        }
 
     def event_for(self, kind: str, path: str | Path, symbol: str = "") -> PythonAnalysisEvent:
         if kind == "diagnostics":
-            return self.analyzer.event_for_diagnostics(path)
-        if kind == "hover":
-            return self.analyzer.event_for_hover(path, symbol=symbol)
-        if kind == "definition":
-            return self.analyzer.event_for_definition(path, symbol=symbol)
-        if kind == "references":
-            return self.analyzer.event_for_references(path, symbol=symbol)
-        return PythonAnalysisEvent(
-            kind=kind,
-            backend=self.backend,
-            path=str(path),
-            success=False,
-            payload={"error": f"Unsupported analysis event: {kind}"},
-        )
+            event = self.analyzer.event_for_diagnostics(path)
+        elif kind == "hover":
+            event = self.analyzer.event_for_hover(path, symbol=symbol)
+        elif kind == "definition":
+            event = self.analyzer.event_for_definition(path, symbol=symbol)
+        elif kind == "references":
+            event = self.analyzer.event_for_references(path, symbol=symbol)
+        else:
+            event = PythonAnalysisEvent(
+                kind=kind,
+                backend=self.backend,
+                path=str(path),
+                success=False,
+                payload={"error": f"Unsupported analysis event: {kind}"},
+            )
+        event.payload = {
+            **event.payload,
+            "server_running": self.running,
+            "server_argv": self.argv,
+        }
+        return event
 
 
 @dataclass
