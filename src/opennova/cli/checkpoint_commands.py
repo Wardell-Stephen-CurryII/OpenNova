@@ -7,7 +7,7 @@ from pathlib import Path
 
 from opennova.checkpoints import CheckpointManager
 from opennova.tools.base import ToolResult
-from opennova.transcript import extract_checkpoint_index
+from opennova.transcript import extract_checkpoint_index, resolve_checkpoint_diff_from_session
 
 
 def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult:
@@ -37,11 +37,31 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
                     output="",
                     error=f"Checkpoint not found in transcript: {checkpoint_id}",
                 )
+            if command == "diff" and len(tokens) == 4 and tokens[1] == "--session":
+                session_id = tokens[2]
+                checkpoint_id = tokens[3]
+                export_dir = Path(project_path) / ".opennova" / "exports"
+                diff = resolve_checkpoint_diff_from_session(export_dir, session_id, checkpoint_id)
+                if diff:
+                    return ToolResult(
+                        success=True,
+                        output=diff,
+                        metadata={
+                            "session_id": session_id,
+                            "checkpoint_id": checkpoint_id,
+                            "export_dir": str(export_dir),
+                        },
+                    )
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Checkpoint not found in session transcript: {session_id} {checkpoint_id}",
+                )
             preview = command == "restore" and len(tokens) == 3 and tokens[1] == "--preview"
             if len(tokens) != 2 and not preview:
                 raise ValueError(
-                    "Usage: /checkpoint [list|diff <id>|diff --from-transcript <path> <id>|"
-                    "restore [--preview] <id>]"
+                    "Usage: /checkpoint [list|diff <id>|diff --session <session> <id>|"
+                    "diff --from-transcript <path> <id>|restore [--preview] <id>]"
                 )
 
             checkpoint_id = tokens[2] if preview else tokens[1]
@@ -61,7 +81,10 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
     return ToolResult(
         success=False,
         output="",
-        error="Usage: /checkpoint [list|diff <id>|diff --from-transcript <path> <id>|restore [--preview] <id>]",
+        error=(
+            "Usage: /checkpoint [list|diff <id>|diff --session <session> <id>|"
+            "diff --from-transcript <path> <id>|restore [--preview] <id>]"
+        ),
     )
 
 

@@ -76,6 +76,27 @@ def handle_plugin_command(manager: PluginManager, args: str) -> ToolResult:
                 metadata={"drift": drift},
             )
 
+        if subcommand == "warnings":
+            lock_path = manager.plugins_dir / "lock.json"
+            lockfile = None
+            if lock_path.exists():
+                lockfile = json.loads(lock_path.read_text(encoding="utf-8"))
+            policy = PluginPolicy.strict() if tokens[1:] == ["--policy", "strict"] else None
+            warnings = manager.startup_warnings(lockfile=lockfile, policy=policy)
+            lines = [
+                f"{item['type']}: {item['plugin']} {item['message']}".rstrip()
+                for item in warnings
+            ]
+            return ToolResult(
+                success=True,
+                output="\n".join(lines) or "No plugin startup warnings.",
+                metadata={
+                    "warnings": warnings,
+                    "policy": "strict" if policy else "default",
+                    "lockfile": str(lock_path) if lockfile else "",
+                },
+            )
+
         if subcommand == "audit":
             if tokens[1:] == ["--policy", "strict"]:
                 reports = manager.audit_policy(PluginPolicy.strict())
@@ -105,5 +126,8 @@ def handle_plugin_command(manager: PluginManager, args: str) -> ToolResult:
     return ToolResult(
         success=False,
         output="",
-        error="Usage: /plugins [list|trust <name>|untrust <name>|test <name>|lock|drift|audit]",
+        error=(
+            "Usage: /plugins [list|trust <name>|untrust <name>|test <name>|lock|"
+            "drift|warnings [--policy strict]|audit]"
+        ),
     )

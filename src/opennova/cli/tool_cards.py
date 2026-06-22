@@ -296,11 +296,27 @@ def build_tool_card_binding_plan(store: ToolCardStore) -> list[dict[str, object]
         "cancel": "cancel",
         "toggle_expanded": "toggle",
     }
+    disabled_reasons = {
+        "approve": "selected tool has no pending permission request",
+        "deny": "selected tool has no pending permission request",
+        "cancel": "selected tool is not running",
+        "toggle_expanded": "selected tool output is not collapsible",
+    }
     plan: list[dict[str, object]] = []
     for binding in tool_card_key_bindings():
         action = binding["action"]
         enabled = action in always_enabled or bool(actions.get(action_map.get(action, action)))
         item: dict[str, object] = dict(binding)
         item["enabled"] = enabled
+        item["disabled_reason"] = "" if enabled else disabled_reasons.get(action, "action unavailable")
         plan.append(item)
     return plan
+
+
+def render_tool_card_binding_help(store: ToolCardStore) -> str:
+    """Render key binding availability for Textual widgets and tests."""
+    lines: list[str] = []
+    for item in build_tool_card_binding_plan(store):
+        status = "enabled" if item["enabled"] else f"disabled: {item['disabled_reason']}"
+        lines.append(f"{item['key']} {item['action']} {status}")
+    return "\n".join(lines)

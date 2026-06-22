@@ -176,7 +176,7 @@ Inside the interactive REPL:
 | `/init [--force]` | Let the model analyze the repo and generate `OPENNOVA.md` for long-term project memory |
 | `/config` | Show current configuration |
 | `/permissions [tool allow\|deny\|ask]` | Show or update persisted tool permission rules |
-| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit [--policy strict]]` | Manage, lock, validate, and audit local project plugins |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|warnings\|audit [--policy strict]]` | Manage, lock, validate, warn, and audit local project plugins |
 | `/hooks` | Show loaded hook counts |
 | `/automations` | List local scheduled automations |
 | `/automations once <name> <run_at> <prompt>` | Schedule a one-shot local automation |
@@ -188,6 +188,7 @@ Inside the interactive REPL:
 | `/todos` | Show the current TodoWrite task board |
 | `/checkpoint` | Show checkpoint/rollback status |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | List, preview, or restore checkpoint snapshots |
+| `/checkpoint diff --session <session> <id>` | Inspect checkpoint diff from `.opennova/exports/<session>.md` |
 | `/checkpoint diff --from-transcript <path> <id>` | Inspect checkpoint diff from an exported transcript |
 | `write_file` checkpoint metadata | Existing-file overwrites automatically create a checkpoint and return `checkpoint_id` |
 | `edit_file` checkpoint metadata | Edit and multi-edit operations also create restore checkpoints for existing files |
@@ -195,9 +196,10 @@ Inside the interactive REPL:
 | automation retry/archive | Local daemon retry events can be archived by an injected callback |
 | automation backoff/archive summary | Retry delay and archive summaries are available for daemon productization |
 | transcript checkpoint lookup | Exported transcripts can be indexed by `checkpoint_id` for later diff lookup |
-| transcript session lookup | Transcript export directories can resolve checkpoint diffs by session id |
+| transcript session lookup | `/checkpoint diff --session` resolves checkpoint diffs by session id |
+| plugin startup warnings | `/plugins warnings --policy strict` reports lockfile drift and policy risks |
 | diagnostics events | Diagnostics, hover, definition, and references can be wrapped in unified event payloads |
-| diagnostics server manager | A lightweight server lifecycle facade prepares future pyright/ruff integration |
+| diagnostics server manager | A lightweight server lifecycle facade tracks pyright/ruff server argv and process metadata |
 | plugin startup warnings | Drift and strict policy warnings can be generated without blocking startup |
 | automation status archive | Daemon status can include archive summaries for productized status panels |
 | `/history [n]` | Show recent conversation history |

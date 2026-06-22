@@ -119,7 +119,7 @@ opennova> /init
 | `uv run opennova init` | 初始化全局配置 |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
 | `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
-| `/plugins [trust\|untrust\|test name\|lock\|drift\|audit [--policy strict]]` | 管理、锁定、校验和审计本地项目插件 |
+| `/plugins [trust\|untrust\|test name\|lock\|drift\|warnings\|audit [--policy strict]]` | 管理、锁定、校验、启动警告和审计本地项目插件 |
 | `/automations` | 查看本地自动化任务 |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性自动化任务 |
 | `/automations interval <name> <seconds> <prompt>` | 创建周期自动化任务 |
@@ -129,6 +129,7 @@ opennova> /init
 | `/status` | 查看当前运行时状态 |
 | `/todos` | 查看 TodoWrite 任务板 |
 | `/checkpoint list\|diff\|restore [--preview] <id>` | 管理 checkpoint 快照 |
+| `/checkpoint diff --session <session> <id>` | 从 `.opennova/exports/<session>.md` 反查 checkpoint diff |
 | `/checkpoint diff --from-transcript <path> <id>` | 从 transcript 反查 checkpoint diff |
 | `write_file` checkpoint metadata | 覆盖已有文件时自动创建 checkpoint |
 | `edit_file` checkpoint metadata | edit 和 multi-edit 也会自动创建 checkpoint |
@@ -136,9 +137,10 @@ opennova> /init
 | automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 |
 | automation backoff/archive summary | 提供 retry delay 和 archive 摘要能力 |
 | transcript checkpoint lookup | 导出的 transcript 可按 `checkpoint_id` 建索引 |
-| transcript session lookup | transcript 导出目录可按 session id 解析 checkpoint diff |
+| transcript session lookup | `/checkpoint diff --session` 可按 session id 解析 checkpoint diff |
+| plugin startup warnings | `/plugins warnings --policy strict` 可报告 lockfile drift 和策略风险 |
 | diagnostics events | diagnostics、hover、definition、references 可包装成统一事件 payload |
-| diagnostics server manager | 轻量 server 生命周期门面为后续 pyright/ruff 集成打基础 |
+| diagnostics server manager | 轻量 server 生命周期门面记录 pyright/ruff argv 和 process metadata |
 | plugin startup warnings | 可生成 drift 和 strict policy 启动警告 |
 | automation status archive | daemon status 可包含 archive 摘要 |
 | `/help` | 查看交互命令帮助 |
