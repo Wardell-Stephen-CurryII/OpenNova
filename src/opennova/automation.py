@@ -206,6 +206,21 @@ class AutomationArchive:
         }
 
 
+def daemon_status(
+    daemon: LocalAutomationDaemon,
+    archive: AutomationArchive | None = None,
+) -> dict[str, object]:
+    """Return daemon status with optional archive summary."""
+    status: dict[str, object] = {
+        "running": daemon.running,
+        "last_events_count": len(daemon.last_events),
+        "last_events": daemon.last_events,
+    }
+    if archive:
+        status["archive"] = archive.summary()
+    return status
+
+
 class LocalAutomationMonitor:
     """Single-tick local automation monitor."""
 
