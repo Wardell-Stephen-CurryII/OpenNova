@@ -58,6 +58,21 @@ def extract_checkpoint_index(path: str | Path) -> list[dict[str, str]]:
     return [item for item in index if item["checkpoint_id"]]
 
 
+def resolve_checkpoint_diff_from_session(
+    export_dir: str | Path,
+    session_id: str,
+    checkpoint_id: str,
+) -> str:
+    """Resolve a checkpoint diff from an exported transcript by session id."""
+    transcript_path = Path(export_dir) / f"{session_id}.md"
+    if not transcript_path.exists():
+        return ""
+    for item in extract_checkpoint_index(transcript_path):
+        if item["checkpoint_id"].startswith(checkpoint_id):
+            return item["diff"]
+    return ""
+
+
 class TranscriptExporter:
     """Export session messages and tool events to Markdown."""
 

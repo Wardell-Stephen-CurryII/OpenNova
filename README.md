@@ -195,7 +195,11 @@ Inside the interactive REPL:
 | automation retry/archive | Local daemon retry events can be archived by an injected callback |
 | automation backoff/archive summary | Retry delay and archive summaries are available for daemon productization |
 | transcript checkpoint lookup | Exported transcripts can be indexed by `checkpoint_id` for later diff lookup |
+| transcript session lookup | Transcript export directories can resolve checkpoint diffs by session id |
 | diagnostics events | Diagnostics, hover, definition, and references can be wrapped in unified event payloads |
+| diagnostics server manager | A lightweight server lifecycle facade prepares future pyright/ruff integration |
+| plugin startup warnings | Drift and strict policy warnings can be generated without blocking startup |
+| automation status archive | Daemon status can include archive summaries for productized status panels |
 | `/history [n]` | Show recent conversation history |
 | `/resume <id>` | Resume a previous session |
 | `/sessions` | List saved sessions |

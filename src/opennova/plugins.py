@@ -284,6 +284,44 @@ class PluginManager:
             )
         return reports
 
+    def startup_warnings(
+        self,
+        lockfile: dict[str, Any] | None = None,
+        policy: PluginPolicy | None = None,
+    ) -> list[dict[str, str]]:
+        """Return startup warning messages for drift and policy issues."""
+        warnings: list[dict[str, str]] = []
+        if lockfile:
+            drift = self.compare_lockfile(lockfile)
+            for item in drift["changed"]:
+                warnings.append(
+                    {
+                        "type": "drift",
+                        "plugin": str(item["name"]),
+                        "message": "; ".join(str(change) for change in item["changes"]),
+                    }
+                )
+            for key in ("added", "removed"):
+                for item in drift[key]:
+                    warnings.append(
+                        {
+                            "type": "drift",
+                            "plugin": str(item["name"]),
+                            "message": f"plugin {key[:-1]}",
+                        }
+                    )
+        if policy:
+            for report in self.audit_policy(policy):
+                if report["violations"]:
+                    warnings.append(
+                        {
+                            "type": "policy",
+                            "plugin": str(report["name"]),
+                            "message": ",".join(str(item) for item in report["violations"]),
+                        }
+                    )
+        return warnings
+
     def compare_lockfile(self, lockfile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         """Compare a lockfile snapshot with currently loaded plugin manifests."""
         current = {plugin["name"]: plugin for plugin in self.build_lockfile().get("plugins", [])}

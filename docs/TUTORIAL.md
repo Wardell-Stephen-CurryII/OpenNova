@@ -296,7 +296,11 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 | `run_with_retry(...)` |
 | automation backoff/archive summary | 查看 retry delay 和 archive 摘要 | `archive.summary()` |
 | transcript checkpoint lookup | 按 `checkpoint_id` 从 transcript 反查 diff | `extract_checkpoint_index(path)` |
+| transcript session lookup | 按 session id 从导出目录反查 checkpoint diff | `resolve_checkpoint_diff_from_session(dir, session, checkpoint)` |
 | diagnostics events | 多类 Python 分析结果包装为统一事件 payload | `event_for_definition(path, symbol)` |
+| diagnostics server manager | 管理轻量 analysis server 生命周期 | `PythonAnalysisServerManager().status()` |
+| plugin startup warnings | 生成 drift 和 strict policy 启动警告 | `startup_warnings(...)` |
+| automation status archive | daemon status 包含 archive 摘要 | `daemon_status(daemon, archive)` |
 | `/history [n]` | 显示最近会话历史 | `/history 5` |
 | `/resume [id]` | 恢复历史会话 | `/resume abc123` |
 | `/sessions` | 列出历史会话 | `/sessions` |

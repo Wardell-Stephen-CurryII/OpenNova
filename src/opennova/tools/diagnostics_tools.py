@@ -183,6 +183,47 @@ class PythonExternalAnalyzer:
         return self._symbol_event("references", path, symbol)
 
 
+class PythonAnalysisServerManager:
+    """Lightweight lifecycle facade for future Python analysis servers."""
+
+    def __init__(self, backend: str = "ast"):
+        self.backend = backend
+        self.running = False
+        self.analyzer = PythonExternalAnalyzer(
+            PythonBackendStatus(
+                backend=backend,
+                pyright_available=backend == "pyright",
+                ruff_available=backend == "ruff",
+            )
+        )
+
+    def start(self) -> None:
+        self.running = True
+
+    def stop(self) -> None:
+        self.running = False
+
+    def status(self) -> dict[str, object]:
+        return {"backend": self.backend, "running": self.running}
+
+    def event_for(self, kind: str, path: str | Path, symbol: str = "") -> PythonAnalysisEvent:
+        if kind == "diagnostics":
+            return self.analyzer.event_for_diagnostics(path)
+        if kind == "hover":
+            return self.analyzer.event_for_hover(path, symbol=symbol)
+        if kind == "definition":
+            return self.analyzer.event_for_definition(path, symbol=symbol)
+        if kind == "references":
+            return self.analyzer.event_for_references(path, symbol=symbol)
+        return PythonAnalysisEvent(
+            kind=kind,
+            backend=self.backend,
+            path=str(path),
+            success=False,
+            payload={"error": f"Unsupported analysis event: {kind}"},
+        )
+
+
 @dataclass
 class PythonSymbol:
     name: str

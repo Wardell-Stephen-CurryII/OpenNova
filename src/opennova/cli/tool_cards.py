@@ -283,3 +283,24 @@ def tool_card_key_bindings() -> list[dict[str, str]]:
         {"key": "d", "action": "deny", "description": "Deny selected permission request"},
         {"key": "c", "action": "cancel", "description": "Cancel selected tool"},
     ]
+
+
+def build_tool_card_binding_plan(store: ToolCardStore) -> list[dict[str, object]]:
+    """Merge static key bindings with current panel action availability."""
+    panel = build_tool_card_panel(store)
+    actions = panel.actions or {}
+    always_enabled = {"select_next", "select_previous"}
+    action_map = {
+        "approve": "approve",
+        "deny": "approve",
+        "cancel": "cancel",
+        "toggle_expanded": "toggle",
+    }
+    plan: list[dict[str, object]] = []
+    for binding in tool_card_key_bindings():
+        action = binding["action"]
+        enabled = action in always_enabled or bool(actions.get(action_map.get(action, action)))
+        item: dict[str, object] = dict(binding)
+        item["enabled"] = enabled
+        plan.append(item)
+    return plan

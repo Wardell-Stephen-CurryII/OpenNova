@@ -136,7 +136,11 @@ opennova> /init
 | automation retry/archive | 本地 daemon retry 事件可通过 callback 归档 |
 | automation backoff/archive summary | 提供 retry delay 和 archive 摘要能力 |
 | transcript checkpoint lookup | 导出的 transcript 可按 `checkpoint_id` 建索引 |
+| transcript session lookup | transcript 导出目录可按 session id 解析 checkpoint diff |
 | diagnostics events | diagnostics、hover、definition、references 可包装成统一事件 payload |
+| diagnostics server manager | 轻量 server 生命周期门面为后续 pyright/ruff 集成打基础 |
+| plugin startup warnings | 可生成 drift 和 strict policy 启动警告 |
+| automation status archive | daemon status 可包含 archive 摘要 |
 | `/help` | 查看交互命令帮助 |
 | `/exit` | 退出当前会话 |
 
