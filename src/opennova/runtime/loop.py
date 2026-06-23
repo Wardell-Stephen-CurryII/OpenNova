@@ -1034,7 +1034,9 @@ Rules:
 1. Always explain what you are doing before executing a tool or skill
 2. If a tool fails, try to understand the error and attempt a different approach
 3. Be careful with file operations - read before write when modifying existing files
-4. When the task is complete, provide a clear summary
+4. For multi-step implementation work, maintain explicit progress with todo/progress tracking
+5. If you are executing an approved plan, follow the current plan instead of silently re-planning
+6. When the task is complete, provide a clear summary
 """
         return prompt
 

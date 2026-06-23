@@ -396,6 +396,91 @@ def test_runtime_resume_session_keeps_writing_to_original_session_file(
     assert [message.content for message in loaded] == ["hello", "world", "again"]
 
 
+def test_session_manager_snapshot_persists_plan_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from opennova.runtime.state import Plan, PlanStep
+    from opennova.session import SessionManager
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = SessionManager(project_path=str(project))
+    session_id = manager.start_session()
+    plan = Plan(task="Saved plan", steps=[PlanStep(id="step_1", description="review")])
+
+    manager.save_snapshot(
+        [Message(role="user", content="hello")],
+        plan_state={
+            "current_plan": plan.to_dict(),
+            "plan_file_path": str(project / ".opennova" / "plan" / "saved-plan.md"),
+            "plan_approval_status": "awaiting_approval",
+        },
+    )
+
+    loaded = manager.load_session_with_summary(session_id)
+
+    assert loaded.plan_state["current_plan"]["task"] == "Saved plan"
+    assert loaded.plan_state["plan_approval_status"] == "awaiting_approval"
+
+
+def test_runtime_resume_session_restores_plan_state_from_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from opennova.memory.context import ContextManager
+    from opennova.runtime.agent import AgentRuntime
+    from opennova.runtime.state import Plan, PlanStep
+    from opennova.session import SessionManager
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = SessionManager(project_path=str(project))
+    session_id = manager.start_session()
+    plan = Plan(task="Saved plan", steps=[PlanStep(id="step_1", description="review")])
+    plan_path = project / ".opennova" / "plan" / "saved-plan.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text(
+        """# Saved Plan: Saved plan
+
+- Task: Saved plan
+
+## Summary
+
+Summary
+
+## Steps
+
+### step_1
+- Description: review from file
+- Status: `pending`
+""",
+        encoding="utf-8",
+    )
+    manager.save_snapshot(
+        [Message(role="user", content="hello")],
+        plan_state={
+            "current_plan": plan.to_dict(),
+            "plan_file_path": str(plan_path),
+            "plan_approval_status": "awaiting_approval",
+        },
+    )
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.context_manager = ContextManager(model="gpt-4o")
+    runtime.session_manager = manager
+    runtime.session_transcript = []
+    runtime.state = type("State", (), {})()
+    runtime.state.current_plan = None
+    runtime.state.plan_file_path = None
+    runtime.state.plan_approval_status = None
+    runtime.state.set_plan = lambda plan_obj: setattr(runtime.state, "current_plan", plan_obj)
+    runtime.state.set_plan_file_path = lambda path: setattr(runtime.state, "plan_file_path", path)
+
+    loaded = AgentRuntime.resume_session(runtime, session_id)
+
+    assert loaded.plan_state["plan_approval_status"] == "awaiting_approval"
+    assert runtime.state.current_plan.task == "Saved plan"
+    assert runtime.state.current_plan.steps[0].description == "review from file"
+    assert str(runtime.state.plan_file_path).endswith("saved-plan.md")
+
+
 def test_slash_command_registry_exposes_03_productization_commands():
     from opennova.cli.commands import SlashCommandRegistry
 

@@ -94,6 +94,7 @@ class Plan:
         for step in self.steps:
             if step.id == step_id:
                 step.status = StepStatus.RUNNING
+                self.status = PlanStatus.EXECUTING
                 break
 
     def mark_step_done(self, step_id: str, result: str | None = None) -> None:
@@ -125,6 +126,8 @@ class Plan:
             self.status = PlanStatus.FAILED
         elif all_done:
             self.status = PlanStatus.DONE
+        elif any(s.status == StepStatus.RUNNING for s in self.steps):
+            self.status = PlanStatus.EXECUTING
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""

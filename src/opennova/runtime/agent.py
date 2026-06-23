@@ -12,6 +12,7 @@ Manages the agent lifecycle:
 
 import copy
 import os
+import re
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -439,34 +440,26 @@ class AgentRuntime:
         plan_file_path = self._save_plan_to_project(plan)
         self.state.set_plan_file_path(plan_file_path)
         self.state.mark_plan_awaiting_approval()
+        self._sync_plan_progress(plan)
 
         self._emit("plan", plan, plan_file_path)
         return "Plan ready for approval"
 
     def _build_step_execution_task(self, plan: Plan, step: PlanStep) -> str:
         """Build an act-mode task prompt for an approved plan step."""
-        remaining_steps = [
-            pending_step.description
-            for pending_step in plan.steps
-            if pending_step.id != step.id and pending_step.status.value == "pending"
-        ]
-
         lines = [
             "Execute the approved development plan step.",
             f"Overall plan: {plan.task}",
             f"Current step ({step.id}): {step.description}",
+            f"Plan file: {self.state.plan_file_path or '(not saved)'}",
+            "",
+            "Complete plan snapshot:",
+            self._render_plan_snapshot(plan),
+            "",
+            "Follow the current approved plan exactly.",
+            "Do not re-plan from scratch.",
+            "If execution reveals the plan is stale or incorrect, update the plan status/notes first and then continue.",
         ]
-
-        if remaining_steps:
-            lines.append("Remaining planned steps:")
-            lines.extend(f"- {description}" for description in remaining_steps)
-
-        lines.extend(
-            [
-                "Work on the current step while keeping the approved plan in mind.",
-                "Do not re-plan from scratch unless execution reveals a concrete blocker.",
-            ]
-        )
 
         return "\n".join(lines)
 
@@ -542,16 +535,24 @@ class AgentRuntime:
 
         self.state.mark_plan_executing()
         plan.status = PlanStatus.EXECUTING
+        self._sync_plan_progress(plan)
+        self._persist_current_plan()
 
         while True:
             if self.state.is_complete:
                 break
+
+            refreshed_plan = self._refresh_plan_from_file()
+            if refreshed_plan is not None:
+                plan = refreshed_plan
 
             step = plan.get_next_step()
             if not step:
                 break
 
             plan.mark_step_running(step.id)
+            self._sync_plan_progress(plan, active_step_id=step.id)
+            self._persist_current_plan()
             self._emit("thought", f"Executing plan step {step.id}: {step.description}")
 
             step_task = self._build_step_execution_task(plan, step)
@@ -564,21 +565,29 @@ class AgentRuntime:
             if not result:
                 plan.mark_step_failed(step.id, "No result returned")
                 self.state.mark_plan_failed()
+                self._sync_plan_progress(plan)
+                self._persist_current_plan()
                 return self.state.last_result or "Plan execution complete"
 
             if result.startswith("Task incomplete:") or result.startswith("Task failed:"):
                 plan.mark_step_failed(step.id, result)
                 self.state.mark_plan_failed()
+                self._sync_plan_progress(plan)
+                self._persist_current_plan()
                 if not self._should_continue_on_failure():
                     return self.state.last_result or result
                 continue
 
             plan.mark_step_done(step.id, result)
+            self._sync_plan_progress(plan)
+            self._persist_current_plan()
 
         final_result = self.state.last_result or "Plan execution complete"
         if plan.status == PlanStatus.DONE:
+            self._sync_plan_progress(plan)
             self.state.clear_plan_state()
         elif plan.status == PlanStatus.FAILED:
+            self._sync_plan_progress(plan)
             self.state.mark_plan_failed()
 
         return final_result
@@ -607,7 +616,7 @@ class AgentRuntime:
 
     def _render_saved_plan(self, plan: Plan, plan_path: Path) -> str:
         """Render a generated plan into a readable markdown document."""
-        summary = Planner(self.llm).get_plan_summary(plan)
+        summary = self._render_plan_snapshot(plan)
         lines = [
             f"# Saved Plan: {plan.task}",
             "",
@@ -623,18 +632,148 @@ class AgentRuntime:
             "",
         ]
 
-        for index, step in enumerate(plan.steps, start=1):
-            lines.append(f"{index}. **{step.id}** — {step.description}")
+        for step in plan.steps:
+            lines.append(f"### {step.id}")
+            lines.append(f"- Description: {step.description}")
             if step.tool_hint:
-                lines.append(f"   - Tool hint: `{step.tool_hint}`")
-            lines.append(f"   - Status: `{step.status.value}`")
+                lines.append(f"- Tool hint: `{step.tool_hint}`")
+            lines.append(f"- Status: `{step.status.value}`")
             if step.result_summary:
-                lines.append(f"   - Result: {step.result_summary}")
+                lines.append(f"- Result: {step.result_summary}")
             if step.error:
-                lines.append(f"   - Error: {step.error}")
+                lines.append(f"- Error: {step.error}")
             lines.append("")
 
         return "\n".join(lines).rstrip() + "\n"
+
+    def _render_plan_snapshot(self, plan: Plan) -> str:
+        """Render a compact human-readable status snapshot for a plan."""
+        lines = []
+        for step in plan.steps:
+            parts = [f"- [{step.status.value}] {step.id}: {step.description}"]
+            if step.tool_hint:
+                parts.append(f"(tool: {step.tool_hint})")
+            if step.result_summary:
+                parts.append(f"result={step.result_summary}")
+            if step.error:
+                parts.append(f"error={step.error}")
+            lines.append(" ".join(parts))
+        return "\n".join(lines) if lines else "- (no steps)"
+
+    def _load_plan_from_markdown(self, content: str) -> Plan:
+        """Parse a saved plan markdown document into a Plan."""
+        task = ""
+        task_match = re.search(r"^# Saved Plan:\s*(.+)$", content, re.MULTILINE)
+        if task_match:
+            task = task_match.group(1).strip()
+        task_line_match = re.search(r"^- Task:\s*(.+)$", content, re.MULTILINE)
+        if task_line_match:
+            task = task or task_line_match.group(1).strip()
+
+        steps: list[PlanStep] = []
+        canonical_lines = content.splitlines()
+        current_step: PlanStep | None = None
+        saw_canonical = False
+        for raw_line in canonical_lines:
+            line = raw_line.strip()
+            heading_match = re.match(r"^###\s+(.+)$", line)
+            if heading_match:
+                saw_canonical = True
+                if current_step is not None:
+                    steps.append(current_step)
+                current_step = PlanStep(id=heading_match.group(1).strip(), description="")
+                continue
+            if current_step is None:
+                continue
+            if line.startswith("- Description:"):
+                current_step.description = line.split(":", 1)[1].strip()
+            elif line.startswith("- Tool hint:"):
+                current_step.tool_hint = line.split(":", 1)[1].strip().strip("`")
+            elif line.startswith("- Status:"):
+                status_value = line.split(":", 1)[1].strip().strip("`")
+                current_step.status = current_step.status.__class__(status_value)
+            elif line.startswith("- Result:"):
+                current_step.result_summary = line.split(":", 1)[1].strip()
+            elif line.startswith("- Error:"):
+                current_step.error = line.split(":", 1)[1].strip()
+        if current_step is not None:
+            steps.append(current_step)
+
+        if not saw_canonical:
+            steps = self._load_legacy_plan_steps(content)
+
+        plan = Plan(task=task or "Saved plan", steps=steps)
+        plan._update_plan_status()
+        return plan
+
+    def _load_legacy_plan_steps(self, content: str) -> list[PlanStep]:
+        """Parse the original numbered-list saved plan format."""
+        steps: list[PlanStep] = []
+        current_step: PlanStep | None = None
+        for raw_line in content.splitlines():
+            line = raw_line.rstrip()
+            step_match = re.match(r"^\d+\.\s+\*\*(.+?)\*\*\s+—\s+(.+)$", line.strip())
+            if step_match:
+                if current_step is not None:
+                    steps.append(current_step)
+                current_step = PlanStep(id=step_match.group(1).strip(), description=step_match.group(2).strip())
+                continue
+            if current_step is None:
+                continue
+            stripped = line.strip()
+            if stripped.startswith("- Tool hint:"):
+                current_step.tool_hint = stripped.split(":", 1)[1].strip().strip("`")
+            elif stripped.startswith("- Status:"):
+                status_value = stripped.split(":", 1)[1].strip().strip("`")
+                current_step.status = current_step.status.__class__(status_value)
+            elif stripped.startswith("- Result:"):
+                current_step.result_summary = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("- Error:"):
+                current_step.error = stripped.split(":", 1)[1].strip()
+        if current_step is not None:
+            steps.append(current_step)
+        return steps
+
+    def _persist_current_plan(self) -> None:
+        """Rewrite the current plan file using the canonical plan markdown format."""
+        plan = self.state.current_plan
+        plan_path = self.state.plan_file_path
+        if not plan or not plan_path:
+            return
+        path = Path(plan_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._render_saved_plan(plan, path), encoding="utf-8")
+
+    def _refresh_plan_from_file(self) -> Plan | None:
+        """Reload the current plan from disk if a saved plan file exists."""
+        plan_path = self.state.plan_file_path
+        if not plan_path:
+            return self.state.current_plan
+        path = Path(plan_path)
+        if not path.exists():
+            return self.state.current_plan
+        try:
+            plan = self._load_plan_from_markdown(path.read_text(encoding="utf-8"))
+        except Exception:
+            return self.state.current_plan
+        self.state.current_plan = plan
+        return plan
+
+    def _sync_plan_progress(self, plan: Plan, active_step_id: str | None = None) -> None:
+        """Mirror the top-level plan steps into the shared todo list state."""
+        from opennova.tools.todo_tools import TodoWriteTool
+
+        todos = []
+        for step in plan.steps:
+            status = "pending"
+            if step.status.value == "running" or step.id == active_step_id:
+                status = "in_progress"
+            elif step.status.value == "done":
+                status = "done"
+            elif step.status.value == "failed":
+                status = "cancelled"
+            todos.append({"id": step.id, "content": step.description, "status": status})
+        TodoWriteTool.replace_todos(todos)
 
     async def _confirm_plan(self, plan: Plan) -> bool:
         """
@@ -798,6 +937,7 @@ class AgentRuntime:
                 self.context_manager.messages,
                 compression_summary=summary,
                 transcript_events=self.session_transcript,
+                plan_state=self._serialize_plan_state(),
             )
         except Exception:
             pass
@@ -820,8 +960,52 @@ class AgentRuntime:
         # Keep writing to the resumed session instead of spawning a duplicate file.
         self.session_manager.resume_session(session_id)
         self.session_transcript = [dict(event.payload) for event in loaded.transcript_events]
+        self._restore_plan_state(loaded.plan_state)
         self._save_session_messages()
         return loaded
+
+    def _serialize_plan_state(self) -> dict[str, Any]:
+        """Return the minimal persisted plan-state payload for session resume."""
+        state = getattr(self, "state", None)
+        if state is None:
+            return {}
+        return {
+            "current_plan": state.current_plan.to_dict() if getattr(state, "current_plan", None) else None,
+            "plan_file_path": str(state.plan_file_path) if getattr(state, "plan_file_path", None) else None,
+            "plan_approval_status": getattr(getattr(state, "plan_approval_status", None), "value", None),
+        }
+
+    def _restore_plan_state(self, plan_state: dict[str, Any] | None) -> None:
+        """Restore persisted plan state, preferring the saved plan file when present."""
+        if not plan_state:
+            return
+
+        current_plan = plan_state.get("current_plan")
+        plan_file_path = plan_state.get("plan_file_path")
+        approval_status = plan_state.get("plan_approval_status")
+
+        if plan_file_path and hasattr(self.state, "set_plan_file_path"):
+            self.state.set_plan_file_path(plan_file_path)
+
+        restored_plan: Plan | None = None
+        if plan_file_path and Path(plan_file_path).exists():
+            try:
+                restored_plan = self._load_plan_from_markdown(
+                    Path(plan_file_path).read_text(encoding="utf-8")
+                )
+            except Exception:
+                restored_plan = None
+        elif isinstance(current_plan, dict):
+            restored_plan = Plan.from_dict(current_plan)
+
+        if restored_plan is not None and hasattr(self.state, "set_plan"):
+            self.state.set_plan(restored_plan)
+
+        if approval_status:
+            try:
+                self.state.plan_approval_status = PlanApprovalStatus(approval_status)
+            except ValueError:
+                pass
 
     def get_sessions(self) -> list[Any]:
         """List all saved sessions for the current project."""

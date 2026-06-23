@@ -7,7 +7,7 @@ in ``~/.opennova/sessions/<sanitized-project-path>/``.
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,7 @@ class LoadedSession:
     session_id: str
     messages: list[Any]
     transcript_events: list[SessionTranscriptEvent]
+    plan_state: dict[str, Any] = field(default_factory=dict)
     compression_summary: str | None = None
     compression_markers: list[CompressionMarker] | None = None
 
@@ -146,6 +147,7 @@ class SessionManager:
         *,
         compression_summary: str | None = None,
         transcript_events: list[dict[str, Any]] | list[SessionTranscriptEvent] | None = None,
+        plan_state: dict[str, Any] | None = None,
     ) -> None:
         """Rewrite the current session file with a single deduplicated snapshot."""
         if self._session_id is None or self._file is None:
@@ -200,6 +202,14 @@ class SessionManager:
                     "type": "transcript_event",
                     "session_id": self._session_id,
                     "event": payload,
+                }
+            )
+        if plan_state:
+            entries.append(
+                {
+                    "type": "plan_state",
+                    "session_id": self._session_id,
+                    "plan_state": plan_state,
                 }
             )
 
@@ -298,10 +308,12 @@ class SessionManager:
         messages = self.load_session(session_id, apply_compression=apply_compression)
         summary = markers[-1].summary if markers else None
         transcript_events = self._load_transcript_events(session_id)
+        plan_state = self._load_plan_state(session_id)
         return LoadedSession(
             session_id=session_id,
             messages=messages,
             transcript_events=transcript_events,
+            plan_state=plan_state,
             compression_summary=summary,
             compression_markers=markers,
         )
@@ -379,6 +391,26 @@ class SessionManager:
                     if kind:
                         events.append(SessionTranscriptEvent(kind=kind, payload=event))
         return events
+
+    def _load_plan_state(self, session_id: str) -> dict[str, Any]:
+        """Load persisted runtime plan state from a session file."""
+        file = self._sessions_dir / f"{session_id}.jsonl"
+        if not file.exists():
+            return {}
+
+        latest: dict[str, Any] = {}
+        with open(file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "plan_state" and isinstance(entry.get("plan_state"), dict):
+                    latest = dict(entry["plan_state"])
+        return latest
 
     def _dedupe_legacy_messages(self, messages: list[Any]) -> list[Any]:
         """Collapse repeated appended snapshots from legacy session files."""

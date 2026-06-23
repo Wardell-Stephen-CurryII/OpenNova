@@ -729,9 +729,82 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
         assert "# Saved Plan: Persist plan" in saved_content
         assert "- Task: Persist this plan" in saved_content
         assert "- Saved path: .opennova/plan/" in saved_content
-        assert "1. **step_1** — Write plan to disk" in saved_content
+        assert "### step_1" in saved_content
+        assert "- Description: Write plan to disk" in saved_content
+        assert "- Status: `pending`" in saved_content
     finally:
         os.chdir(previous_cwd)
+
+
+def test_agent_runtime_loads_legacy_saved_plan_format():
+    from opennova.runtime.agent import AgentRuntime
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    content = """# Saved Plan: Persist plan
+
+- Task: Persist this plan
+- Generated at: 2026-06-23T10:00:00
+- Saved path: .opennova/plan/plan_20260623_100000.md
+
+## Summary
+
+Summary text
+
+## Steps
+
+1. **step_1** — Write plan to disk
+   - Tool hint: `write_file`
+   - Status: `done`
+   - Result: wrote file
+
+2. **step_2** — Review results
+   - Status: `pending`
+"""
+
+    plan = AgentRuntime._load_plan_from_markdown(runtime, content)
+
+    assert plan.task == "Persist plan"
+    assert [step.id for step in plan.steps] == ["step_1", "step_2"]
+    assert plan.steps[0].tool_hint == "write_file"
+    assert plan.steps[0].status.value == "done"
+    assert plan.steps[0].result_summary == "wrote file"
+    assert plan.steps[1].status.value == "pending"
+
+
+def test_agent_runtime_plan_markdown_round_trip_preserves_status_fields(tmp_path: Path):
+    from opennova.runtime.state import Plan, PlanStep, StepStatus
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    plan = Plan(
+        task="Round trip plan",
+        steps=[
+            PlanStep(
+                id="step_1",
+                description="Inspect plan state",
+                status=StepStatus.RUNNING,
+                tool_hint="read_file",
+                result_summary="looked at file",
+            ),
+            PlanStep(
+                id="step_2",
+                description="Handle failure",
+                status=StepStatus.FAILED,
+                error="boom",
+            ),
+        ],
+    )
+    plan_path = tmp_path / "plan.md"
+
+    content = AgentRuntime._render_saved_plan(runtime, plan, plan_path)
+    loaded = AgentRuntime._load_plan_from_markdown(runtime, content)
+
+    assert loaded.task == "Round trip plan"
+    assert loaded.steps[0].status.value == "running"
+    assert loaded.steps[0].tool_hint == "read_file"
+    assert loaded.steps[0].result_summary == "looked at file"
+    assert loaded.steps[1].status.value == "failed"
+    assert loaded.steps[1].error == "boom"
 
 
 def test_agent_runtime_execute_approved_plan_runs_steps():
@@ -749,6 +822,9 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
     captured_tasks = []
     emitted_thoughts = []
     runtime._emit = lambda event, *args: emitted_thoughts.append(args[0]) if event == "thought" else None
+    runtime._sync_plan_progress = lambda plan, active_step_id=None: None
+    runtime._persist_current_plan = lambda: None
+    runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
 
     async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
         captured_tasks.append((task, preserve_plan_state))
@@ -765,6 +841,8 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
     assert captured_tasks[0][1] is True
     assert "Overall plan: Execute plan" in captured_tasks[0][0]
     assert "Current step (step_1): Do thing" in captured_tasks[0][0]
+    assert "Plan file: saved-plan.md" in captured_tasks[0][0]
+    assert "Complete plan snapshot:" in captured_tasks[0][0]
     assert runtime.state.plan_approval_status == PlanApprovalStatus.NONE
     assert runtime.state.mode == "act"
     assert runtime.state.current_plan is None
@@ -794,6 +872,9 @@ def test_agent_runtime_execute_approved_plan_skips_completed_steps():
     captured_tasks = []
     emitted_thoughts = []
     runtime._emit = lambda event, *args: emitted_thoughts.append(args[0]) if event == "thought" else None
+    runtime._sync_plan_progress = lambda plan, active_step_id=None: None
+    runtime._persist_current_plan = lambda: None
+    runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
 
     async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
         captured_tasks.append((task, preserve_plan_state))
@@ -825,6 +906,9 @@ def test_agent_runtime_execute_approved_plan_marks_failures_for_inspection():
     runtime.state.mark_plan_awaiting_approval()
     runtime.state.mark_plan_approved()
     runtime._emit = lambda *args, **kwargs: None
+    runtime._sync_plan_progress = lambda plan, active_step_id=None: None
+    runtime._persist_current_plan = lambda: None
+    runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
 
     async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
         runtime.state.last_result = f"Task failed: {task}"
@@ -842,6 +926,75 @@ def test_agent_runtime_execute_approved_plan_marks_failures_for_inspection():
     assert runtime.state.current_plan.status == PlanStatus.FAILED
     assert runtime.state.current_plan.steps[0].status == StepStatus.FAILED
     assert runtime.state.current_plan.steps[0].error == result
+
+
+def test_agent_runtime_execute_approved_plan_refreshes_plan_from_file_and_updates_progress():
+    from opennova.runtime.state import Plan, PlanStep, StepStatus
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    TodoWriteTool.replace_todos([])
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.show_thinking = True
+    runtime.state.set_plan(
+        Plan(
+            task="Execute plan",
+            steps=[
+                PlanStep(id="step_1", description="Stale description"),
+                PlanStep(id="step_2", description="Already done", status=StepStatus.DONE),
+            ],
+        )
+    )
+    runtime.state.set_plan_file_path("saved-plan.md")
+    runtime.state.mark_plan_awaiting_approval()
+    runtime.state.mark_plan_approved()
+    runtime._emit = lambda *args, **kwargs: None
+
+    refreshed_plan = Plan(
+        task="Execute plan",
+        steps=[
+            PlanStep(id="step_1", description="Fresh description from file"),
+            PlanStep(id="step_2", description="Already done", status=StepStatus.DONE),
+        ],
+    )
+    persisted_statuses = []
+
+    def fake_refresh():
+        runtime.state.current_plan = refreshed_plan
+        return refreshed_plan
+
+    def fake_persist():
+        persisted_statuses.append(
+            [(step.id, step.status.value, step.result_summary, step.error) for step in runtime.state.current_plan.steps]
+        )
+
+    runtime._refresh_plan_from_file = fake_refresh
+    runtime._persist_current_plan = fake_persist
+    runtime._sync_plan_progress = AgentRuntime._sync_plan_progress.__get__(runtime, AgentRuntime)
+
+    captured_tasks = []
+
+    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+        captured_tasks.append(task)
+        runtime.state.last_result = "done from execution"
+        return "done from execution"
+
+    runtime._run_act_mode = fake_run_act_mode
+    runtime._should_continue_on_failure = lambda: False
+
+    result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
+
+    assert result == "done from execution"
+    assert captured_tasks == [captured_tasks[0]]
+    assert "Fresh description from file" in captured_tasks[0]
+    assert persisted_statuses[0][0][1] == "pending"
+    assert persisted_statuses[1][0][1] == "running"
+    assert persisted_statuses[-1][0][1] == "done"
+    todos = TodoWriteTool.current_todos()
+    assert todos == [
+        {"id": "step_1", "content": "Fresh description from file", "status": "done"},
+        {"id": "step_2", "content": "Already done", "status": "done"},
+    ]
 
 
 def test_agent_runtime_execute_approved_plan_requires_approval():
@@ -1258,6 +1411,28 @@ def test_exit_plan_mode_tool_reports_runtime_plan_state(tmp_path: Path):
     assert result.metadata["plan_file_path"].endswith("plan.md")
     assert result.metadata["requires_confirmation"] is True
     assert result.metadata["plan_approval_status"] == "awaiting_approval"
+
+
+def test_enter_plan_mode_tool_mentions_reusing_existing_plan(tmp_path: Path):
+    state = AgentState()
+    state.set_plan_file_path(tmp_path / "plan.md")
+    tool = EnterPlanModeTool(config={"state": state})
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert "read the existing saved plan first" in result.metadata["instructions"].lower()
+
+
+def test_exit_plan_mode_tool_requires_existing_plan():
+    state = AgentState()
+    state.set_mode("plan")
+    tool = ExitPlanModeTool(config={"state": state})
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert "no plan is available" in result.error.lower()
 
 
 

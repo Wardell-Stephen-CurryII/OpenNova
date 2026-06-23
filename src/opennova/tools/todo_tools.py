@@ -22,23 +22,11 @@ class TodoWriteTool(BaseTool):
     _todos: list[dict[str, Any]] = []
 
     def execute(self, todos: list[dict[str, Any]]) -> ToolResult:
-        normalized: list[dict[str, Any]] = []
-        valid_statuses = {"pending", "in_progress", "done", "cancelled"}
-        for index, todo in enumerate(todos, start=1):
-            content = str(todo.get("content", "")).strip()
-            if not content:
-                return ToolResult(success=False, output="", error=f"Todo {index} is missing content")
-            status = str(todo.get("status", "pending"))
-            if status not in valid_statuses:
-                return ToolResult(success=False, output="", error=f"Invalid todo status: {status}")
-            normalized.append(
-                {
-                    "id": str(todo.get("id") or index),
-                    "content": content,
-                    "status": status,
-                }
-            )
+        normalized_or_error = self._normalize_todos(todos)
+        if isinstance(normalized_or_error, str):
+            return ToolResult(success=False, output="", error=normalized_or_error)
 
+        normalized = normalized_or_error
         self.__class__._todos = normalized
         lines = [f"- [{item['status']}] {item['id']}: {item['content']}" for item in normalized]
         return ToolResult(
@@ -56,3 +44,32 @@ class TodoWriteTool(BaseTool):
     @classmethod
     def current_todos(cls) -> list[dict[str, Any]]:
         return list(cls._todos)
+
+    @classmethod
+    def replace_todos(cls, todos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Replace the current todos without emitting a tool transcript event."""
+        normalized_or_error = cls._normalize_todos(todos)
+        if isinstance(normalized_or_error, str):
+            raise ValueError(normalized_or_error)
+        cls._todos = normalized_or_error
+        return list(cls._todos)
+
+    @staticmethod
+    def _normalize_todos(todos: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
+        normalized: list[dict[str, Any]] = []
+        valid_statuses = {"pending", "in_progress", "done", "cancelled"}
+        for index, todo in enumerate(todos, start=1):
+            content = str(todo.get("content", "")).strip()
+            if not content:
+                return f"Todo {index} is missing content"
+            status = str(todo.get("status", "pending"))
+            if status not in valid_statuses:
+                return f"Invalid todo status: {status}"
+            normalized.append(
+                {
+                    "id": str(todo.get("id") or index),
+                    "content": content,
+                    "status": status,
+                }
+            )
+        return normalized

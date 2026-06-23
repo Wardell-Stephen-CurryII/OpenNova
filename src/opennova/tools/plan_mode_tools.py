@@ -57,11 +57,12 @@ class EnterPlanModeTool(BaseTool):
 
 In plan mode, you'll:
 1. Thoroughly explore the codebase using Glob, Grep, and Read tools
-2. Understand existing patterns and architecture
-3. Design an implementation approach
-4. Present your plan to the user for approval
-5. Use AskUserQuestion if you need to clarify approaches
-6. Exit plan mode with ExitPlanMode when ready to implement
+2. If a saved plan already exists, read the existing saved plan first before making changes
+3. Understand existing patterns and architecture
+4. Design an implementation approach
+5. Present your plan to the user for approval
+6. Use AskUserQuestion if you need to clarify approaches
+7. Exit plan mode with ExitPlanMode when ready to implement
 
 ## When to Use This Tool
 
@@ -107,6 +108,12 @@ class ExitPlanModeTool(BaseTool):
         """
         try:
             state = self.config.get("state")
+            if isinstance(state, AgentState) and not state.current_plan:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error="No plan is available to approve. Create or load a plan before exiting plan mode.",
+                )
             if isinstance(state, AgentState):
                 state.mark_plan_awaiting_approval()
 
