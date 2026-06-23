@@ -48,9 +48,44 @@ hooks:
 
     assert [plugin.name for plugin in loaded] == ["demo"]
     assert event["metadata"]["plugin"] == "demo"
-    assert str(plugin_dir / "skills") in config["skills"]["dirs"]
+    assert config["skills"]["dirs"] == []
     assert config["mcp"]["servers"][0]["name"] == "demo_mcp"
     assert loaded[0].commands[0]["name"] == "demo-command"
+
+
+def test_plugin_manager_exposes_trusted_skill_sources_with_namespaces(tmp_path: Path):
+    from opennova.plugins import PluginManager
+
+    plugin_dir = tmp_path / ".opennova" / "plugins" / "demo"
+    direct_skill = plugin_dir / "skills"
+    nested_skill = plugin_dir / "skills" / "frontend" / "review"
+    direct_skill.mkdir(parents=True)
+    nested_skill.mkdir(parents=True)
+    (direct_skill / "SKILL.md").write_text("---\ndescription: Direct skill\n---\nBody\n", encoding="utf-8")
+    (nested_skill / "SKILL.md").write_text("---\ndescription: Review skill\n---\nBody\n", encoding="utf-8")
+    (plugin_dir / "plugin.yaml").write_text("name: demo\nskills:\n  - skills\n", encoding="utf-8")
+
+    manager = PluginManager(project_path=tmp_path)
+    manager.trust_plugin("demo")
+    manager.load_enabled_plugins(config={}, hook_manager=None)
+    sources = manager.get_skill_sources()
+
+    assert len(sources) == 1
+    assert sources[0].plugin_name == "demo"
+    assert sources[0].root == direct_skill
+
+
+def test_plugin_manager_omits_untrusted_skill_sources(tmp_path: Path):
+    from opennova.plugins import PluginManager
+
+    plugin_dir = tmp_path / ".opennova" / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: demo\nskills:\n  - skills\n", encoding="utf-8")
+
+    manager = PluginManager(project_path=tmp_path)
+    manager.load_enabled_plugins(config={}, hook_manager=None)
+
+    assert manager.get_skill_sources() == []
 
 
 def test_plugin_manager_skips_disabled_plugins(tmp_path: Path):

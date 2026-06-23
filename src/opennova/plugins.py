@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from opennova.hooks import HookManager
+from opennova.skills.base import SkillSource
 
 
 @dataclass
@@ -105,6 +106,7 @@ class PluginManager:
         self.errors: dict[str, str] = {}
         self.commands: list[dict[str, Any]] = []
         self.trusted_plugins: set[str] = self._load_trusted_plugins()
+        self.skill_sources: list[SkillSource] = []
 
     def trust_plugin(self, name: str) -> None:
         """Persist trust for a local plugin so active contributions can load."""
@@ -135,6 +137,7 @@ class PluginManager:
         self.plugins = []
         self.errors = {}
         self.commands = []
+        self.skill_sources = []
         self.trusted_plugins = self._load_trusted_plugins()
 
         for manifest_path in self.discover_manifests():
@@ -180,6 +183,10 @@ class PluginManager:
                     )
                 )
         return tools
+
+    def get_skill_sources(self) -> list[SkillSource]:
+        """Return trusted plugin skill roots as first-class skill sources."""
+        return list(self.skill_sources)
 
     def build_lockfile(self) -> dict[str, Any]:
         """Build a local trust snapshot for discovered plugins."""
@@ -392,12 +399,15 @@ class PluginManager:
         config: dict[str, Any],
         hook_manager: HookManager | None,
     ) -> None:
-        skills_config = config.setdefault("skills", {})
-        skill_dirs = skills_config.setdefault("dirs", [])
         for skill_dir in manifest.skills:
-            skill_path = str(skill_dir)
-            if skill_path not in skill_dirs:
-                skill_dirs.append(skill_path)
+            self.skill_sources.append(
+                SkillSource(
+                    root=skill_dir,
+                    plugin_name=manifest.name,
+                    source_type="plugin",
+                    loaded_from="plugin",
+                )
+            )
 
         mcp_config = config.setdefault("mcp", {})
         mcp_servers = mcp_config.setdefault("servers", [])

@@ -299,6 +299,7 @@ class AgentRuntime:
 
         self.skill_registry.load_all(
             directories=skill_dirs,
+            sources=self.plugin_manager.get_skill_sources(),
             excluded=excluded,
         )
 
@@ -1109,6 +1110,12 @@ class AgentRuntime:
             return self.skill_registry.list_user_invocable_skills()
         return []
 
+    def get_skill_argument_hint(self, skill_name: str, typed_args: str = "") -> str | None:
+        """Get a progressive argument hint for a loaded skill."""
+        if not self.skill_registry:
+            return None
+        return self.skill_registry.get_skill_argument_hint(skill_name, typed_args)
+
     def invoke_skill(self, skill_name: str, skill_args: str = "", caller: str = "user") -> ToolResult:
         """Invoke a loaded skill for either the user or the model."""
         if not self.skill_registry:
@@ -1116,28 +1123,42 @@ class AgentRuntime:
 
         normalized_name = str(skill_name).strip().lstrip("/")
         normalized_args = str(skill_args).strip()
-        skill = self.skill_registry.get_skill(normalized_name)
-        if not skill:
+        resolution = self.skill_registry.resolve_skill_name(normalized_name)
+        if resolution.is_ambiguous:
+            matches = ", ".join(resolution.matches)
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Ambiguous skill '{normalized_name}'. Use one of: {matches}",
+            )
+        if not resolution.resolved_name:
             return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' is unavailable")
+        resolved_name = resolution.resolved_name
 
         if caller == "model":
-            if not self.skill_registry.can_model_invoke(normalized_name):
-                return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' cannot be invoked by the model")
+            if not self.skill_registry.can_model_invoke(resolved_name):
+                return ToolResult(success=False, output="", error=f"Skill '{resolved_name}' cannot be invoked by the model")
         else:
-            if not self.skill_registry.can_user_invoke(normalized_name):
-                return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' cannot be invoked directly by the user")
+            if not self.skill_registry.can_user_invoke(resolved_name):
+                return ToolResult(success=False, output="", error=f"Skill '{resolved_name}' cannot be invoked directly by the user")
 
-        prompt = self.skill_registry.materialize_skill_prompt(normalized_name, normalized_args)
+        prompt = self.skill_registry.materialize_skill_prompt(resolved_name, normalized_args)
         if prompt is None:
-            return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' is unavailable")
+            return ToolResult(success=False, output="", error=f"Skill '{resolved_name}' is unavailable")
 
         return ToolResult(
             success=True,
-            output=f"Invoked skill: {normalized_name}",
+            output=f"Invoked skill: {resolved_name}",
             metadata={
                 "skill": normalized_name,
+                "resolved_skill": resolved_name,
                 "args": normalized_args,
-                "skill_prompt": prompt,
+                "skill_prompt": prompt.prompt,
+                "allowed_tools": prompt.allowed_tools,
+                "model": prompt.model,
+                "argument_names": prompt.argument_names,
+                "source_path": prompt.source_path,
+                "skill_dir": prompt.skill_dir,
                 "caller": caller,
             },
         )
@@ -1172,6 +1193,7 @@ class AgentRuntime:
 
         self.skill_registry.load_all(
             directories=[*get_builtin_skill_dirs(), *configured_dirs],
+            sources=self.plugin_manager.get_skill_sources(),
             excluded=excluded,
         )
         return len(self.skill_registry)

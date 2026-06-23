@@ -78,10 +78,20 @@ class SlashCommandCompleter(Completer):
 
         skills = self.repl.agent.get_skills() if hasattr(self.repl.agent, "get_skills") else []
         skill_token = ""
+        typed_args = ""
         if len(parts) >= 2:
             skill_token = parts[1]
+            if len(parts) >= 3:
+                typed_args = text.split(None, 2)[2]
         elif not ends_with_space:
             return
+
+        if len(parts) >= 2 and ends_with_space:
+            skill_hint = None
+            if hasattr(self.repl.agent, "get_skill_argument_hint"):
+                skill_hint = self.repl.agent.get_skill_argument_hint(skill_token, typed_args)
+            if skill_hint:
+                yield Completion(skill_hint, start_position=0, display=skill_hint)
 
         for skill in skills:
             if skill.startswith(skill_token):
@@ -688,7 +698,8 @@ class REPL:
             self.renderer.print_error("Skill prompt is empty")
             return
 
-        self.renderer.print_success(f"Invoked skill: {skill_name}")
+        resolved_name = result.metadata.get("resolved_skill", skill_name)
+        self.renderer.print_success(f"Invoked skill: {resolved_name}")
 
         # Step 2: Add the skill prompt to context
         from opennova.providers.base import Message
@@ -696,12 +707,12 @@ class REPL:
         self.agent.context_manager.add_message(
             Message(
                 role="user",
-                content=f"Invoked skill '{skill_name}':\n\n{skill_prompt}",
+                content=f"Invoked skill '{resolved_name}':\n\n{skill_prompt}",
             )
         )
 
         # Step 3: Run the agent with preserved context so it processes the skill
-        task = f"/skill {skill_name} {skill_args}".strip()
+        task = f"/skill {resolved_name} {skill_args}".strip()
         self._register_act_callbacks()
         self.agent.register_callback("interaction", self._handle_interaction)
 

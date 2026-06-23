@@ -1168,6 +1168,18 @@ def test_repl_skill_completer_lists_user_invocable_skill_names():
     assert _completion_texts(repl, "/skill code_") == ["code_review"]
 
 
+def test_repl_skill_completer_shows_progressive_argument_hint():
+    """REPL completer should show remaining named arguments after selecting a skill."""
+    from opennova.cli.repl import REPL
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.get_skills = lambda: ["frontend:review"]
+    runtime.get_skill_argument_hint = lambda skill, typed_args="": "[path]"
+    repl = REPL(runtime, config=None)
+
+    assert _completion_texts(repl, "/skill frontend:review ") == ["[path]", "frontend:review"]
+
+
 def test_repl_config_command_handles_missing_config():
     """REPL /config should show a helpful error when config is unavailable."""
     from opennova.cli.repl import REPL

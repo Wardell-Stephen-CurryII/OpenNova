@@ -722,8 +722,14 @@ class OpenNovaTUI(App):
         """Complete slash command names and skill names after /skill."""
         # If after "/skill ", complete skill names
         if text.startswith("/skill ") or text == "/skill":
-            skill_prefix = text[len("/skill") :].lstrip()
+            remainder = text[len("/skill") :].lstrip()
+            skill_prefix = remainder
             skills = self.agent.get_skills()
+            tokens = remainder.split(maxsplit=1)
+            if text.endswith(" ") and tokens:
+                hint = self.agent.get_skill_argument_hint(tokens[0], tokens[1] if len(tokens) > 1 else "")
+                if hint:
+                    return [f"{text}{hint}"]
             matches = [f"/skill {s}" for s in skills if s.startswith(skill_prefix)]
             if skill_prefix:
                 matches = [f"/skill {s}" for s in skills if s.startswith(skill_prefix)]
@@ -994,18 +1000,19 @@ class OpenNovaTUI(App):
             return
 
         log = self.query_one("#messages")
-        log.write(f"[green]Invoked skill: {skill_name}[/green]")
+        resolved_name = result.metadata.get("resolved_skill", skill_name)
+        log.write(f"[green]Invoked skill: {resolved_name}[/green]")
 
         from opennova.providers.base import Message
 
         self.agent.context_manager.add_message(
             Message(
                 role="user",
-                content=f"Invoked skill '{skill_name}':\n\n{skill_prompt}",
+                content=f"Invoked skill '{resolved_name}':\n\n{skill_prompt}",
             )
         )
 
-        task = f"/skill {skill_name} {skill_args}".strip()
+        task = f"/skill {resolved_name} {skill_args}".strip()
         await self._execute_task(task, preserve_context=True)
 
     async def _cmd_reload_skills(self, args: str) -> None:

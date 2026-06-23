@@ -1,28 +1,33 @@
 """Tests for Phase 3 modules (MCP and Skills)."""
 
 import asyncio
-import pytest
+import os
 import tempfile
 from pathlib import Path
-import os
 
-from opennova.mcp.connector import MCPConnector, MCPManager, MCPToolWrapper
+import pytest
+
 from opennova.mcp.types import (
-    MCPConnectionState,
+    MCPMessage,
     MCPServerConfig,
     MCPTool,
     MCPToolResult,
-    MCPMessage,
     TransportType,
 )
-from opennova.providers.base import FinishReason, LLMResponse, Message, ToolCall
-from opennova.skills.base import SkillLoader, LoadedSkill, SkillMetadata
-from opennova.skills.examples import get_builtin_skill_dirs
-from opennova.skills.registry import SkillRegistry
+from opennova.providers.base import FinishReason, LLMResponse, ToolCall
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.loop import ReActLoop
 from opennova.runtime.state import AgentState
-from opennova.tools.base import ToolRegistry, ToolResult, BaseTool
+from opennova.skills.arguments import (
+    generate_progressive_argument_hint,
+    parse_argument_names,
+    parse_arguments,
+    substitute_arguments,
+)
+from opennova.skills.base import MaterializedSkill, SkillLoader
+from opennova.skills.examples import get_builtin_skill_dirs
+from opennova.skills.registry import SkillRegistry
+from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 from opennova.tools.skill_tool import SkillTool
 
 
@@ -97,6 +102,30 @@ class TestMCPTypes:
 class TestSkills:
     """Tests for markdown skills system."""
 
+    def test_argument_substitution_supports_indexed_and_named_placeholders(self):
+        content = "All=$ARGUMENTS first=$0 second=$ARGUMENTS[1] target=$target path=$path"
+
+        rendered = substitute_arguments(
+            content,
+            'src/app.py "docs/spec file.md"',
+            argument_names=["target", "path"],
+        )
+
+        assert rendered == (
+            "All=src/app.py \"docs/spec file.md\" first=src/app.py "
+            "second=docs/spec file.md target=src/app.py path=docs/spec file.md"
+        )
+
+    def test_argument_substitution_appends_raw_arguments_when_no_placeholder_exists(self):
+        rendered = substitute_arguments("Review carefully.", "src/main.py")
+
+        assert rendered.endswith("\n\nARGUMENTS: src/main.py")
+
+    def test_argument_helpers_parse_shell_arguments_and_progressive_hints(self):
+        assert parse_arguments('foo "bar baz"') == ["foo", "bar baz"]
+        assert parse_argument_names(["target", "1", "path"]) == ["target", "path"]
+        assert generate_progressive_argument_hint(["target", "path"], ["src"]) == "[path]"
+
     def test_skill_loader_discovers_claude_style_default_directories(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -124,6 +153,47 @@ class TestSkills:
 
             assert (project_skill / "SKILL.md").resolve() in [path.resolve() for path in discovered]
             assert (home_skill / "SKILL.md").resolve() in [path.resolve() for path in discovered]
+
+    def test_skill_loader_discovers_nested_directories_and_single_file_skills(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            nested_dir = root / "frontend" / "review"
+            nested_dir.mkdir(parents=True)
+            (nested_dir / "SKILL.md").write_text("---\ndescription: Review UI\n---\nBody\n")
+            single_file = root / "ops.md"
+            single_file.write_text("---\ndescription: Ops helper\n---\nBody\n")
+            direct_root = root / "bundle"
+            direct_root.mkdir()
+            (direct_root / "SKILL.md").write_text("---\ndescription: Root skill\n---\nBody\n")
+            deeper = direct_root / "ignored-child"
+            deeper.mkdir()
+            (deeper / "SKILL.md").write_text("---\ndescription: Ignored\n---\nBody\n")
+
+            discovered = SkillLoader.discover_skills([root])
+            loaded = {path.name if path.name != "SKILL.md" else path.parent.name: path for path in discovered}
+
+            resolved = {path.resolve() for path in discovered}
+            assert (nested_dir / "SKILL.md").resolve() in resolved
+            assert single_file.resolve() in resolved
+            assert (direct_root / "SKILL.md").resolve() in resolved
+            assert (deeper / "SKILL.md").resolve() not in resolved
+            assert "review" in loaded
+            assert "ops.md" in loaded
+
+    def test_skill_loader_assigns_namespaces_and_deduplicates_realpaths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "review").mkdir(parents=True)
+            skill_file = root / "frontend" / "review" / "SKILL.md"
+            skill_file.write_text("---\ndescription: Review UI\n---\nBody\n")
+            alias_root = root / "alias-root"
+            alias_root.symlink_to(root / "frontend", target_is_directory=True)
+
+            loaded = SkillLoader.load_all_skills([root, alias_root])
+
+            assert list(loaded) == ["frontend:review"]
+            assert loaded["frontend:review"].metadata.namespace == "frontend"
+            assert loaded["frontend:review"].metadata.canonical_name == "frontend:review"
 
     def test_skill_loader_parses_frontmatter_and_description_fallback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -211,17 +281,40 @@ class TestSkills:
             assert registry.can_model_invoke("user-only") is False
             assert registry.can_user_invoke("user-only") is True
 
+    def test_skill_registry_resolves_unique_bare_name_and_rejects_ambiguous_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "review").mkdir(parents=True)
+            (root / "frontend" / "review" / "SKILL.md").write_text("---\ndescription: Frontend review\n---\nBody\n")
+            (root / "backend" / "review").mkdir(parents=True)
+            (root / "backend" / "review" / "SKILL.md").write_text("---\ndescription: Backend review\n---\nBody\n")
+            (root / "lint").mkdir()
+            (root / "lint" / "SKILL.md").write_text("---\ndescription: Lint\n---\nBody\n")
+
+            registry = SkillRegistry()
+            registry.load_all(directories=[root])
+
+            assert registry.resolve_skill_name("lint").resolved_name == "lint"
+            resolution = registry.resolve_skill_name("review")
+            assert resolution.resolved_name is None
+            assert resolution.matches == ["backend:review", "frontend:review"]
+
     def test_skill_registry_materializes_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "demo").mkdir()
-            (root / "demo" / "SKILL.md").write_text("---\nname: demo\ndescription: Demo\n---\nTarget: $ARGUMENTS\n")
+            (root / "demo" / "SKILL.md").write_text(
+                "---\nname: demo\ndescription: Demo\nallowed-tools: read_file, list_directory\nmodel: gpt-4o-mini\narguments: [target]\n---\nTarget: $target\n"
+            )
             registry = SkillRegistry()
             registry.load_all(directories=[root])
-            prompt = registry.materialize_skill_prompt("demo", "src/main.py")
-            assert prompt is not None
-            assert "Base directory for this skill" in prompt
-            assert "src/main.py" in prompt
+            materialized = registry.materialize_skill_prompt("demo", "src/main.py")
+            assert isinstance(materialized, MaterializedSkill)
+            assert "Base directory for this skill" in materialized.prompt
+            assert "src/main.py" in materialized.prompt
+            assert materialized.allowed_tools == ["read_file", "list_directory"]
+            assert materialized.model == "gpt-4o-mini"
+            assert materialized.argument_names == ["target"]
 
     def test_skill_tool_invokes_runtime_helper(self):
         class RuntimeStub:
@@ -268,6 +361,111 @@ class TestMCPRuntimeIntegration:
         assert [config.name for config in runtime._mcp_server_configs] == ["valid_stdio"]
         assert "invalid_sse" in runtime._mcp_config_errors
         assert "url is required for sse transport" in runtime._mcp_config_errors["invalid_sse"]
+
+
+class TestSkillRuntimeIntegration:
+    def test_agent_runtime_invoke_skill_returns_materialized_metadata(self):
+        runtime = AgentRuntime.__new__(AgentRuntime)
+        runtime.skill_registry = SkillRegistry()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "review").mkdir()
+            (root / "review" / "SKILL.md").write_text(
+                "---\ndescription: Review\nallowed-tools: read_file\nmodel: gpt-4o-mini\narguments: [target]\n---\nInspect $target\n"
+            )
+            runtime.skill_registry.load_all(directories=[root])
+
+            result = AgentRuntime.invoke_skill(runtime, "review", "src/main.py", caller="user")
+
+        assert result.success is True
+        assert result.metadata["skill"] == "review"
+        assert result.metadata["resolved_skill"] == "review"
+        assert result.metadata["allowed_tools"] == ["read_file"]
+        assert result.metadata["model"] == "gpt-4o-mini"
+        assert result.metadata["argument_names"] == ["target"]
+        assert "Inspect src/main.py" in result.metadata["skill_prompt"]
+
+    def test_agent_runtime_invoke_skill_rejects_ambiguous_bare_name(self):
+        runtime = AgentRuntime.__new__(AgentRuntime)
+        runtime.skill_registry = SkillRegistry()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "review").mkdir(parents=True)
+            (root / "frontend" / "review" / "SKILL.md").write_text("---\ndescription: Frontend\n---\nBody\n")
+            (root / "backend" / "review").mkdir(parents=True)
+            (root / "backend" / "review" / "SKILL.md").write_text("---\ndescription: Backend\n---\nBody\n")
+            runtime.skill_registry.load_all(directories=[root])
+
+            result = AgentRuntime.invoke_skill(runtime, "review", caller="user")
+
+        assert result.success is False
+        assert "Ambiguous skill" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_react_loop_applies_skill_tool_constraints_temporarily(self):
+        class RecordingProvider:
+            def __init__(self):
+                self.model = "base-model"
+                self.tools_seen = None
+
+            async def chat(self, messages, tools=None, **kwargs):
+                self.tools_seen = [tool.name for tool in tools or []]
+                return LLMResponse(content="done", finish_reason=FinishReason.STOP)
+
+            async def stream_chat(self, messages, tools=None, **kwargs):
+                if False:
+                    yield None
+
+        class ReadTool(BaseTool):
+            name = "read_file"
+            description = "Read"
+
+            def execute(self, **kwargs):
+                return ToolResult(success=True, output="ok")
+
+        class WriteTool(BaseTool):
+            name = "write_file"
+            description = "Write"
+
+            def execute(self, **kwargs):
+                return ToolResult(success=True, output="ok")
+
+        provider = RecordingProvider()
+        registry = ToolRegistry([ReadTool(), WriteTool()])
+        loop = ReActLoop(
+            llm=provider,
+            tool_registry=registry,
+            state=AgentState(),
+            stream=False,
+        )
+
+        action = type(
+            "Action",
+            (),
+            {"tool_name": "skill", "thought": "", "arguments": {"skill": "review", "args": ""}},
+        )()
+        result = ToolResult(
+            success=True,
+            output="Invoked skill: review",
+            metadata={
+                "skill": "review",
+                "skill_prompt": "Prompt",
+                "allowed_tools": ["read_file"],
+                "model": "gpt-4o-mini",
+            },
+        )
+
+        await loop._observe(action, result, None)
+        await loop._think()
+
+        assert provider.tools_seen == ["read_file"]
+        assert provider.model == "gpt-4o-mini"
+
+        loop._clear_skill_execution_context()
+
+        assert provider.model == "base-model"
 
     @pytest.mark.asyncio
     async def test_runtime_act_mode_lazily_connects_mcp_servers(self):

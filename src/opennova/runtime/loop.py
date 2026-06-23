@@ -121,6 +121,9 @@ class ReActLoop:
         self._skill_listing_sent: bool = False
         self._skill_routed: bool = False
         self._project_init_routed: bool = False
+        self._active_skill_allowed_tools: set[str] | None = None
+        self._active_skill_model: str | None = None
+        self._base_model: str = getattr(llm, "model", "")
 
     @property
     def messages(self) -> list[Message]:
@@ -202,78 +205,81 @@ class ReActLoop:
         if pending_routed_action is None:
             pending_routed_action = self._route_task_to_skill(task)
 
-        while (
-            not self.state.is_complete
-            and self.state.iteration < self.max_iterations
-            and not self.state.has_too_many_errors()
-        ):
-            self._emit_iteration_start()
-            self.state.increment_iteration()
+        try:
+            while (
+                not self.state.is_complete
+                and self.state.iteration < self.max_iterations
+                and not self.state.has_too_many_errors()
+            ):
+                self._emit_iteration_start()
+                self.state.increment_iteration()
 
-            try:
-                if pending_routed_action:
-                    action = pending_routed_action
-                    pending_routed_action = None
-                    response = LLMResponse(content=action.thought or "", finish_reason=FinishReason.TOOL_CALL)
-                else:
-                    response = await self._think()
-                    action = self._parse_response(response, task)
+                try:
+                    if pending_routed_action:
+                        action = pending_routed_action
+                        pending_routed_action = None
+                        response = LLMResponse(content=action.thought or "", finish_reason=FinishReason.TOOL_CALL)
+                    else:
+                        response = await self._think()
+                        action = self._parse_response(response, task)
 
-                if action.is_final:
-                    self.state.mark_complete(action.thought or response.content or "")
-                    self._report_progress(activity="Completed task", mark_complete=True)
-                    break
+                    if action.is_final:
+                        self.state.mark_complete(action.thought or response.content or "")
+                        self._report_progress(activity="Completed task", mark_complete=True)
+                        break
 
-                if action.tool_name and action.tool_name in self.tool_registry:
-                    tool_context = self._start_tool_context(action)
-                    self._emit_tool_event(
-                        ToolEvent(
-                            type="tool_start",
-                            tool_id=tool_context.tool_id,
-                            tool_name=action.tool_name,
-                            arguments=dict(action.arguments),
-                            started_at=tool_context.started_at,
-                            risk_level=tool_context.risk_level,
+                    if action.tool_name and action.tool_name in self.tool_registry:
+                        tool_context = self._start_tool_context(action)
+                        self._emit_tool_event(
+                            ToolEvent(
+                                type="tool_start",
+                                tool_id=tool_context.tool_id,
+                                tool_name=action.tool_name,
+                                arguments=dict(action.arguments),
+                                started_at=tool_context.started_at,
+                                risk_level=tool_context.risk_level,
+                            )
+                        )
+                        if self.on_action:
+                            self.on_action(action.tool_name, action.arguments)
+
+                        self._report_progress(activity=f"Running tool: {action.tool_name}", last_tool_name=action.tool_name)
+                        result = await self._act(action)
+                        self._finish_tool_context(result)
+
+                        if self.on_result:
+                            self.on_result(result)
+
+                        self._report_progress(
+                            activity=f"Completed tool: {action.tool_name}",
+                            last_tool_name=action.tool_name,
+                            tool_use_increment=1,
+                            token_count=response.usage.total_tokens if response.usage else 0,
+                        )
+                        await self._observe(action, result, response.reasoning_content)
+                    else:
+                        observation = Message(
+                            role="user",
+                            content="Please use an available tool or skill to complete the task. "
+                            "Available tools: " + ", ".join(self._available_tool_names()),
+                        )
+                        self.add_message(observation)
+
+                except Exception as e:
+                    self.state.increment_error()
+                    error_detail = f"Error in iteration {self.state.iteration}: {type(e).__name__}: {e}"
+                    tb = traceback.format_exc()
+                    full_error = f"{error_detail}\n\nTraceback:\n{tb}"
+                    self._errors.append(full_error)
+                    print(f"\n[ERROR] {full_error}\n")
+                    self.add_message(
+                        Message(
+                            role="user",
+                            content=f"An error occurred: {error_detail}. Please try a different approach.",
                         )
                     )
-                    if self.on_action:
-                        self.on_action(action.tool_name, action.arguments)
-
-                    self._report_progress(activity=f"Running tool: {action.tool_name}", last_tool_name=action.tool_name)
-                    result = await self._act(action)
-                    self._finish_tool_context(result)
-
-                    if self.on_result:
-                        self.on_result(result)
-
-                    self._report_progress(
-                        activity=f"Completed tool: {action.tool_name}",
-                        last_tool_name=action.tool_name,
-                        tool_use_increment=1,
-                        token_count=response.usage.total_tokens if response.usage else 0,
-                    )
-                    await self._observe(action, result, response.reasoning_content)
-                else:
-                    observation = Message(
-                        role="user",
-                        content="Please use an available tool or skill to complete the task. "
-                        "Available tools: " + ", ".join(self.tool_registry.list_names()),
-                    )
-                    self.add_message(observation)
-
-            except Exception as e:
-                self.state.increment_error()
-                error_detail = f"Error in iteration {self.state.iteration}: {type(e).__name__}: {e}"
-                tb = traceback.format_exc()
-                full_error = f"{error_detail}\n\nTraceback:\n{tb}"
-                self._errors.append(full_error)
-                print(f"\n[ERROR] {full_error}\n")
-                self.add_message(
-                    Message(
-                        role="user",
-                        content=f"An error occurred: {error_detail}. Please try a different approach.",
-                    )
-                )
+        finally:
+            self._clear_skill_execution_context()
 
         if self.state.iteration >= self.max_iterations:
             return f"Task incomplete: reached maximum iterations ({self.max_iterations})"
@@ -371,7 +377,7 @@ class ReActLoop:
         Returns:
             LLM response with potential tool calls
         """
-        tools = self.tool_registry.list_tools()
+        tools = self._available_tools()
 
         if self.stream and self.on_stream:
             full_content = ""
@@ -413,6 +419,16 @@ class ReActLoop:
                 temperature=0.7,
             )
             return response
+
+    def _available_tools(self) -> list[Any]:
+        """Return the currently allowed tool schemas."""
+        schemas = self.tool_registry.list_tools()
+        if not self._active_skill_allowed_tools:
+            return schemas
+        return [schema for schema in schemas if schema.name in self._active_skill_allowed_tools]
+
+    def _available_tool_names(self) -> list[str]:
+        return [schema.name for schema in self._available_tools()]
 
     def _parse_response(self, response: LLMResponse, task: str = "") -> ParsedAction:
         """
@@ -694,6 +710,15 @@ class ReActLoop:
 
     def _check_tool_guard(self, action: ParsedAction) -> GuardResult:
         """Run guardrails for a pending tool action."""
+        if self._active_skill_allowed_tools is not None and action.tool_name not in self._active_skill_allowed_tools:
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason=(
+                    f"Tool '{action.tool_name}' is not allowed by the currently active skill. "
+                    f"Allowed tools: {', '.join(sorted(self._active_skill_allowed_tools))}"
+                ),
+            )
         if not self.guardrails:
             return GuardResult(
                 allowed=True,
@@ -957,8 +982,9 @@ class ReActLoop:
         # For skill invocations, add the skill prompt as a user message
         # AFTER the tool result, matching Claude Code's message ordering.
         if action.tool_name == "skill" and result.success and "skill_prompt" in result.metadata:
-            skill_name = result.metadata.get("skill", "unknown")
+            skill_name = result.metadata.get("resolved_skill") or result.metadata.get("skill", "unknown")
             skill_prompt = result.metadata["skill_prompt"]
+            self._apply_skill_execution_context(result.metadata)
             self.add_message(
                 Message(
                     role="user",
@@ -968,6 +994,25 @@ class ReActLoop:
 
         self.state.last_action = action.tool_name
         self.state.last_result = result.output
+
+    def _apply_skill_execution_context(self, metadata: dict[str, Any]) -> None:
+        """Apply temporary tool/model constraints for the active skill."""
+        allowed_tools = metadata.get("allowed_tools") or []
+        self._active_skill_allowed_tools = set(allowed_tools) if allowed_tools else None
+
+        model = str(metadata.get("model") or "").strip()
+        if model:
+            if self._active_skill_model is None:
+                self._base_model = getattr(self.llm, "model", self._base_model)
+            self._active_skill_model = model
+            self.llm.model = model
+
+    def _clear_skill_execution_context(self) -> None:
+        """Restore baseline runtime state after skill-scoped execution."""
+        self._active_skill_allowed_tools = None
+        if self._active_skill_model is not None:
+            self.llm.model = self._base_model
+            self._active_skill_model = None
 
     def _build_system_prompt(self) -> str:
         """Build system prompt for the agent."""
