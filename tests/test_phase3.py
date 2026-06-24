@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from opennova.hooks import HookManager
 from opennova.mcp.types import (
     MCPMessage,
     MCPServerConfig,
@@ -200,7 +201,7 @@ class TestSkills:
             skill_file = Path(tmpdir) / "review" / "SKILL.md"
             skill_file.parent.mkdir()
             skill_file.write_text(
-                "---\nname: review\nwhen_to_use: Use for reviews\nallowed-tools: read_file, list_directory\narguments: [target]\n---\nFirst body line\nMore details\n"
+                "---\nname: review\nwhen_to_use: Use for reviews\nallowed-tools: read_file, list_directory\narguments: [target]\nhooks:\n  pre_tool_use:\n    - matcher: read_file\n      hooks:\n        - add_metadata:\n            source: skill\npaths: src/**\n---\nFirst body line\nMore details\n"
             )
             loaded = SkillLoader.load_skill_file(skill_file)
             assert loaded is not None
@@ -209,6 +210,8 @@ class TestSkills:
             assert loaded.metadata.when_to_use == "Use for reviews"
             assert loaded.metadata.allowed_tools == ["read_file", "list_directory"]
             assert loaded.metadata.arguments == ["target"]
+            assert loaded.metadata.paths == ["src/**"]
+            assert loaded.metadata.hooks["pre_tool_use"][0]["matcher"] == "read_file"
 
     def test_skill_loader_missing_file_returns_none(self):
         assert SkillLoader.load_skill_file("/tmp/definitely-missing-skill/SKILL.md") is None
@@ -222,6 +225,17 @@ class TestSkills:
             assert loaded is not None
             assert loaded.name == "broken"
             assert loaded.metadata.description == "Fallback description"
+
+    def test_skill_loader_ignores_invalid_hook_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_file = Path(tmpdir) / "broken-hooks" / "SKILL.md"
+            skill_file.parent.mkdir()
+            skill_file.write_text("---\ndescription: Broken hooks\nhooks: not-a-dict\n---\nBody\n")
+
+            loaded = SkillLoader.load_skill_file(skill_file)
+
+            assert loaded is not None
+            assert loaded.metadata.hooks == {}
 
     def test_skill_registry_load_all_and_exclusions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -316,6 +330,60 @@ class TestSkills:
             assert materialized.model == "gpt-4o-mini"
             assert materialized.argument_names == ["target"]
 
+    def test_skill_registry_keeps_path_filtered_skills_pending_until_activated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "always").mkdir()
+            (root / "always" / "SKILL.md").write_text("---\ndescription: Always\n---\nBody\n")
+            (root / "python-review").mkdir()
+            (root / "python-review" / "SKILL.md").write_text(
+                "---\ndescription: Python review\npaths: src/**/*.py\n---\nBody\n"
+            )
+
+            registry = SkillRegistry()
+            registry.load_all(directories=[root])
+
+            assert registry.list_model_invocable_skills() == ["always"]
+            assert registry.list_pending_conditional_skills() == ["python-review"]
+
+            activated = registry.activate_for_paths([str(root / "src" / "app.py")], str(root))
+
+            assert activated == ["python-review"]
+            assert registry.list_pending_conditional_skills() == []
+            assert registry.list_model_invocable_skills()[0] == "python-review"
+
+    def test_skill_registry_discovers_nested_skill_roots_for_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            nested_skills = root / "src" / "feature" / ".claude" / "skills" / "nearby"
+            nested_skills.mkdir(parents=True)
+            (nested_skills / "SKILL.md").write_text("---\ndescription: Nearby\n---\nBody\n")
+
+            registry = SkillRegistry()
+            registry.load_all(directories=[])
+
+            discovered = registry.discover_for_paths([str(root / "src" / "feature" / "module.py")], str(root))
+
+            assert discovered == ["nearby"]
+            assert registry.list_model_invocable_skills()[0] == "nearby"
+
+    def test_skill_registry_ranks_dynamic_and_recently_used_skills_first(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "alpha").mkdir()
+            (root / "alpha" / "SKILL.md").write_text("---\ndescription: Alpha\n---\nBody\n")
+            (root / "beta").mkdir()
+            (root / "beta" / "SKILL.md").write_text("---\ndescription: Beta\npaths: src/**\n---\nBody\n")
+
+            registry = SkillRegistry()
+            registry.load_all(directories=[root])
+            registry.activate_for_paths([str(root / "src" / "x.py")], str(root))
+            registry.record_skill_usage("alpha")
+
+            ordered = registry.list_model_invocable_skills()
+
+            assert ordered == ["beta", "alpha"]
+
     def test_skill_tool_invokes_runtime_helper(self):
         class RuntimeStub:
             def __init__(self):
@@ -372,7 +440,7 @@ class TestSkillRuntimeIntegration:
             root = Path(tmpdir)
             (root / "review").mkdir()
             (root / "review" / "SKILL.md").write_text(
-                "---\ndescription: Review\nallowed-tools: read_file\nmodel: gpt-4o-mini\narguments: [target]\n---\nInspect $target\n"
+                "---\ndescription: Review\nallowed-tools: read_file\nmodel: gpt-4o-mini\narguments: [target]\nhooks:\n  pre_tool_use:\n    - matcher: read_file\n      hooks:\n        - add_metadata:\n            source: skill\n---\nInspect $target\n"
             )
             runtime.skill_registry.load_all(directories=[root])
 
@@ -384,6 +452,7 @@ class TestSkillRuntimeIntegration:
         assert result.metadata["allowed_tools"] == ["read_file"]
         assert result.metadata["model"] == "gpt-4o-mini"
         assert result.metadata["argument_names"] == ["target"]
+        assert result.metadata["hooks"]["pre_tool_use"][0]["matcher"] == "read_file"
         assert "Inspect src/main.py" in result.metadata["skill_prompt"]
 
     def test_agent_runtime_invoke_skill_rejects_ambiguous_bare_name(self):
@@ -466,6 +535,96 @@ class TestSkillRuntimeIntegration:
         loop._clear_skill_execution_context()
 
         assert provider.model == "base-model"
+
+    @pytest.mark.asyncio
+    async def test_react_loop_registers_declarative_skill_hooks_after_invocation(self):
+        class ReadTool(BaseTool):
+            name = "read_file"
+            description = "Read"
+
+            def execute(self, **kwargs):
+                return ToolResult(success=True, output="ok")
+
+        registry = ToolRegistry([ReadTool()])
+        hook_manager = HookManager()
+        loop = ReActLoop(
+            llm=type("Provider", (), {"model": "dummy"})(),
+            tool_registry=registry,
+            state=AgentState(),
+            hook_manager=hook_manager,
+            stream=False,
+        )
+
+        action = type(
+            "Action",
+            (),
+            {"tool_name": "skill", "thought": "", "arguments": {"skill": "demo", "args": ""}},
+        )()
+        result = ToolResult(
+            success=True,
+            output="Invoked skill: demo",
+            metadata={
+                "skill": "demo",
+                "resolved_skill": "demo",
+                "skill_prompt": "Prompt",
+                "hooks": {
+                    "pre_tool_use": [
+                        {
+                            "matcher": "read_file",
+                            "hooks": [{"add_metadata": {"from_skill": "demo"}}],
+                        }
+                    ]
+                },
+                "skill_dir": "/tmp/demo",
+            },
+        )
+
+        await loop._observe(action, result, None)
+        observed = hook_manager.run_pre_tool_use({"tool_name": "read_file", "arguments": {}, "metadata": {}})
+
+        assert observed["metadata"]["from_skill"] == "demo"
+
+    @pytest.mark.asyncio
+    async def test_react_loop_registers_once_skill_hook_only_once(self):
+        hook_manager = HookManager()
+        loop = ReActLoop(
+            llm=type("Provider", (), {"model": "dummy"})(),
+            tool_registry=ToolRegistry(),
+            state=AgentState(),
+            hook_manager=hook_manager,
+            stream=False,
+        )
+
+        action = type(
+            "Action",
+            (),
+            {"tool_name": "skill", "thought": "", "arguments": {"skill": "demo", "args": ""}},
+        )()
+        result = ToolResult(
+            success=True,
+            output="Invoked skill: demo",
+            metadata={
+                "skill": "demo",
+                "resolved_skill": "demo",
+                "skill_prompt": "Prompt",
+                "hooks": {
+                    "pre_tool_use": [
+                        {
+                            "matcher": "read_file",
+                            "hooks": [{"once": True, "add_metadata": {"from_skill": "demo"}}],
+                        }
+                    ]
+                },
+                "skill_dir": "/tmp/demo",
+            },
+        )
+
+        await loop._observe(action, result, None)
+        first = hook_manager.run_pre_tool_use({"tool_name": "read_file", "arguments": {}, "metadata": {}})
+        second = hook_manager.run_pre_tool_use({"tool_name": "read_file", "arguments": {}, "metadata": {}})
+
+        assert first["metadata"]["from_skill"] == "demo"
+        assert second["metadata"] == {}
 
     @pytest.mark.asyncio
     async def test_runtime_act_mode_lazily_connects_mcp_servers(self):

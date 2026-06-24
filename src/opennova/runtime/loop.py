@@ -9,6 +9,7 @@ Implements the core Reason-Act-Observe cycle:
 """
 
 import asyncio
+import os
 import re
 import traceback
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from opennova.providers.base import (
 from opennova.runtime.events import ToolEvent, ToolUseContext
 from opennova.runtime.state import AgentState
 from opennova.security.guardrails import Guardrails, GuardResult, RiskLevel
+from opennova.skills.hook_adapter import register_skill_hooks
 from opennova.skills.registry import SkillRegistry
 from opennova.tools.base import ToolRegistry, ToolResult
 
@@ -541,15 +543,23 @@ class ReActLoop:
     def _record_file_observation(self, action: ParsedAction, result: ToolResult) -> None:
         """Record file observations from file-oriented tool executions."""
         if not self.working_memory or not result.success:
-            return
+            pass
 
+        observed_paths: list[str] = []
         file_path = None
         if isinstance(result.metadata, dict):
             file_path = result.metadata.get("file_path")
-        if not file_path:
-            file_path = action.arguments.get("file_path")
-        if not file_path:
-            return
+            if isinstance(file_path, str):
+                observed_paths.append(file_path)
+            directory = result.metadata.get("directory")
+            if isinstance(directory, str):
+                observed_paths.append(directory)
+        argument_path = action.arguments.get("file_path")
+        if isinstance(argument_path, str):
+            observed_paths.append(argument_path)
+        argument_directory = action.arguments.get("directory")
+        if isinstance(argument_directory, str):
+            observed_paths.append(argument_directory)
 
         change_types = {
             "read_file": "read",
@@ -558,11 +568,14 @@ class ReActLoop:
             "delete_file": "deleted",
         }
         change_type = change_types.get(action.tool_name)
-        if not change_type:
-            return
+        if file_path and change_type and self.working_memory and result.success:
+            preview = (result.output or result.error or "")[:200] or None
+            self.working_memory.observe_file(file_path, change_type, preview)
 
-        preview = (result.output or result.error or "")[:200] or None
-        self.working_memory.observe_file(file_path, change_type, preview)
+        if self.skill_registry and observed_paths:
+            cwd = self.working_dir or os.getcwd()
+            self.skill_registry.discover_for_paths(observed_paths, cwd)
+            self.skill_registry.activate_for_paths(observed_paths, cwd)
 
     async def _act(self, action: ParsedAction) -> ToolResult:
         """
@@ -984,7 +997,16 @@ class ReActLoop:
         if action.tool_name == "skill" and result.success and "skill_prompt" in result.metadata:
             skill_name = result.metadata.get("resolved_skill") or result.metadata.get("skill", "unknown")
             skill_prompt = result.metadata["skill_prompt"]
+            if self.skill_registry:
+                self.skill_registry.record_skill_usage(skill_name)
             self._apply_skill_execution_context(result.metadata)
+            if self.hook_manager and isinstance(result.metadata.get("hooks"), dict):
+                register_skill_hooks(
+                    self.hook_manager,
+                    result.metadata["hooks"],
+                    skill_name=skill_name,
+                    skill_root=result.metadata.get("skill_dir"),
+                )
             self.add_message(
                 Message(
                     role="user",
@@ -1044,7 +1066,7 @@ You have access to the following tools:
             model_skills = self.skill_registry.list_model_invocable_skills()
             if model_skills:
                 skill_entries: list[str] = []
-                for name in model_skills:
+                for name in model_skills[:20]:
                     skill = self.skill_registry.get_skill(name)
                     if skill is None:
                         continue

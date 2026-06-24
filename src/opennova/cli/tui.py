@@ -964,6 +964,7 @@ class OpenNovaTUI(App):
 
         table = Table(title="Loaded Skills")
         table.add_column("Name", style="cyan")
+        table.add_column("State")
         table.add_column("Description")
         names = skill_registry.list_skills()
         if not names:
@@ -972,7 +973,7 @@ class OpenNovaTUI(App):
 
         for name in sorted(names):
             info = skill_registry.get_skill_info(name) or {}
-            table.add_row(name, info.get("description", ""))
+            table.add_row(name, str(info.get("activation_state", "static")), info.get("description", ""))
         log.write(table)
 
     async def _cmd_skill(self, args: str) -> None:

@@ -45,6 +45,25 @@ def test_hook_manager_loads_project_hook_file(tmp_path):
     assert event["metadata"]["loaded"] is True
 
 
+def test_hook_manager_registers_and_clears_session_hooks():
+    from opennova.hooks import HookManager
+
+    manager = HookManager()
+
+    def session_pre(event):
+        event["metadata"]["session"] = True
+        return event
+
+    manager.register_session_hook("pre_tool_use", session_pre, source="skill:demo")
+    event = manager.run_pre_tool_use({"tool_name": "tracking", "metadata": {}})
+    assert event["metadata"]["session"] is True
+
+    cleared = manager.clear_session_hooks("skill:demo")
+    assert cleared == 1
+    event = manager.run_pre_tool_use({"tool_name": "tracking", "metadata": {}})
+    assert event["metadata"] == {}
+
+
 @pytest.mark.asyncio
 async def test_react_loop_runs_pre_and_post_tool_hooks():
     from opennova.hooks import HookManager

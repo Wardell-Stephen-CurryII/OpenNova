@@ -1116,6 +1116,15 @@ class AgentRuntime:
             return None
         return self.skill_registry.get_skill_argument_hint(skill_name, typed_args)
 
+    def notify_file_paths_touched(self, paths: list[str]) -> dict[str, list[str]]:
+        """Let the skill registry react to file paths observed during execution."""
+        if not self.skill_registry:
+            return {"activated": [], "discovered": []}
+        cwd = os.getcwd()
+        discovered = self.skill_registry.discover_for_paths(paths, cwd)
+        activated = self.skill_registry.activate_for_paths(paths, cwd)
+        return {"activated": activated, "discovered": discovered}
+
     def invoke_skill(self, skill_name: str, skill_args: str = "", caller: str = "user") -> ToolResult:
         """Invoke a loaded skill for either the user or the model."""
         if not self.skill_registry:
@@ -1157,6 +1166,8 @@ class AgentRuntime:
                 "allowed_tools": prompt.allowed_tools,
                 "model": prompt.model,
                 "argument_names": prompt.argument_names,
+                "hooks": prompt.hooks,
+                "activation_state": prompt.activation_state,
                 "source_path": prompt.source_path,
                 "skill_dir": prompt.skill_dir,
                 "caller": caller,

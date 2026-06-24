@@ -4,12 +4,13 @@ Skill Registry - Manage loaded markdown skills.
 Provides centralized management for Claude Code-style skills:
 - discovery/loading from markdown skill roots
 - canonical-name and bare-name resolution
+- conditional activation, dynamic discovery, and session ranking
 - metadata lookup and prompt materialization
-- budget-constrained progressive disclosure listing
 """
 
 from __future__ import annotations
 
+import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from opennova.skills.base import (
 
 SKILL_LISTING_CHAR_BUDGET = 8_000
 MAX_SKILL_DESC_CHARS = 250
+MAX_LISTING_SKILLS = 20
 
 
 @dataclass
@@ -74,6 +76,12 @@ class SkillRegistry:
     def __init__(self):
         self.skills: dict[str, LoadedSkill] = {}
         self._stats = SkillStats()
+        self._conditional_skill_names: set[str] = set()
+        self._dynamic_skill_names: set[str] = set()
+        self._activated_skill_names: set[str] = set()
+        self._discovered_skill_dirs: set[str] = set()
+        self._usage_counter = 0
+        self._skill_usage: dict[str, tuple[int, int]] = {}
 
     def load_all(
         self,
@@ -90,6 +98,7 @@ class SkillRegistry:
         discovered = SkillLoader.load_all_skills(directories, sources=sources)
         for name, skill in discovered.items():
             skill.metadata.enabled = name not in excluded_names
+            self._apply_initial_activation_state(skill)
             self.skills[name] = skill
 
         self._update_stats()
@@ -99,7 +108,12 @@ class SkillRegistry:
         resolution = self.resolve_skill_name(name)
         if not resolution.resolved_name:
             return False
-        del self.skills[resolution.resolved_name]
+        resolved = resolution.resolved_name
+        del self.skills[resolved]
+        self._conditional_skill_names.discard(resolved)
+        self._dynamic_skill_names.discard(resolved)
+        self._activated_skill_names.discard(resolved)
+        self._skill_usage.pop(resolved, None)
         self._update_stats()
         return True
 
@@ -108,22 +122,26 @@ class SkillRegistry:
         if not normalized:
             return SkillResolution(requested_name=name)
 
-        if normalized in self.skills:
-            return SkillResolution(
-                requested_name=name,
-                resolved_name=normalized,
-                matches=[normalized],
-            )
+        visible_names = set(self._visible_skill_names())
+        if normalized in self.skills and normalized in visible_names:
+            return SkillResolution(requested_name=name, resolved_name=normalized, matches=[normalized])
 
-        matches = sorted(
-            skill_name for skill_name in self.skills if skill_name.split(":")[-1] == normalized
+        visible_matches = sorted(
+            skill_name
+            for skill_name in visible_names
+            if skill_name.split(":")[-1] == normalized
         )
+        if len(visible_matches) == 1:
+            return SkillResolution(requested_name=name, resolved_name=visible_matches[0], matches=visible_matches)
+        if len(visible_matches) > 1:
+            return SkillResolution(requested_name=name, matches=visible_matches)
+
+        if normalized in self.skills:
+            return SkillResolution(requested_name=name, resolved_name=normalized, matches=[normalized])
+
+        matches = sorted(skill_name for skill_name in self.skills if skill_name.split(":")[-1] == normalized)
         if len(matches) == 1:
-            return SkillResolution(
-                requested_name=name,
-                resolved_name=matches[0],
-                matches=matches,
-            )
+            return SkillResolution(requested_name=name, resolved_name=matches[0], matches=matches)
         return SkillResolution(requested_name=name, matches=matches)
 
     def get_skill(self, name: str) -> LoadedSkill | None:
@@ -153,32 +171,29 @@ class SkillRegistry:
         return bool(skill and skill.metadata.enabled and not skill.load_error)
 
     def list_skills(self) -> list[str]:
-        return sorted(self.skills.keys())
+        return self._ranked_skill_names(include_pending=True)
 
     def list_enabled_skills(self) -> list[str]:
-        return sorted(
-            name
-            for name, skill in self.skills.items()
-            if skill.metadata.enabled and not skill.load_error
-        )
+        return [name for name in self._ranked_skill_names(include_pending=True) if self.is_enabled(name)]
 
     def list_model_invocable_skills(self) -> list[str]:
-        return sorted(
-            name
-            for name, skill in self.skills.items()
-            if skill.metadata.enabled and not skill.load_error and not skill.metadata.disable_model_invocation
-        )
+        return [
+            name for name in self._ranked_skill_names(include_pending=False)
+            if self._is_visible_model_invocable(name)
+        ]
 
     def list_user_invocable_skills(self) -> list[str]:
-        return sorted(
-            name
-            for name, skill in self.skills.items()
-            if skill.metadata.enabled and not skill.load_error and skill.metadata.user_invocable
-        )
+        return [
+            name for name in self._ranked_skill_names(include_pending=False)
+            if self._is_visible_user_invocable(name)
+        ]
+
+    def list_pending_conditional_skills(self) -> list[str]:
+        return sorted(self._conditional_skill_names)
 
     def list_model_invocable_skill_summaries(self) -> list[dict[str, str]]:
         summaries: list[dict[str, str]] = []
-        for name in self.list_model_invocable_skills():
+        for name in self.list_model_invocable_skills()[:MAX_LISTING_SKILLS]:
             skill = self.skills[name]
             summaries.append(
                 {
@@ -194,7 +209,7 @@ class SkillRegistry:
         if max_chars is None:
             max_chars = SKILL_LISTING_CHAR_BUDGET
 
-        skills = [self.skills[name] for name in self.list_model_invocable_skills()]
+        skills = [self.skills[name] for name in self.list_model_invocable_skills()[:MAX_LISTING_SKILLS]]
         if not skills:
             return ""
 
@@ -219,15 +234,14 @@ class SkillRegistry:
     def can_model_invoke(self, name: str) -> bool:
         skill = self.get_skill(name)
         return bool(
-            skill
-            and skill.metadata.enabled
-            and not skill.load_error
-            and not skill.metadata.disable_model_invocation
+            skill and self._is_visible_model_invocable(skill.name)
         )
 
     def can_user_invoke(self, name: str) -> bool:
         skill = self.get_skill(name)
-        return bool(skill and skill.metadata.enabled and not skill.load_error and skill.metadata.user_invocable)
+        return bool(
+            skill and self._is_visible_user_invocable(skill.name)
+        )
 
     def get_skill_info(self, name: str) -> dict[str, Any] | None:
         resolution = self.resolve_skill_name(name)
@@ -251,7 +265,7 @@ class SkillRegistry:
 
     def materialize_skill_prompt(self, name: str, args: str = "") -> MaterializedSkill | None:
         skill = self.get_skill(name)
-        if not skill or not skill.metadata.enabled or skill.load_error:
+        if not skill or not skill.metadata.enabled or skill.load_error or not self._is_visible(skill.name):
             return None
         return skill.materialize_prompt(args)
 
@@ -262,17 +276,168 @@ class SkillRegistry:
         typed = parse_arguments(typed_args)
         return generate_progressive_argument_hint(skill.metadata.arguments, typed)
 
+    def activate_for_paths(self, paths: list[str], cwd: str) -> list[str]:
+        activated: list[str] = []
+        for name in sorted(self._conditional_skill_names):
+            skill = self.skills.get(name)
+            if not skill or not skill.metadata.paths:
+                continue
+            if self._paths_match(skill.metadata.paths, paths, cwd):
+                self._conditional_skill_names.discard(name)
+                self._dynamic_skill_names.add(name)
+                self._activated_skill_names.add(name)
+                skill.metadata.activation_state = "activated"
+                activated.append(name)
+        return activated
+
+    def discover_for_paths(self, paths: list[str], cwd: str) -> list[str]:
+        cwd_path = Path(cwd).resolve()
+        discovered_names: list[str] = []
+        discovered_sources: list[SkillSource] = []
+        seen_this_call: set[str] = set()
+
+        for raw_path in paths:
+            path = Path(raw_path)
+            current = (path if path.is_dir() else path.parent).resolve()
+            while True:
+                if current == cwd_path.parent:
+                    break
+                for hidden_dir in (".opennova", ".claude"):
+                    skill_root = current / hidden_dir / "skills"
+                    skill_root_id = str(skill_root.resolve()) if skill_root.exists() else str(skill_root)
+                    if skill_root_id in self._discovered_skill_dirs or skill_root_id in seen_this_call:
+                        continue
+                    if skill_root.exists() and skill_root.is_dir():
+                        seen_this_call.add(skill_root_id)
+                        discovered_sources.append(
+                            SkillSource(root=skill_root, source_type="dynamic", loaded_from="skills")
+                        )
+                if current == cwd_path:
+                    break
+                parent = current.parent
+                if parent == current:
+                    break
+                current = parent
+
+        for source in discovered_sources:
+            self._discovered_skill_dirs.add(str(source.root.resolve()))
+            loaded = SkillLoader.load_all_skills(sources=[source])
+            for name, skill in loaded.items():
+                skill.metadata.enabled = True
+                skill.metadata.activation_state = "dynamic"
+                existing = self.skills.get(name)
+                if existing is None or self._source_depth(skill) >= self._source_depth(existing):
+                    self.skills[name] = skill
+                    self._conditional_skill_names.discard(name)
+                    self._dynamic_skill_names.add(name)
+                    discovered_names.append(name)
+
+        self._update_stats()
+        return discovered_names
+
+    def record_skill_usage(self, name: str) -> None:
+        resolution = self.resolve_skill_name(name)
+        if not resolution.resolved_name:
+            return
+        resolved = resolution.resolved_name
+        count, _ = self._skill_usage.get(resolved, (0, 0))
+        self._usage_counter += 1
+        self._skill_usage[resolved] = (count + 1, self._usage_counter)
+
     def get_all_metadata(self) -> dict[str, SkillMetadata]:
         return {name: skill.metadata for name, skill in self.skills.items()}
 
     def get_stats(self) -> SkillStats:
         return self._stats
 
+    def _apply_initial_activation_state(self, skill: LoadedSkill) -> None:
+        paths = [pattern for pattern in skill.metadata.paths if pattern and pattern != "**"]
+        if paths:
+            skill.metadata.paths = paths
+            skill.metadata.activation_state = "conditional-pending"
+            self._conditional_skill_names.add(skill.name)
+            self._dynamic_skill_names.discard(skill.name)
+            self._activated_skill_names.discard(skill.name)
+        else:
+            skill.metadata.activation_state = "static"
+            self._conditional_skill_names.discard(skill.name)
+
+    def _paths_match(self, patterns: list[str], paths: list[str], cwd: str) -> bool:
+        cwd_path = Path(cwd).resolve()
+        normalized_patterns = [pattern.rstrip("/") for pattern in patterns if pattern and pattern != "**"]
+        for raw_path in paths:
+            try:
+                path = Path(raw_path).resolve()
+                relative = path.relative_to(cwd_path).as_posix()
+            except Exception:
+                continue
+            for pattern in normalized_patterns:
+                variants = {
+                    pattern,
+                    pattern.replace("/**/", "/"),
+                    pattern.replace("/**", "/*"),
+                }
+                if any(fnmatch.fnmatch(relative, variant) for variant in variants):
+                    return True
+        return False
+
+    def _source_depth(self, skill: LoadedSkill) -> int:
+        root = Path(skill.metadata.source_root) if skill.metadata.source_root else Path(".")
+        return len(root.parts)
+
+    def _is_visible(self, name: str) -> bool:
+        return name in self.skills and name not in self._conditional_skill_names
+
+    def _visible_skill_names(self) -> list[str]:
+        return [name for name in self.skills if self._is_visible(name)]
+
+    def _is_visible_model_invocable(self, name: str) -> bool:
+        skill = self.skills.get(name)
+        return bool(
+            skill
+            and self._is_visible(name)
+            and skill.metadata.enabled
+            and not skill.load_error
+            and not skill.metadata.disable_model_invocation
+        )
+
+    def _is_visible_user_invocable(self, name: str) -> bool:
+        skill = self.skills.get(name)
+        return bool(
+            skill
+            and self._is_visible(name)
+            and skill.metadata.enabled
+            and not skill.load_error
+            and skill.metadata.user_invocable
+        )
+
+    def _ranked_skill_names(self, *, include_pending: bool) -> list[str]:
+        candidates = list(self.skills.keys()) if include_pending else self._visible_skill_names()
+
+        def sort_key(name: str) -> tuple[int, int, int, str]:
+            skill = self.skills[name]
+            activation_priority = {
+                "activated": 0,
+                "dynamic": 1,
+                "static": 2,
+                "conditional-pending": 3,
+            }.get(skill.metadata.activation_state, 4)
+            usage_count, usage_order = self._skill_usage.get(name, (0, 0))
+            return (activation_priority, -usage_count, -usage_order, name)
+
+        return sorted(candidates, key=sort_key)
+
     def _update_stats(self) -> None:
         self._stats.update(self.skills)
 
     def clear(self) -> None:
         self.skills.clear()
+        self._conditional_skill_names.clear()
+        self._dynamic_skill_names.clear()
+        self._activated_skill_names.clear()
+        self._discovered_skill_dirs.clear()
+        self._skill_usage.clear()
+        self._usage_counter = 0
         self._update_stats()
 
     def __contains__(self, name: str) -> bool:

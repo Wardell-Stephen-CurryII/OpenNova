@@ -336,6 +336,7 @@ class Renderer:
         """Display loaded skills."""
         table = Table(title="🧩 Loaded Skills")
         table.add_column("Name", style="cyan")
+        table.add_column("State")
         table.add_column("Enabled", justify="center")
         table.add_column("Source")
         table.add_column("Model", justify="center")
@@ -345,6 +346,7 @@ class Renderer:
         for skill in skills:
             table.add_row(
                 skill.get("name", ""),
+                str(skill.get("activation_state", "")),
                 "Yes" if skill.get("enabled", True) else "No",
                 str(skill.get("source_type", "")),
                 "Yes" if skill.get("model_invocable", False) else "No",
@@ -662,6 +664,7 @@ class REPL:
                         "name": name,
                         "enabled": info.get("enabled", True),
                         "source_type": source_label,
+                        "activation_state": info.get("activation_state", "static"),
                         "model_invocable": info.get("model_invocable", False),
                         "user_invocable": info.get("user_invocable", False),
                         "description": info.get("description") or info.get("tool_description", ""),

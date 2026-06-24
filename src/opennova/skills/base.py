@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from typing import Any
 import yaml
 
 from opennova.skills.arguments import parse_argument_names, substitute_arguments
+from opennova.skills.hook_adapter import is_valid_hook_config
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n([\s\S]*?)---\s*\n?", re.MULTILINE)
 
@@ -41,6 +43,7 @@ class SkillFrontmatter:
     agent: str | None = None
     effort: str | int | None = None
     paths: list[str] = field(default_factory=list)
+    hooks: dict[str, Any] = field(default_factory=dict)
     shell: Any = None
 
 
@@ -66,6 +69,8 @@ class SkillMetadata:
     agent: str = ""
     effort: str = ""
     paths: list[str] = field(default_factory=list)
+    hooks: dict[str, Any] = field(default_factory=dict)
+    activation_state: str = "static"
     enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,6 +93,8 @@ class SkillMetadata:
             "agent": self.agent,
             "effort": self.effort,
             "paths": self.paths,
+            "hooks": self.hooks,
+            "activation_state": self.activation_state,
             "enabled": self.enabled,
         }
 
@@ -119,6 +126,8 @@ class LoadedSkill:
             allowed_tools=list(self.metadata.allowed_tools),
             model=self.metadata.model,
             argument_names=list(self.metadata.arguments),
+            hooks=deepcopy(self.metadata.hooks),
+            activation_state=self.metadata.activation_state,
         )
 
 
@@ -133,6 +142,8 @@ class MaterializedSkill:
     allowed_tools: list[str] = field(default_factory=list)
     model: str = ""
     argument_names: list[str] = field(default_factory=list)
+    hooks: dict[str, Any] = field(default_factory=dict)
+    activation_state: str = "static"
 
 
 @dataclass(frozen=True)
@@ -317,6 +328,12 @@ class SkillLoader:
                 return False
         return default
 
+    @staticmethod
+    def _coerce_hooks(value: Any) -> dict[str, Any]:
+        if is_valid_hook_config(value):
+            return deepcopy(value)
+        return {}
+
     @classmethod
     def load_skill_file(
         cls,
@@ -369,6 +386,7 @@ class SkillLoader:
             agent=str(frontmatter.get("agent") or ""),
             effort="" if frontmatter.get("effort") is None else str(frontmatter.get("effort")),
             paths=cls._coerce_list(frontmatter.get("paths")),
+            hooks=cls._coerce_hooks(frontmatter.get("hooks")),
         )
 
         return LoadedSkill(

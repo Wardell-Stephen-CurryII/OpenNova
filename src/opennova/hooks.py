@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from opennova.tools.base import ToolResult
 
 HookCallback = Callable[[dict[str, Any]], dict[str, Any] | ToolResult | None]
+
+
+@dataclass
+class HookRegistration:
+    """One registered hook callback."""
+
+    callback: HookCallback
+    source: str = "project"
+    once: bool = False
 
 
 class HookManager:
@@ -26,15 +36,48 @@ class HookManager:
     def __init__(self, project_path: str | Path = "."):
         self.project_path = Path(project_path).resolve()
         self.hooks_dir = self.project_path / ".opennova" / "hooks"
-        self._callbacks: dict[str, list[HookCallback]] = {
+        self._callbacks: dict[str, list[HookRegistration]] = {
             event: [] for event in self.SUPPORTED_EVENTS
         }
 
-    def register(self, event: str, callback: HookCallback) -> None:
+    def register(
+        self,
+        event: str,
+        callback: HookCallback,
+        *,
+        source: str = "project",
+        once: bool = False,
+    ) -> None:
         """Register a callback for a supported hook event."""
         if event not in self.SUPPORTED_EVENTS:
             raise ValueError(f"Unsupported hook event: {event}")
-        self._callbacks[event].append(callback)
+        self._callbacks[event].append(HookRegistration(callback=callback, source=source, once=once))
+
+    def register_session_hook(
+        self,
+        event: str,
+        callback: HookCallback,
+        *,
+        source: str,
+        once: bool = False,
+    ) -> None:
+        """Register a session-scoped hook callback."""
+        self.register(event, callback, source=source, once=once)
+
+    def clear_session_hooks(self, source: str | None = None) -> int:
+        """Remove session hooks, optionally limited to one source."""
+        cleared = 0
+        for event, registrations in self._callbacks.items():
+            kept: list[HookRegistration] = []
+            for registration in registrations:
+                is_session = registration.source != "project"
+                matches_source = source is None or registration.source == source
+                if is_session and matches_source:
+                    cleared += 1
+                    continue
+                kept.append(registration)
+            self._callbacks[event] = kept
+        return cleared
 
     def load_project_hooks(self) -> int:
         """Load hook functions from .opennova/hooks/*.py."""
@@ -59,7 +102,7 @@ class HookManager:
         for event in self.SUPPORTED_EVENTS:
             callback = getattr(module, event, None)
             if callable(callback):
-                self.register(event, callback)
+                self.register(event, callback, source="project")
                 loaded += 1
         return loaded
 
@@ -73,10 +116,28 @@ class HookManager:
 
     def _run_event(self, event_name: str, event: dict[str, Any]) -> dict[str, Any] | ToolResult:
         current = event
-        for callback in self._callbacks.get(event_name, []):
-            result = callback(current)
+        registrations = list(self._callbacks.get(event_name, []))
+        to_remove: list[HookRegistration] = []
+        for registration in registrations:
+            result = registration.callback(current)
             if isinstance(result, ToolResult):
+                if registration.once and result.success:
+                    to_remove.append(registration)
+                self._remove_registrations(event_name, to_remove)
                 return result
             if isinstance(result, dict):
                 current = result
+                if registration.once:
+                    to_remove.append(registration)
+        self._remove_registrations(event_name, to_remove)
         return current
+
+    def _remove_registrations(
+        self,
+        event_name: str,
+        registrations: list[HookRegistration],
+    ) -> None:
+        if not registrations:
+            return
+        active = self._callbacks.get(event_name, [])
+        self._callbacks[event_name] = [item for item in active if item not in registrations]
