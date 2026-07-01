@@ -215,3 +215,106 @@ def test_blocks_share_calm_workspace_theme():
     assert TUI_THEME.panel_border.startswith("#")
     assert TUI_THEME.accent.startswith("#")
     assert TUI_THEME.error.startswith("#")
+
+
+def test_workbench_panel_renders_tab_header_and_tools_tab():
+    from opennova.cli.tool_cards import ToolCardPanelState, ToolCardViewState
+    from opennova.cli.tui_blocks import render_workbench_panel
+    from opennova.cli.tui_workbench import WorkbenchPanelState
+
+    state = WorkbenchPanelState(
+        active_tab="tools",
+        tools=ToolCardPanelState(
+            cards=[
+                ToolCardViewState(
+                    tool_id="tool_1",
+                    tool_name="execute_command",
+                    status="succeeded",
+                    expanded=True,
+                    rendered="[succeeded] execute_command\nfull output",
+                )
+            ],
+            selected_tool_id="tool_1",
+            actions={"toggle": True},
+        ),
+        plan=None,
+        todos=[],
+    )
+
+    text = _plain_many(render_workbench_panel(state))
+
+    assert "Tools" in text
+    assert "Plan" in text
+    assert "Todos" in text
+    assert "execute_command" in text
+    assert "full output" in text
+
+
+def test_workbench_panel_renders_plan_tab_snapshot():
+    from opennova.cli.tool_cards import ToolCardPanelState
+    from opennova.cli.tui_blocks import render_workbench_panel
+    from opennova.cli.tui_workbench import (
+        PlanStepSnapshot,
+        PlanWorkbenchSnapshot,
+        WorkbenchPanelState,
+    )
+
+    state = WorkbenchPanelState(
+        active_tab="plan",
+        tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
+        plan=PlanWorkbenchSnapshot(
+            task="Refine UI",
+            status="executing",
+            approval_status="executing",
+            plan_file_path=".opennova/plan/plan.md",
+            steps=[
+                PlanStepSnapshot(
+                    id="step_1",
+                    description="Build side panel",
+                    status="running",
+                    result_summary="started",
+                    error="",
+                )
+            ],
+        ),
+        todos=[],
+    )
+
+    text = _plain_many(render_workbench_panel(state))
+
+    assert "Refine UI" in text
+    assert "executing" in text
+    assert ".opennova/plan/plan.md" in text
+    assert "step_1" in text
+    assert "Build side panel" in text
+    assert "started" in text
+
+
+def test_workbench_panel_renders_todos_tab_and_empty_state():
+    from opennova.cli.tool_cards import ToolCardPanelState
+    from opennova.cli.tui_blocks import render_workbench_panel
+    from opennova.cli.tui_workbench import WorkbenchPanelState
+
+    populated = WorkbenchPanelState(
+        active_tab="todos",
+        tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
+        plan=None,
+        todos=[
+            {"id": "1", "content": "Inspect TUI", "status": "done"},
+            {"id": "2", "content": "Implement panel", "status": "in_progress"},
+        ],
+    )
+    empty = WorkbenchPanelState(
+        active_tab="todos",
+        tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
+        plan=None,
+        todos=[],
+    )
+
+    populated_text = _plain_many(render_workbench_panel(populated))
+    empty_text = _plain_many(render_workbench_panel(empty))
+
+    assert "2 todo" in populated_text
+    assert "Inspect TUI" in populated_text
+    assert "in_progress" in populated_text
+    assert "No todos" in empty_text

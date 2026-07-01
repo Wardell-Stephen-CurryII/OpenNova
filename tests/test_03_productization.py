@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -1207,6 +1208,48 @@ def test_tui_toggle_tool_panel_changes_visibility():
     assert calls == [True, False]
 
 
+def test_tui_workbench_panel_is_wider_than_original_tool_panel():
+    from opennova.cli.tui import OpenNovaTUI
+
+    assert "width: 66;" in OpenNovaTUI.CSS
+
+
+def test_tui_workbench_tab_bindings_include_escape_sequence_aliases():
+    from opennova.cli.tui import OpenNovaTUI
+
+    bindings = {(binding.key, binding.action) for binding in OpenNovaTUI.BINDINGS}
+
+    assert ("alt+1", "workbench_tools") in bindings
+    assert ("alt+2", "workbench_plan") in bindings
+    assert ("alt+3", "workbench_todos") in bindings
+    assert ("escape,1", "workbench_tools") in bindings
+    assert ("escape,2", "workbench_plan") in bindings
+    assert ("escape,3", "workbench_todos") in bindings
+
+
+def test_tui_workbench_tab_actions_switch_tabs_and_refresh():
+    from opennova.cli.tui import OpenNovaTUI
+
+    refreshes: list[str] = []
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_workbench_tab": "tools",
+            "_workbench_visible": True,
+            "_tool_panel_visible": True,
+            "_refresh_workbench_panel": lambda self: refreshes.append(self._workbench_tab),
+        },
+    )()
+
+    OpenNovaTUI.action_workbench_plan(app)
+    OpenNovaTUI.action_workbench_todos(app)
+    OpenNovaTUI.action_workbench_previous_tab(app)
+    OpenNovaTUI.action_workbench_next_tab(app)
+
+    assert refreshes == ["plan", "todos", "plan", "todos"]
+
+
 def test_tui_canonical_tool_event_refreshes_tool_panel():
     from opennova.cli.tool_cards import ToolCardStore
     from opennova.cli.tui import OpenNovaTUI
@@ -1276,6 +1319,73 @@ def test_tui_canonical_tool_event_refreshes_tool_panel():
 
     assert refreshes == ["tool_1", "tool_1"]
     assert app._tool_cards.get("tool_1").metadata["duration_ms"] == 7
+
+
+def test_tui_plan_callback_switches_workbench_to_plan_tab():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.state import Plan, PlanStep
+
+    writes: list[Any] = []
+    refreshes: list[str] = []
+
+    class Agent:
+        def __init__(self):
+            self.callbacks = {}
+
+        def register_callback(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    class Log:
+        def write(self, value):
+            writes.append(value)
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "_workbench_tab": "tools",
+            "query_one": lambda self, selector: Log(),
+            "_refresh_workbench_panel": lambda self: refreshes.append(self._workbench_tab),
+        },
+    )()
+
+    OpenNovaTUI._register_plan_workbench_callback(app)
+    app.agent.callbacks["plan"](Plan(task="Build workbench", steps=[PlanStep("1", "Render")]))
+
+    assert app._workbench_tab == "plan"
+    assert refreshes == ["plan"]
+    assert writes
+
+
+def test_tui_todos_command_switches_workbench_to_todos_tab():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    TodoWriteTool.replace_todos([{"id": "1", "content": "Render todos", "status": "pending"}])
+    writes: list[Any] = []
+    refreshes: list[str] = []
+
+    class Log:
+        def write(self, value):
+            writes.append(value)
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": type("Agent", (), {"state": type("State", (), {"current_task": ""})()})(),
+            "_workbench_tab": "tools",
+            "query_one": lambda self, selector: Log(),
+            "_refresh_workbench_panel": lambda self: refreshes.append(self._workbench_tab),
+        },
+    )()
+
+    asyncio.run(OpenNovaTUI._cmd_todos(app, ""))
+
+    assert app._workbench_tab == "todos"
+    assert refreshes == ["todos"]
+    assert writes
 
 
 def test_tui_resume_without_args_uses_picker():

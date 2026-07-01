@@ -35,17 +35,23 @@ from textual.widgets import Header, Input, Label, RichLog
 from opennova.cli.ask_question_dialog import AskQuestionDialog
 from opennova.cli.commands import SlashCommandRegistry
 from opennova.cli.session_picker_dialog import SessionPickerDialog
-from opennova.cli.tool_cards import ToolCardStore, build_tool_card_panel
+from opennova.cli.tool_cards import ToolCardStore
 from opennova.cli.tool_progress import ToolProgressTracker
 from opennova.cli.tui_blocks import (
     TUI_THEME,
     render_assistant_block,
     render_status_bar,
-    render_tool_detail_panel,
     render_tool_result_block,
     render_tool_start_block,
     render_user_block,
     render_welcome_block,
+    render_workbench_panel,
+)
+from opennova.cli.tui_workbench import (
+    WorkbenchTab,
+    build_workbench_panel_state,
+    next_workbench_tab,
+    previous_workbench_tab,
 )
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
@@ -304,7 +310,7 @@ class OpenNovaTUI(App):
     }}
 
     #tool-panel {{
-        width: 42;
+        width: 66;
         height: 1fr;
         overflow-y: auto;
         border-left: solid {TUI_THEME.panel_border};
@@ -371,6 +377,16 @@ class OpenNovaTUI(App):
         Binding("alt+up", "tool_previous", "Previous tool", show=False),
         Binding("alt+enter", "tool_toggle_expanded", "Expand tool", show=False),
         Binding("alt+t", "toggle_tool_panel", "Tools", show=True),
+        Binding("alt+1", "workbench_tools", "Tools tab", show=False),
+        Binding("alt+2", "workbench_plan", "Plan tab", show=False),
+        Binding("alt+3", "workbench_todos", "Todos tab", show=False),
+        Binding("escape,1", "workbench_tools", "Tools tab", show=False),
+        Binding("escape,2", "workbench_plan", "Plan tab", show=False),
+        Binding("escape,3", "workbench_todos", "Todos tab", show=False),
+        Binding("alt+[", "workbench_previous_tab", "Previous tab", show=False),
+        Binding("alt+]", "workbench_next_tab", "Next tab", show=False),
+        Binding("escape,[", "workbench_previous_tab", "Previous tab", show=False),
+        Binding("escape,]", "workbench_next_tab", "Next tab", show=False),
     ]
 
     def __init__(
@@ -399,6 +415,8 @@ class OpenNovaTUI(App):
         self._tool_progress = ToolProgressTracker()
         self._tool_cards = ToolCardStore()
         self._tool_panel_visible = False
+        self._workbench_visible = False
+        self._workbench_tab: WorkbenchTab = "tools"
         self._automation_daemon = None
         self._startup_resume_mode = startup_resume_mode
         self._replaying_transcript = False
@@ -563,30 +581,38 @@ class OpenNovaTUI(App):
             )
 
     def _set_tool_panel_visible(self, visible: bool) -> None:
-        """Show or hide the session-scoped tool detail panel."""
+        """Show or hide the session-scoped workbench side panel."""
         self._tool_panel_visible = visible
+        self._workbench_visible = visible
         with suppress(Exception):
             panel = self.query_one("#tool-panel")
             panel.display = visible
         if not getattr(self, "_task_active", False):
             self._set_status("")
 
-    def _refresh_tool_panel(self) -> None:
-        """Redraw the tool detail panel from the current ToolCardStore state."""
+    def _refresh_workbench_panel(self) -> None:
+        """Redraw the workbench side panel from current runtime state."""
         try:
             panel = self.query_one("#tool-panel", RichLog)
         except Exception:
             return
-        if not self._tool_cards.cards:
+        state = build_workbench_panel_state(
+            agent=self.agent,
+            tool_cards=self._tool_cards,
+            active_tab=self._workbench_tab,
+        )
+        if not self._workbench_visible and not self._tool_cards.cards:
             panel.clear()
-            self._set_tool_panel_visible(False)
             return
         self._set_tool_panel_visible(True)
         panel.clear()
-        panel_state = build_tool_card_panel(self._tool_cards)
-        for renderable in render_tool_detail_panel(panel_state):
+        for renderable in render_workbench_panel(state):
             panel.write(renderable)
         panel.scroll_home(animate=False)
+
+    def _refresh_tool_panel(self) -> None:
+        """Compatibility alias for the upgraded workbench side panel."""
+        self._refresh_workbench_panel()
 
     def _get_resumable_sessions(self, *, exclude_current: bool) -> list[SessionMeta]:
         sessions = self.agent.get_sessions()
@@ -711,14 +737,20 @@ class OpenNovaTUI(App):
         self.exit()
 
     def action_tool_next(self) -> None:
+        if getattr(self, "_workbench_tab", "tools") != "tools":
+            return
         self._tool_cards.select_next()
         self._refresh_tool_panel()
 
     def action_tool_previous(self) -> None:
+        if getattr(self, "_workbench_tab", "tools") != "tools":
+            return
         self._tool_cards.select_previous()
         self._refresh_tool_panel()
 
     def action_tool_toggle_expanded(self) -> None:
+        if getattr(self, "_workbench_tab", "tools") != "tools":
+            return
         self._tool_cards.toggle_expanded()
         self._refresh_tool_panel()
 
@@ -726,7 +758,37 @@ class OpenNovaTUI(App):
         self._set_tool_panel_visible(not self._tool_panel_visible)
         if self._tool_panel_visible:
             with suppress(Exception):
-                self._refresh_tool_panel()
+                self._refresh_workbench_panel()
+
+    def action_workbench_tools(self) -> None:
+        OpenNovaTUI._set_workbench_tab(self, "tools")
+
+    def action_workbench_plan(self) -> None:
+        OpenNovaTUI._set_workbench_tab(self, "plan")
+
+    def action_workbench_todos(self) -> None:
+        OpenNovaTUI._set_workbench_tab(self, "todos")
+
+    def action_workbench_next_tab(self) -> None:
+        OpenNovaTUI._set_workbench_tab(
+            self,
+            next_workbench_tab(getattr(self, "_workbench_tab", "tools")),
+        )
+
+    def action_workbench_previous_tab(self) -> None:
+        OpenNovaTUI._set_workbench_tab(
+            self,
+            previous_workbench_tab(getattr(self, "_workbench_tab", "tools")),
+        )
+
+    def _set_workbench_tab(self, tab: WorkbenchTab) -> None:
+        self._workbench_tab = tab
+        if hasattr(self, "_set_tool_panel_visible"):
+            self._set_tool_panel_visible(True)
+        else:
+            self._tool_panel_visible = True
+            self._workbench_visible = True
+        self._refresh_workbench_panel()
 
     # ── safe state reset ─────────────────────────────────────────
 
@@ -1366,6 +1428,10 @@ class OpenNovaTUI(App):
         log = self.query_one("#messages")
         from opennova.tools.todo_tools import TodoWriteTool
 
+        self._workbench_tab = "todos"
+        with suppress(Exception):
+            self._refresh_workbench_panel()
+
         todos = TodoWriteTool.current_todos()
         if not todos:
             task = getattr(self.agent.state, "current_task", "") or "(none)"
@@ -1404,31 +1470,7 @@ class OpenNovaTUI(App):
             return
 
         log.write(f"[yellow]Planning: {args}[/yellow]")
-
-        def on_plan(plan, plan_file_path=None):
-            try:
-                _log = self.query_one("#messages")
-                table = Table(title=f"Plan: {plan.task}")
-                table.add_column("Step", style="cyan")
-                table.add_column("Description")
-                table.add_column("Status", justify="center")
-                status_icons = {
-                    "pending": "⏳",
-                    "running": "🔄",
-                    "done": "✅",
-                    "failed": "❌",
-                    "skipped": "⏭️",
-                }
-                for step in plan.steps:
-                    icon = status_icons.get(step.status.value, "❓")
-                    table.add_row(step.id, step.description, icon)
-                _log.write(table)
-                if plan_file_path:
-                    _log.write(f"[green]Plan saved to:[/green] {plan_file_path}")
-            except Exception:
-                pass
-
-        self.agent.register_callback("plan", on_plan)
+        self._register_plan_workbench_callback()
 
         # Phase 1: Generate the plan (not running state — user can still cancel)
         try:
@@ -1449,7 +1491,42 @@ class OpenNovaTUI(App):
         # Phase 3: Execute approved plan — fully guarded by try/finally
         self.agent.state.mark_plan_approved()
         log.write("[cyan]Executing approved plan...[/cyan]")
+        self._workbench_tab = "plan"
+        with suppress(Exception):
+            self._refresh_workbench_panel()
         await self._run_agent_task(self.agent.execute_approved_plan())
+        with suppress(Exception):
+            self._refresh_workbench_panel()
+
+    def _register_plan_workbench_callback(self) -> None:
+        """Register the plan callback that mirrors plan state into the workbench."""
+
+        def on_plan(plan, plan_file_path=None):
+            try:
+                self._workbench_tab = "plan"
+                _log = self.query_one("#messages")
+                table = Table(title=f"Plan: {plan.task}")
+                table.add_column("Step", style="cyan")
+                table.add_column("Description")
+                table.add_column("Status", justify="center")
+                status_icons = {
+                    "pending": "⏳",
+                    "running": "🔄",
+                    "done": "✅",
+                    "failed": "❌",
+                    "skipped": "⏭️",
+                }
+                for step in plan.steps:
+                    icon = status_icons.get(step.status.value, "❓")
+                    table.add_row(step.id, step.description, icon)
+                _log.write(table)
+                if plan_file_path:
+                    _log.write(f"[green]Plan saved to:[/green] {plan_file_path}")
+                self._refresh_workbench_panel()
+            except Exception:
+                pass
+
+        self.agent.register_callback("plan", on_plan)
 
     # ── interaction helper ───────────────────────────────────────
 
@@ -1608,6 +1685,7 @@ class OpenNovaTUI(App):
             _canonical_tools["seen"] = True
             if hasattr(event, "type"):
                 self._tool_cards.apply_event(event)
+                self._workbench_tab = "tools"
                 with suppress(Exception):
                     self._refresh_tool_panel()
             data = event.to_dict() if hasattr(event, "to_dict") else dict(event)

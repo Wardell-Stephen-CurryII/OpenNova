@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from opennova.cli.tool_cards import ToolCardPanelState
+from opennova.cli.tui_workbench import WorkbenchPanelState
 
 SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 DEFAULT_MAX_OUTPUT_LINES = 20
@@ -170,6 +171,113 @@ def render_tool_detail_panel(panel_state: ToolCardPanelState) -> list[Any]:
     help_text.append(" hide")
     renderables.append(Panel(help_text, title="Keys", border_style=TUI_THEME.panel_border, padding=(0, 1)))
     return renderables
+
+
+def render_workbench_panel(state: WorkbenchPanelState) -> list[Any]:
+    """Render the right-side Tools / Plan / Todos workbench panel."""
+    renderables: list[Any] = [_render_workbench_tabs(state)]
+    if state.active_tab == "tools":
+        renderables.extend(render_tool_detail_panel(state.tools))
+    elif state.active_tab == "plan":
+        renderables.extend(_render_workbench_plan(state))
+    else:
+        renderables.extend(_render_workbench_todos(state))
+    renderables.append(
+        Panel(
+            Text(state.key_hint, style="dim"),
+            title="Keys",
+            border_style=TUI_THEME.panel_border,
+            padding=(0, 1),
+        )
+    )
+    return renderables
+
+
+def _render_workbench_tabs(state: WorkbenchPanelState) -> Panel:
+    labels = [("tools", "Tools"), ("plan", "Plan"), ("todos", "Todos")]
+    text = Text()
+    for index, (tab, label) in enumerate(labels):
+        if index:
+            text.append("  ")
+        if state.active_tab == tab:
+            text.append(f"[ {label} ]", style=f"bold {TUI_THEME.accent}")
+        else:
+            text.append(label, style="dim")
+    return Panel(text, title="Workbench", border_style=TUI_THEME.accent_soft, padding=(0, 1))
+
+
+def _render_workbench_plan(state: WorkbenchPanelState) -> list[Any]:
+    plan = state.plan
+    if plan is None:
+        return [
+            Panel(
+                Text("No active plan.", style="dim"),
+                title="Plan",
+                border_style=TUI_THEME.panel_border,
+                padding=(0, 1),
+            )
+        ]
+
+    summary = Text()
+    summary.append(f"{plan.task}\n", style=f"bold {TUI_THEME.accent}")
+    summary.append(f"status: {plan.status}  approval: {plan.approval_status}\n", style="dim")
+    if plan.plan_file_path:
+        summary.append(f"file: {plan.plan_file_path}\n", style="dim")
+
+    steps = Text()
+    if not plan.steps:
+        steps.append("No plan steps.", style="dim")
+    for step in plan.steps:
+        style = _status_style(step.status)
+        steps.append(f"{step.id} ", style=f"bold {style}")
+        steps.append(f"{step.status} ", style=style)
+        steps.append(step.description)
+        if step.result_summary:
+            steps.append(f"\n  result: {step.result_summary}", style="dim")
+        if step.error:
+            steps.append(f"\n  error: {step.error}", style=TUI_THEME.error)
+        steps.append("\n")
+
+    return [
+        Panel(summary, title="Plan", border_style=TUI_THEME.panel_border, padding=(0, 1)),
+        Panel(steps, title="Steps", border_style=TUI_THEME.accent_soft, padding=(0, 1)),
+    ]
+
+
+def _render_workbench_todos(state: WorkbenchPanelState) -> list[Any]:
+    todos = state.todos
+    if not todos:
+        return [
+            Panel(
+                Text("No todos recorded.", style="dim"),
+                title="Todos",
+                border_style=TUI_THEME.panel_border,
+                padding=(0, 1),
+            )
+        ]
+
+    counts: dict[str, int] = {}
+    body = Text()
+    for todo in todos:
+        status = str(todo.get("status", "pending"))
+        counts[status] = counts.get(status, 0) + 1
+        body.append(f"{todo.get('id', '')} ", style=f"bold {_status_style(status)}")
+        body.append(f"{status} ", style=_status_style(status))
+        body.append(str(todo.get("content", "")))
+        body.append("\n")
+    count_text = ", ".join(f"{key}: {value}" for key, value in sorted(counts.items()))
+    body.append(f"\n{len(todos)} todo(s) - {count_text}", style="dim")
+    return [Panel(body, title="Todos", border_style=TUI_THEME.accent_soft, padding=(0, 1))]
+
+
+def _status_style(status: str) -> str:
+    if status in {"done", "succeeded"}:
+        return TUI_THEME.success
+    if status in {"failed", "cancelled"}:
+        return TUI_THEME.error
+    if status in {"running", "in_progress", "executing"}:
+        return TUI_THEME.warning
+    return TUI_THEME.muted
 
 
 def render_welcome_block(

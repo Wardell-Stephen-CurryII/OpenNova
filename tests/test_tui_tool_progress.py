@@ -89,3 +89,32 @@ def test_tool_card_store_expanded_view_uses_full_output():
     store.toggle_expanded("tool_1")
     expanded = build_tool_card_panel(store).cards[0]
     assert "abcdefghi" in expanded.rendered
+
+
+def test_workbench_non_tools_tab_does_not_toggle_tool_expansion():
+    from opennova.cli.tui import OpenNovaTUI
+
+    store = ToolCardStore(collapse_threshold=5)
+    store.apply_event(ToolEvent(type="tool_start", tool_id="tool_1", tool_name="execute_command"))
+    store.apply_event(
+        ToolEvent(
+            type="tool_result",
+            tool_id="tool_1",
+            tool_name="execute_command",
+            success=True,
+            output="abcdefghi",
+        )
+    )
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_tool_cards": store,
+            "_workbench_tab": "plan",
+            "_refresh_workbench_panel": lambda self: None,
+        },
+    )()
+
+    OpenNovaTUI.action_tool_toggle_expanded(app)
+
+    assert store.interaction.expanded_tool_ids == set()
