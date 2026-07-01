@@ -585,6 +585,19 @@ class MCPToolWrapper(BaseTool):
             return asyncio.run(self.async_execute(**kwargs))
         raise RuntimeError("MCP tools must be executed via async_execute inside the runtime loop")
 
+    def get_security_context(self) -> dict[str, Any]:
+        """Return guardrails context for this MCP-provided tool."""
+        config = self.connector.config
+        return {
+            "kind": "mcp",
+            "server": config.name,
+            "tool": self.mcp_tool.name,
+            "trusted": config.trusted,
+            "allowed_tools": list(config.allowed_tools),
+            "denied_tools": list(config.denied_tools),
+            "require_confirmation": config.require_confirmation,
+        }
+
     async def async_execute(self, **kwargs: Any) -> ToolResult:
         """Async execution."""
         original_name = self.mcp_tool.name
@@ -594,7 +607,12 @@ class MCPToolWrapper(BaseTool):
             success=result.success,
             output=result.content,
             error=result.error,
-            metadata=result.metadata,
+            metadata={
+                **result.metadata,
+                "mcp_server": self.connector.config.name,
+                "mcp_tool": self.mcp_tool.name,
+                "mcp_trusted": self.connector.config.trusted,
+            },
         )
 
 

@@ -16,6 +16,7 @@ from typing import Any
 from opennova.checkpoints import CheckpointManager
 from opennova.diff.engine import DiffEngine
 from opennova.security.sandbox import Sandbox, SandboxConfig
+from opennova.security.secrets import SecretScanner
 from opennova.tools.base import BaseTool, ToolResult
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -104,6 +105,25 @@ def _create_write_checkpoint(
     return CheckpointManager(tool_config.get("working_dir", os.getcwd())).create(label, [path])
 
 
+def _build_secret_scanner(tool_config: dict[str, Any] | None = None) -> SecretScanner:
+    config = tool_config or {}
+    return SecretScanner.from_config(config.get("secrets_policy", {}))
+
+
+def _redact_tool_text(
+    scanner: SecretScanner,
+    text: str,
+    tool_config: dict[str, Any],
+) -> tuple[str, int]:
+    findings = scanner.scan(text)
+    if not findings:
+        return text, 0
+    secrets_config = tool_config.get("secrets_policy", {})
+    if not bool(secrets_config.get("redact_tool_outputs", True)):
+        return text, len(findings)
+    return scanner.redact(text), len(findings)
+
+
 class ReadFileTool(BaseTool):
     """Read file contents with optional line range support."""
 
@@ -117,6 +137,7 @@ class ReadFileTool(BaseTool):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
+        self.secret_scanner = _build_secret_scanner(config)
 
     def is_read_only(self, **kwargs: Any) -> bool:
         return True
@@ -158,6 +179,11 @@ class ReadFileTool(BaseTool):
             raw_content = content_or_error if isinstance(content_or_error, bytes) else b""
             file_size = len(raw_content)
             text_content = raw_content.decode("utf-8", errors="replace")
+            text_content, secret_findings_count = _redact_tool_text(
+                self.secret_scanner,
+                text_content,
+                self.config,
+            )
             lines = text_content.splitlines(keepends=True)
 
             total_lines = len(lines)
@@ -192,6 +218,7 @@ class ReadFileTool(BaseTool):
                     "total_lines": total_lines,
                     "lines_read": end_line - start_line + 1,
                     "file_size": file_size,
+                    "secret_findings_count": secret_findings_count,
                 },
             )
 
@@ -222,6 +249,7 @@ class WriteFileTool(BaseTool):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
+        self.secret_scanner = _build_secret_scanner(config)
 
     def is_destructive(self, **kwargs: Any) -> bool:
         return True
@@ -263,11 +291,17 @@ class WriteFileTool(BaseTool):
 
             diff_engine = DiffEngine()
             diff_text = diff_engine.generate_diff(old_content, content, str(path))
+            diff_text, secret_findings_count = _redact_tool_text(
+                self.secret_scanner,
+                diff_text,
+                self.config,
+            )
 
             metadata: dict[str, Any] = {
                 "file_path": str(path),
                 "bytes_written": len(content),
                 "change_type": "modify" if file_existed else "create",
+                "secret_findings_count": secret_findings_count,
             }
             if diff_text.strip():
                 metadata["diff"] = diff_text
@@ -307,6 +341,7 @@ class CreateFileTool(BaseTool):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
         self.sandbox = _build_sandbox(config)
+        self.secret_scanner = _build_secret_scanner(config)
 
     def is_destructive(self, **kwargs: Any) -> bool:
         return True
@@ -347,6 +382,12 @@ class CreateFileTool(BaseTool):
             if content.strip():
                 diff_engine = DiffEngine()
                 diff_text = diff_engine.generate_diff("", content, str(path))
+                diff_text, secret_findings_count = _redact_tool_text(
+                    self.secret_scanner,
+                    diff_text,
+                    self.config,
+                )
+                metadata["secret_findings_count"] = secret_findings_count
                 if diff_text.strip():
                     metadata["diff"] = diff_text
 

@@ -808,10 +808,14 @@ class ReActLoop:
                 reason="Guardrails disabled",
                 requires_confirmation=False,
             )
+        tool = self.tool_registry.get(action.tool_name)
+        tool_context_provider = getattr(tool, "get_security_context", None)
+        tool_context = tool_context_provider() if callable(tool_context_provider) else None
         return self.guardrails.check_tool_call(
             action.tool_name,
             action.arguments,
             working_dir=self.working_dir,
+            tool_context=tool_context,
         )
 
     async def _confirm_warn_action(self, action: ParsedAction, guard_result: GuardResult) -> ToolResult:

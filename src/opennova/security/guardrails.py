@@ -15,8 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from opennova.security.command_policy import CommandPolicy
+from opennova.security.network_policy import NetworkPolicy
 from opennova.security.permission_rules import PermissionRuleMatcher
 from opennova.security.permissions import PermissionDecision, PermissionStore
+from opennova.security.secrets import SecretScanner
 
 
 class RiskLevel(StrEnum):
@@ -155,6 +157,8 @@ class Guardrails:
         permission_store: PermissionStore | None = None,
         permission_rules: list[dict[str, Any]] | None = None,
         strict_shell_parsing: bool = False,
+        network_policy: dict[str, Any] | None = None,
+        secrets_policy: dict[str, Any] | None = None,
     ):
         """
         Initialize guardrails.
@@ -176,11 +180,15 @@ class Guardrails:
         self.always_allow_tools = set(always_allow_tools or [])
         self.always_deny_tools = set(always_deny_tools or [])
         self.always_ask_tools = set(always_ask_tools or [])
+        self.network_policy = NetworkPolicy.from_config(network_policy)
         self.command_policy = CommandPolicy(
             allow_network=allow_network,
             strict_shell_parsing=strict_shell_parsing,
+            network_policy=self.network_policy,
         )
         self.permission_rule_matcher = PermissionRuleMatcher.from_config(permission_rules)
+        self.secrets_policy = secrets_policy or {}
+        self.secret_scanner = SecretScanner.from_config(self.secrets_policy)
         if permission_store:
             self.always_allow_tools.update(permission_store.allowed_tools())
             self.always_deny_tools.update(permission_store.denied_tools())
@@ -419,6 +427,76 @@ class Guardrails:
             return GuardResult(True, RiskLevel.WARN, reason, True, metadata=metadata)
         return GuardResult(True, RiskLevel.SAFE, reason, False, metadata=metadata)
 
+    def _check_mcp_tool_context(
+        self,
+        tool_name: str,
+        tool_context: dict[str, Any] | None,
+    ) -> GuardResult | None:
+        if not tool_context or tool_context.get("kind") != "mcp":
+            return None
+        mcp_tool = str(tool_context.get("tool") or tool_name)
+        mcp_server = str(tool_context.get("server") or "")
+        metadata = {
+            "mcp_server": mcp_server,
+            "mcp_tool": mcp_tool,
+            "mcp_trusted": bool(tool_context.get("trusted", False)),
+        }
+        denied_tools = {str(item) for item in tool_context.get("denied_tools") or []}
+        allowed_tools = {str(item) for item in tool_context.get("allowed_tools") or []}
+        if mcp_tool in denied_tools or tool_name in denied_tools:
+            return GuardResult(
+                False,
+                RiskLevel.BLOCK,
+                f"MCP tool is denied by server policy: {mcp_server}.{mcp_tool}",
+                metadata=metadata,
+            )
+        if allowed_tools and mcp_tool not in allowed_tools and tool_name not in allowed_tools:
+            return GuardResult(
+                False,
+                RiskLevel.BLOCK,
+                f"MCP tool is not allowed by server policy: {mcp_server}.{mcp_tool}",
+                metadata=metadata,
+            )
+        if not bool(tool_context.get("trusted", False)) or bool(
+            tool_context.get("require_confirmation", False)
+        ):
+            return GuardResult(
+                True,
+                RiskLevel.WARN,
+                f"MCP tool requires confirmation: {mcp_server}.{mcp_tool}",
+                True,
+                metadata=metadata,
+            )
+        return GuardResult(True, RiskLevel.SAFE, f"MCP tool trusted: {mcp_server}.{mcp_tool}", metadata=metadata)
+
+    def _check_secret_content(self, tool_name: str, arguments: dict[str, Any]) -> GuardResult | None:
+        if tool_name not in {"write_file", "create_file", "edit_file", "multi_edit_file"}:
+            return None
+        content = _extract_write_content(arguments)
+        findings = self.secret_scanner.scan(content)
+        if not findings:
+            return None
+        metadata = {
+            "secret_findings_count": len(findings),
+            "secret_findings": [finding.to_dict() for finding in findings],
+        }
+        if bool(self.secrets_policy.get("block_on_write", False)):
+            return GuardResult(
+                False,
+                RiskLevel.BLOCK,
+                "Write content appears to contain secrets",
+                metadata=metadata,
+            )
+        if bool(self.secrets_policy.get("warn_on_write", True)):
+            return GuardResult(
+                True,
+                RiskLevel.WARN,
+                "Write content appears to contain secrets",
+                True,
+                metadata=metadata,
+            )
+        return None
+
     def check_file_path(
         self,
         file_path: str,
@@ -505,25 +583,6 @@ class Guardrails:
         Returns:
             GuardResult with request safety assessment
         """
-        import re
-        from urllib.parse import urlparse
-
-        try:
-            parsed = urlparse(url)
-        except Exception as e:
-            return GuardResult(
-                allowed=False,
-                risk_level=RiskLevel.BLOCK,
-                reason=f"Invalid URL: {e}",
-            )
-
-        if parsed.scheme not in ("http", "https"):
-            return GuardResult(
-                allowed=False,
-                risk_level=RiskLevel.BLOCK,
-                reason=f"Unsupported URL scheme: {parsed.scheme}",
-            )
-
         if not self.allow_network:
             return GuardResult(
                 allowed=False,
@@ -531,29 +590,29 @@ class Guardrails:
                 reason="Network access is disabled by policy",
                 requires_confirmation=False,
             )
-
-        internal_hosts = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "192.168.", "10.", "172.")
-        is_internal = any(
-            parsed.hostname and parsed.hostname.startswith(h)
-            for h in internal_hosts
-        ) or parsed.hostname in internal_hosts
-
-        if is_internal:
+        if not url.startswith(("http://", "https://")):
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason="HTTP request URL must use http or https",
+            )
+        analysis = self.network_policy.evaluate(url, method)
+        metadata = {"network_analysis": analysis.to_dict()}
+        if analysis.risk_level == "block":
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason=analysis.reason,
+                metadata=metadata,
+            )
+        if analysis.risk_level == "warn":
             return GuardResult(
                 allowed=True,
                 risk_level=RiskLevel.WARN,
-                reason="Request to internal/local address",
+                reason=analysis.reason,
                 requires_confirmation=True,
+                metadata=metadata,
             )
-
-        if method.upper() in ("POST", "PUT", "PATCH", "DELETE"):
-            return GuardResult(
-                allowed=True,
-                risk_level=RiskLevel.WARN,
-                reason=f"Mutating HTTP request: {method}",
-                requires_confirmation=True,
-            )
-
         suspicious_patterns = [
             r"login",
             r"signin",
@@ -571,6 +630,7 @@ class Guardrails:
                     risk_level=RiskLevel.WARN,
                     reason="URL contains potentially sensitive keywords",
                     requires_confirmation=True,
+                    metadata=metadata,
                 )
 
         return GuardResult(
@@ -578,6 +638,7 @@ class Guardrails:
             risk_level=RiskLevel.SAFE,
             reason="Request appears safe",
             requires_confirmation=False,
+            metadata=metadata,
         )
 
     def check_tool_call(
@@ -585,6 +646,7 @@ class Guardrails:
         tool_name: str,
         arguments: dict[str, Any],
         working_dir: str | None = None,
+        tool_context: dict[str, Any] | None = None,
     ) -> GuardResult:
         """
         Check if a tool call is safe.
@@ -600,6 +662,10 @@ class Guardrails:
         command_analysis = None
         if tool_name == "execute_command":
             command_analysis = self.command_policy.analyze(arguments.get("command", "")).to_dict()
+
+        mcp_context_result = self._check_mcp_tool_context(tool_name, tool_context)
+        if mcp_context_result is not None and not mcp_context_result.allowed:
+            return mcp_context_result
 
         rule_result = self._check_parameter_rule(
             tool_name,
@@ -663,4 +729,37 @@ class Guardrails:
                 requires_confirmation=False,
             )
 
-        return self._apply_permission_overlay(tool_name, result, permission_result, rule_result)
+        secret_result = self._check_secret_content(tool_name, arguments)
+        if secret_result is not None:
+            if not secret_result.allowed:
+                return secret_result
+            result.risk_level = RiskLevel.WARN
+            result.reason = secret_result.reason
+            result.requires_confirmation = True
+            result.metadata.update(secret_result.metadata)
+
+        result = self._apply_permission_overlay(tool_name, result, permission_result, rule_result)
+        if mcp_context_result and mcp_context_result.allowed:
+            result.metadata.update(mcp_context_result.metadata)
+            if mcp_context_result.requires_confirmation and result.allowed:
+                result.risk_level = RiskLevel.WARN
+                result.reason = mcp_context_result.reason
+                result.requires_confirmation = True
+        return result
+
+
+def _extract_write_content(arguments: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    for key in ("content", "new_content", "replacement"):
+        value = arguments.get(key)
+        if isinstance(value, str):
+            chunks.append(value)
+    edits = arguments.get("edits")
+    if isinstance(edits, list):
+        for edit in edits:
+            if isinstance(edit, dict):
+                for key in ("new_text", "replacement", "content"):
+                    value = edit.get(key)
+                    if isinstance(value, str):
+                        chunks.append(value)
+    return "\n".join(chunks)

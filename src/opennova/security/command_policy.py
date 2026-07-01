@@ -7,6 +7,8 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
+from opennova.security.network_policy import NetworkPolicy
+
 SHELL_FEATURE_PATTERNS = [
     r"\|",
     r"&&",
@@ -34,9 +36,10 @@ class CommandAnalysis:
     uses_shell_features: bool = False
     risk_level: str = "safe"
     reason: str = "Command appears safe"
+    network_analysis: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "command": self.command,
             "argv": list(self.argv),
             "executable": self.executable,
@@ -46,6 +49,9 @@ class CommandAnalysis:
             "risk_level": self.risk_level,
             "reason": self.reason,
         }
+        if self.network_analysis:
+            data["network_analysis"] = self.network_analysis
+        return data
 
 
 class CommandPolicy:
@@ -55,9 +61,15 @@ class CommandPolicy:
     DEV_CHECK_EXECUTABLES = {"pytest", "ruff", "mypy"}
     PACKAGE_EXECUTABLES = {"uv", "pip", "pip3", "npm", "yarn", "pnpm"}
 
-    def __init__(self, allow_network: bool = True, strict_shell_parsing: bool = False):
+    def __init__(
+        self,
+        allow_network: bool = True,
+        strict_shell_parsing: bool = False,
+        network_policy: NetworkPolicy | None = None,
+    ):
         self.allow_network = allow_network
         self.strict_shell_parsing = strict_shell_parsing
+        self.network_policy = network_policy or NetworkPolicy()
 
     @staticmethod
     def command_uses_shell_features(command: str) -> bool:
@@ -156,6 +168,10 @@ class CommandPolicy:
             analysis.risk_level = "block"
             analysis.reason = "Network access is disabled by policy"
             return
+        if subcommand in {"clone", "fetch", "pull", "push"}:
+            self._apply_network_policy(analysis)
+            if analysis.risk_level == "block":
+                return
         if subcommand in {"clean", "reset", "restore", "checkout", "switch", "push"}:
             analysis.risk_level = "warn"
             analysis.reason = "Git command may change repository state"
@@ -211,9 +227,26 @@ class CommandPolicy:
         if not self.allow_network:
             analysis.risk_level = "block"
             analysis.reason = "Network access is disabled by policy"
-        elif analysis.risk_level == "safe":
+            return
+
+        self._apply_network_policy(analysis)
+        if analysis.risk_level == "block":
+            return
+
+        if analysis.risk_level == "safe":
             analysis.risk_level = "warn"
             analysis.reason = f"Network command: {analysis.executable}"
+
+    def _apply_network_policy(self, analysis: CommandAnalysis) -> None:
+        url = _extract_network_target(analysis.argv)
+        if not url:
+            return
+        network_analysis = self.network_policy.evaluate(url).to_dict()
+        analysis.network_analysis = network_analysis
+        network_risk = str(network_analysis.get("risk_level") or "safe")
+        if self._risk_rank(network_risk) > self._risk_rank(analysis.risk_level):
+            analysis.risk_level = network_risk
+            analysis.reason = str(network_analysis.get("reason") or analysis.reason)
 
 
 class PathLike:
@@ -222,3 +255,12 @@ class PathLike:
     @staticmethod
     def executable_name(value: str) -> str:
         return os.path.basename(value).lower()
+
+
+def _extract_network_target(argv: list[str]) -> str:
+    for arg in argv[1:]:
+        if arg.startswith(("http://", "https://", "ssh://", "git://")):
+            return arg
+        if "@" in arg and ":" in arg and not arg.startswith("-"):
+            return "ssh://" + arg.split(":", 1)[0]
+    return ""

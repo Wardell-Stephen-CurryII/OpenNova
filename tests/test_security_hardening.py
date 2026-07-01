@@ -11,7 +11,7 @@ from opennova.runtime.state import AgentState
 from opennova.security.audit import SecurityAuditLogger
 from opennova.security.guardrails import Guardrails, RiskLevel
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
-from opennova.tools.file_tools import WriteFileTool
+from opennova.tools.file_tools import ReadFileTool, WriteFileTool
 from opennova.tools.shell_tools import ExecuteCommandTool
 from opennova.tools.web_tools import WebFetchTool
 
@@ -142,6 +142,146 @@ def test_strict_shell_parsing_blocks_shell_features():
     assert result.allowed is False
     assert result.risk_level == RiskLevel.BLOCK
     assert "strict shell parsing" in result.reason.lower()
+
+
+def test_network_policy_blocks_configured_web_domain():
+    guard = Guardrails(network_policy={"blocked_domains": ["blocked.example"]})
+
+    result = guard.check_tool_call("web_fetch", {"url": "https://blocked.example/data"})
+
+    assert result.allowed is False
+    assert result.risk_level == RiskLevel.BLOCK
+    assert result.metadata["network_analysis"]["hostname"] == "blocked.example"
+
+
+def test_network_policy_allowlist_blocks_unlisted_domain():
+    guard = Guardrails(network_policy={"allowed_domains": ["docs.example"]})
+
+    allowed = guard.check_tool_call("web_fetch", {"url": "https://docs.example/page"})
+    blocked = guard.check_tool_call("web_fetch", {"url": "https://other.example/page"})
+
+    assert allowed.allowed is True
+    assert blocked.allowed is False
+    assert "not in allowed" in blocked.reason.lower()
+
+
+def test_network_policy_warns_for_localhost_by_default():
+    guard = Guardrails()
+
+    result = guard.check_tool_call("web_fetch", {"url": "http://127.0.0.1:8000/health"})
+
+    assert result.allowed is True
+    assert result.risk_level == RiskLevel.WARN
+    assert result.requires_confirmation is True
+    assert result.metadata["network_analysis"]["is_internal"] is True
+
+
+def test_command_policy_applies_blocked_domain_to_curl():
+    guard = Guardrails(network_policy={"blocked_domains": ["blocked.example"]})
+
+    result = guard.check_command("curl https://blocked.example/install.sh")
+
+    assert result.allowed is False
+    assert result.risk_level == RiskLevel.BLOCK
+    assert result.metadata["command_analysis"]["network_analysis"]["hostname"] == "blocked.example"
+
+
+def test_mcp_untrusted_tool_requires_confirmation():
+    guard = Guardrails()
+
+    result = guard.check_tool_call(
+        "demo_danger",
+        {"path": "README.md"},
+        tool_context={"kind": "mcp", "server": "demo", "tool": "danger", "trusted": False},
+    )
+
+    assert result.allowed is True
+    assert result.risk_level == RiskLevel.WARN
+    assert result.requires_confirmation is True
+    assert result.metadata["mcp_server"] == "demo"
+
+
+def test_mcp_denied_tool_blocks_before_execution():
+    guard = Guardrails()
+
+    result = guard.check_tool_call(
+        "demo_danger",
+        {"path": "README.md"},
+        tool_context={
+            "kind": "mcp",
+            "server": "demo",
+            "tool": "danger",
+            "trusted": True,
+            "denied_tools": ["danger"],
+        },
+    )
+
+    assert result.allowed is False
+    assert result.risk_level == RiskLevel.BLOCK
+    assert result.metadata["mcp_tool"] == "danger"
+
+
+def test_read_file_redacts_secret_content(tmp_path: Path):
+    secret_file = tmp_path / ".env"
+    secret_file.write_text("OPENAI_API_KEY=sk-testsecret1234567890\nSAFE=value\n", encoding="utf-8")
+    tool = ReadFileTool(config={"working_dir": str(tmp_path)})
+
+    result = tool.execute(str(secret_file))
+
+    assert result.success is True
+    assert "sk-testsecret1234567890" not in result.output
+    assert "[REDACTED_SECRET]" in result.output
+    assert result.metadata["secret_findings_count"] >= 1
+
+
+def test_write_file_secret_content_warns_by_default(tmp_path: Path):
+    guard = Guardrails()
+
+    result = guard.check_tool_call(
+        "write_file",
+        {
+            "file_path": str(tmp_path / "config.py"),
+            "content": "TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890'",
+        },
+        working_dir=str(tmp_path),
+    )
+
+    assert result.allowed is True
+    assert result.risk_level == RiskLevel.WARN
+    assert result.requires_confirmation is True
+    assert result.metadata["secret_findings_count"] >= 1
+
+
+def test_write_file_secret_content_blocks_when_configured(tmp_path: Path):
+    guard = Guardrails(secrets_policy={"block_on_write": True})
+
+    result = guard.check_tool_call(
+        "write_file",
+        {
+            "file_path": str(tmp_path / "config.py"),
+            "content": "password = 'super-secret-password'",
+        },
+        working_dir=str(tmp_path),
+    )
+
+    assert result.allowed is False
+    assert result.risk_level == RiskLevel.BLOCK
+    assert result.metadata["secret_findings_count"] >= 1
+
+
+def test_security_audit_redacts_secret_values(tmp_path: Path):
+    audit_path = tmp_path / "audit.jsonl"
+    logger = SecurityAuditLogger(path=audit_path)
+
+    logger.log_tool_event(
+        tool_name="write_file",
+        arguments={"content": "OPENAI_API_KEY=sk-testsecret1234567890"},
+        result=ToolResult(success=False, output="", error="failed with sk-testsecret1234567890"),
+    )
+
+    event = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+    assert "sk-testsecret1234567890" not in json.dumps(event)
+    assert event["arguments"]["content"] == "[REDACTED]"
 
 
 @pytest.mark.asyncio

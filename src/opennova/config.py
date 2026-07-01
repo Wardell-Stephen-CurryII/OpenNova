@@ -57,6 +57,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "always_deny_tools": [],
         "always_ask_tools": [],
         "permission_rules": [],
+        "network": {
+            "allowed_domains": [],
+            "blocked_domains": [],
+            "allow_localhost": False,
+            "mutating_methods_require_confirmation": True,
+        },
+        "secrets": {
+            "enabled": True,
+            "redact_tool_outputs": True,
+            "warn_on_write": True,
+            "block_on_write": False,
+            "max_scan_chars": 200000,
+        },
         "audit": {
             "enabled": True,
             "path": ".opennova/audit/security.jsonl",

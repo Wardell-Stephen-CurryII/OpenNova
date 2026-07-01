@@ -133,6 +133,7 @@ class AgentRuntime:
             enabled=audit_config.get("enabled", True),
             max_arg_chars=audit_config.get("max_arg_chars", 500),
             session_id=self.session_manager.session_id,
+            secrets_policy=self.security_config.get("secrets", {}),
         )
         self.guardrails = Guardrails(
             sandbox_mode=self.security_config.get("sandbox_mode", True),
@@ -146,6 +147,8 @@ class AgentRuntime:
             always_deny_tools=self.security_config.get("always_deny_tools", []),
             always_ask_tools=self.security_config.get("always_ask_tools", []),
             permission_rules=self.security_config.get("permission_rules", []),
+            network_policy=self.security_config.get("network", {}),
+            secrets_policy=self.security_config.get("secrets", {}),
             permission_store=self.permission_store,
         )
 
@@ -180,6 +183,8 @@ class AgentRuntime:
             "always_deny_tools": security_config.get("always_deny_tools", []),
             "always_ask_tools": security_config.get("always_ask_tools", []),
             "permission_rules": security_config.get("permission_rules", []),
+            "network_policy": security_config.get("network", {}),
+            "secrets_policy": security_config.get("secrets", {}),
             "read_only": security_config.get("read_only", False),
             "max_file_size": security_config.get("max_file_size", 100 * 1024 * 1024),
         }

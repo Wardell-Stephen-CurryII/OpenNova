@@ -49,6 +49,10 @@ class MCPServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     timeout: float = 30.0
     enabled: bool = True
+    trusted: bool = False
+    allowed_tools: list[str] = field(default_factory=list)
+    denied_tools: list[str] = field(default_factory=list)
+    require_confirmation: bool = True
 
     def validate(self) -> None:
         """Validate transport-specific MCP server configuration."""
@@ -58,6 +62,10 @@ class MCPServerConfig:
             raise ValueError(f"MCP server {self.name}: args must be a list")
         if not isinstance(self.env, dict):
             raise ValueError(f"MCP server {self.name}: env must be a dict")
+        if not isinstance(self.allowed_tools, list):
+            raise ValueError(f"MCP server {self.name}: allowed_tools must be a list")
+        if not isinstance(self.denied_tools, list):
+            raise ValueError(f"MCP server {self.name}: denied_tools must be a list")
         if not isinstance(self.timeout, (int, float)) or self.timeout <= 0:
             raise ValueError(f"MCP server {self.name}: timeout must be a positive number")
 
@@ -82,6 +90,10 @@ class MCPServerConfig:
             env=data.get("env", {}),
             timeout=data.get("timeout", 30.0),
             enabled=data.get("enabled", True),
+            trusted=bool(data.get("trusted", False)),
+            allowed_tools=data.get("allowed_tools", []),
+            denied_tools=data.get("denied_tools", []),
+            require_confirmation=bool(data.get("require_confirmation", True)),
         )
         config.validate()
         return config
@@ -97,6 +109,10 @@ class MCPServerConfig:
             "env": self.env,
             "timeout": self.timeout,
             "enabled": self.enabled,
+            "trusted": self.trusted,
+            "allowed_tools": self.allowed_tools,
+            "denied_tools": self.denied_tools,
+            "require_confirmation": self.require_confirmation,
         }
 
 

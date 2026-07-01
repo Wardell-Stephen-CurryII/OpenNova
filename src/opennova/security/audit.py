@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from opennova.security.secrets import SecretScanner
+
 SENSITIVE_KEYWORDS = ("token", "secret", "password", "api_key", "apikey", "content")
 
 
@@ -19,11 +21,13 @@ class SecurityAuditLogger:
         enabled: bool = True,
         max_arg_chars: int = 500,
         session_id: str | None = None,
+        secrets_policy: dict[str, Any] | None = None,
     ):
         self.path = Path(path)
         self.enabled = enabled
         self.max_arg_chars = max_arg_chars
         self.session_id = session_id
+        self.secret_scanner = SecretScanner.from_config(secrets_policy)
 
     def log_tool_event(
         self,
@@ -58,11 +62,15 @@ class SecurityAuditLogger:
                     "rule_id": metadata.get("rule_id"),
                     "rule_reason": metadata.get("rule_reason"),
                     "command_analysis": metadata.get("command_analysis"),
+                    "network_analysis": metadata.get("network_analysis"),
+                    "mcp_server": metadata.get("mcp_server"),
+                    "mcp_tool": metadata.get("mcp_tool"),
+                    "mcp_trusted": metadata.get("mcp_trusted"),
                 }
             if result is not None:
                 event["result"] = {
                     "success": getattr(result, "success", None),
-                    "error": self._truncate(getattr(result, "error", "") or ""),
+                    "error": self._redact(getattr(result, "error", "") or ""),
                 }
 
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,7 +87,7 @@ class SecurityAuditLogger:
         if isinstance(value, list):
             return [self._redact(item, key) for item in value]
         if isinstance(value, str):
-            return self._truncate(value)
+            return self._truncate(self.secret_scanner.redact(value))
         return value
 
     def _truncate(self, value: str) -> str:

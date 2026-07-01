@@ -63,6 +63,8 @@ class ExecuteCommandTool(BaseTool):
             always_ask_tools=self.config.get("always_ask_tools", []),
             permission_rules=self.config.get("permission_rules", []),
             strict_shell_parsing=self.strict_shell_parsing,
+            network_policy=self.config.get("network_policy", {}),
+            secrets_policy=self.config.get("secrets_policy", {}),
         )
 
     def get_parameters_schema(self) -> dict[str, Any]:
