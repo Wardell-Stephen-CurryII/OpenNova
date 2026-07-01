@@ -14,6 +14,7 @@ import copy
 import os
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -121,20 +122,30 @@ class AgentRuntime:
         self.mcp_manager = None
         self._mcp_server_configs = []
         self.skill_registry = None
+        from opennova.security.audit import SecurityAuditLogger
         from opennova.security.guardrails import Guardrails
         from opennova.security.permissions import PermissionStore
 
         self.permission_store = PermissionStore(Path(os.getcwd()) / ".opennova" / "permissions.json")
+        audit_config = self.security_config.get("audit", {})
+        self.security_audit_logger = SecurityAuditLogger(
+            path=audit_config.get("path", ".opennova/audit/security.jsonl"),
+            enabled=audit_config.get("enabled", True),
+            max_arg_chars=audit_config.get("max_arg_chars", 500),
+            session_id=self.session_manager.session_id,
+        )
         self.guardrails = Guardrails(
             sandbox_mode=self.security_config.get("sandbox_mode", True),
             allowed_paths=self.security_config.get("allowed_paths", []),
             blocked_commands=self.security_config.get("blocked_commands", []),
             auto_confirm_safe=self.security_config.get("auto_confirm_safe", True),
             allow_network=self.security_config.get("allow_network", True),
+            strict_shell_parsing=self.security_config.get("strict_shell_parsing", False),
             permission_mode=self.security_config.get("permission_mode", "default"),
             always_allow_tools=self.security_config.get("always_allow_tools", []),
             always_deny_tools=self.security_config.get("always_deny_tools", []),
             always_ask_tools=self.security_config.get("always_ask_tools", []),
+            permission_rules=self.security_config.get("permission_rules", []),
             permission_store=self.permission_store,
         )
 
@@ -168,6 +179,7 @@ class AgentRuntime:
             "always_allow_tools": security_config.get("always_allow_tools", []),
             "always_deny_tools": security_config.get("always_deny_tools", []),
             "always_ask_tools": security_config.get("always_ask_tools", []),
+            "permission_rules": security_config.get("permission_rules", []),
             "read_only": security_config.get("read_only", False),
             "max_file_size": security_config.get("max_file_size", 100 * 1024 * 1024),
         }
@@ -834,6 +846,7 @@ class AgentRuntime:
             guardrails=getattr(self, "guardrails", None),
             working_dir=os.getcwd(),
             hook_manager=getattr(self, "hook_manager", None),
+            audit_logger=getattr(self, "security_audit_logger", None),
         )
         started_at = perf_counter()
         if not preserve_context:
@@ -1003,10 +1016,8 @@ class AgentRuntime:
             self.state.set_plan(restored_plan)
 
         if approval_status:
-            try:
+            with suppress(ValueError):
                 self.state.plan_approval_status = PlanApprovalStatus(approval_status)
-            except ValueError:
-                pass
 
     def get_sessions(self) -> list[Any]:
         """List all saved sessions for the current project."""

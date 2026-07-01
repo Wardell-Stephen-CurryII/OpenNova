@@ -14,6 +14,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from opennova.security.command_policy import CommandPolicy
+from opennova.security.permission_rules import PermissionRuleMatcher
 from opennova.security.permissions import PermissionDecision, PermissionStore
 
 
@@ -45,6 +47,7 @@ class GuardResult:
     reason: str
     requires_confirmation: bool = False
     suggestions: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
         return self.allowed
@@ -150,6 +153,8 @@ class Guardrails:
         always_deny_tools: list[str] | None = None,
         always_ask_tools: list[str] | None = None,
         permission_store: PermissionStore | None = None,
+        permission_rules: list[dict[str, Any]] | None = None,
+        strict_shell_parsing: bool = False,
     ):
         """
         Initialize guardrails.
@@ -165,11 +170,17 @@ class Guardrails:
         self.blocked_commands = blocked_commands or []
         self.auto_confirm_safe = auto_confirm_safe
         self.allow_network = allow_network
+        self.strict_shell_parsing = strict_shell_parsing
         self.permission_mode = PermissionMode(permission_mode)
         self.permission_store = permission_store
         self.always_allow_tools = set(always_allow_tools or [])
         self.always_deny_tools = set(always_deny_tools or [])
         self.always_ask_tools = set(always_ask_tools or [])
+        self.command_policy = CommandPolicy(
+            allow_network=allow_network,
+            strict_shell_parsing=strict_shell_parsing,
+        )
+        self.permission_rule_matcher = PermissionRuleMatcher.from_config(permission_rules)
         if permission_store:
             self.always_allow_tools.update(permission_store.allowed_tools())
             self.always_deny_tools.update(permission_store.denied_tools())
@@ -234,9 +245,24 @@ class Guardrails:
         tool_name: str,
         safety_result: GuardResult,
         permission_result: GuardResult | None,
+        rule_result: GuardResult | None = None,
     ) -> GuardResult:
         """Apply permission policy without letting it bypass hard safety blocks."""
         if not safety_result.allowed:
+            return safety_result
+        if rule_result and not rule_result.allowed:
+            return rule_result
+        if rule_result and rule_result.requires_confirmation:
+            safety_result.requires_confirmation = True
+            safety_result.risk_level = RiskLevel.WARN
+            safety_result.reason = rule_result.reason
+            safety_result.metadata.update(rule_result.metadata)
+            return safety_result
+        if rule_result and rule_result.allowed:
+            safety_result.requires_confirmation = False
+            if safety_result.risk_level == RiskLevel.WARN:
+                safety_result.risk_level = RiskLevel.SAFE
+            safety_result.metadata.update(rule_result.metadata)
             return safety_result
         if tool_name in self.always_allow_tools:
             safety_result.requires_confirmation = False
@@ -250,10 +276,7 @@ class Guardrails:
     @staticmethod
     def command_uses_shell_features(command: str) -> bool:
         """Return whether command uses shell-specific syntax."""
-        stripped = command.strip()
-        if not stripped:
-            return False
-        return any(re.search(pattern, stripped) for pattern in SHELL_FEATURE_PATTERNS)
+        return CommandPolicy.command_uses_shell_features(command)
 
     def check_command(self, command: str) -> GuardResult:
         """
@@ -266,6 +289,8 @@ class Guardrails:
             GuardResult with safety assessment
         """
         command_stripped = command.strip()
+        analysis = self.command_policy.analyze(command_stripped)
+        metadata = {"command_analysis": analysis.to_dict()}
 
         for blocked in self.blocked_commands:
             if blocked.lower() in command_stripped.lower():
@@ -274,6 +299,7 @@ class Guardrails:
                     risk_level=RiskLevel.BLOCK,
                     reason=f"Command is in blocked list: {blocked}",
                     requires_confirmation=False,
+                    metadata=metadata,
                 )
 
         for pattern, description in DANGEROUS_COMMAND_PATTERNS:
@@ -287,7 +313,30 @@ class Guardrails:
                         "Review the command carefully before executing",
                         "Consider using a safer alternative",
                     ],
+                    metadata=metadata,
                 )
+
+        if analysis.risk_level == "block":
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason=analysis.reason,
+                requires_confirmation=False,
+                metadata=metadata,
+            )
+
+        if analysis.risk_level == "warn":
+            return GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.WARN,
+                reason=analysis.reason,
+                requires_confirmation=True,
+                suggestions=[
+                    "Review the command carefully before executing",
+                    "Prefer narrowly scoped commands where possible",
+                ],
+                metadata=metadata,
+            )
 
         if not self.allow_network:
             for pattern, description in NETWORK_COMMAND_PATTERNS:
@@ -297,6 +346,7 @@ class Guardrails:
                         risk_level=RiskLevel.BLOCK,
                         reason=f"Network access is disabled by policy: {description}",
                         requires_confirmation=False,
+                        metadata=metadata,
                     )
 
         destructive_patterns = [
@@ -320,6 +370,7 @@ class Guardrails:
                         "Ensure you have backups",
                         "Double-check the target",
                     ],
+                    metadata=metadata,
                 )
 
         if self.command_uses_shell_features(command_stripped):
@@ -332,6 +383,7 @@ class Guardrails:
                     "Prefer argument-based commands without shell operators",
                     "Confirm shell fallback execution if this is intentional",
                 ],
+                metadata=metadata,
             )
 
         return GuardResult(
@@ -339,7 +391,33 @@ class Guardrails:
             risk_level=RiskLevel.SAFE,
             reason="Command appears safe",
             requires_confirmation=not self.auto_confirm_safe,
+            metadata=metadata,
         )
+
+    def _check_parameter_rule(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        working_dir: str | None,
+        command_analysis: dict[str, Any] | None = None,
+    ) -> GuardResult | None:
+        rule = self.permission_rule_matcher.match(
+            tool_name,
+            arguments,
+            working_dir=working_dir,
+            command_analysis=command_analysis,
+        )
+        if not rule:
+            return None
+        metadata = {"rule_id": rule.id, "rule_reason": rule.reason}
+        if command_analysis:
+            metadata["command_analysis"] = command_analysis
+        reason = rule.reason or f"Permission rule matched: {rule.id}"
+        if rule.decision == "deny":
+            return GuardResult(False, RiskLevel.BLOCK, reason, metadata=metadata)
+        if rule.decision == "ask":
+            return GuardResult(True, RiskLevel.WARN, reason, True, metadata=metadata)
+        return GuardResult(True, RiskLevel.SAFE, reason, False, metadata=metadata)
 
     def check_file_path(
         self,
@@ -519,6 +597,19 @@ class Guardrails:
         Returns:
             GuardResult with tool call safety assessment
         """
+        command_analysis = None
+        if tool_name == "execute_command":
+            command_analysis = self.command_policy.analyze(arguments.get("command", "")).to_dict()
+
+        rule_result = self._check_parameter_rule(
+            tool_name,
+            arguments,
+            working_dir,
+            command_analysis=command_analysis,
+        )
+        if rule_result is not None and not rule_result.allowed:
+            return rule_result
+
         permission_result = self._check_permission_mode(tool_name)
         if permission_result is not None and (
             not permission_result.allowed or self.permission_mode == PermissionMode.BYPASS
@@ -572,4 +663,4 @@ class Guardrails:
                 requires_confirmation=False,
             )
 
-        return self._apply_permission_overlay(tool_name, result, permission_result)
+        return self._apply_permission_overlay(tool_name, result, permission_result, rule_result)

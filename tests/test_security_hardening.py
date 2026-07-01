@@ -1,5 +1,6 @@
 """Focused tests for sandbox/guardrails hardening behaviors."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ import pytest
 
 from opennova.runtime.loop import ParsedAction, ReActLoop
 from opennova.runtime.state import AgentState
+from opennova.security.audit import SecurityAuditLogger
 from opennova.security.guardrails import Guardrails, RiskLevel
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 from opennova.tools.file_tools import WriteFileTool
@@ -45,6 +47,101 @@ def test_guardrails_warns_on_shell_features():
     assert result.allowed is True
     assert result.risk_level == RiskLevel.WARN
     assert result.requires_confirmation is True
+    assert result.metadata["command_analysis"]["uses_shell_features"] is True
+
+
+def test_parameter_permission_rule_allows_scoped_write_without_confirmation(tmp_path: Path):
+    guard = Guardrails(
+        permission_rules=[
+            {
+                "id": "allow-src-writes",
+                "tool": "write_file",
+                "decision": "allow",
+                "path_globs": ["src/**"],
+                "reason": "Project source writes are allowed",
+            }
+        ]
+    )
+    target = tmp_path / "src" / "module.py"
+
+    result = guard.check_tool_call(
+        "write_file",
+        {"file_path": str(target)},
+        working_dir=str(tmp_path),
+    )
+
+    assert result.allowed is True
+    assert result.risk_level == RiskLevel.SAFE
+    assert result.requires_confirmation is False
+    assert result.metadata["rule_id"] == "allow-src-writes"
+
+
+def test_parameter_permission_rule_denies_matching_path(tmp_path: Path):
+    guard = Guardrails(
+        permission_rules=[
+            {
+                "id": "deny-secrets",
+                "tool": "write_file",
+                "decision": "deny",
+                "path_globs": ["secrets/**"],
+                "reason": "Secrets are protected",
+            }
+        ]
+    )
+
+    result = guard.check_tool_call(
+        "write_file",
+        {"file_path": str(tmp_path / "secrets" / "token.txt")},
+        working_dir=str(tmp_path),
+    )
+
+    assert result.allowed is False
+    assert result.risk_level == RiskLevel.BLOCK
+    assert result.metadata["rule_id"] == "deny-secrets"
+
+
+def test_command_prefix_permission_rule_is_narrow():
+    guard = Guardrails(
+        permission_rules=[
+            {
+                "id": "allow-pytest",
+                "tool": "execute_command",
+                "decision": "allow",
+                "command_prefixes": ["uv run pytest"],
+            }
+        ]
+    )
+
+    allowed = guard.check_tool_call("execute_command", {"command": "uv run pytest -q"})
+    not_matched = guard.check_tool_call("execute_command", {"command": "uv sync"})
+
+    assert allowed.allowed is True
+    assert allowed.requires_confirmation is False
+    assert allowed.metadata["rule_id"] == "allow-pytest"
+    assert not_matched.allowed is True
+    assert not_matched.risk_level == RiskLevel.WARN
+    assert "rule_id" not in not_matched.metadata
+
+
+def test_structured_command_policy_classifies_core_commands():
+    guard = Guardrails()
+
+    git_status = guard.check_command("git status --short")
+    git_reset = guard.check_command("git reset --hard HEAD")
+    inline_python = guard.check_command("python -c 'print(1)'")
+
+    assert git_status.risk_level == RiskLevel.SAFE
+    assert git_status.metadata["command_analysis"]["family"] == "git"
+    assert git_reset.risk_level == RiskLevel.WARN
+    assert inline_python.risk_level == RiskLevel.WARN
+
+
+def test_strict_shell_parsing_blocks_shell_features():
+    guard = Guardrails(strict_shell_parsing=True)
+    result = guard.check_command("echo hello | cat")
+    assert result.allowed is False
+    assert result.risk_level == RiskLevel.BLOCK
+    assert "strict shell parsing" in result.reason.lower()
 
 
 @pytest.mark.asyncio
@@ -246,6 +343,7 @@ async def test_react_loop_checks_execute_command_aliases_for_dangerous_commands(
     registry = ToolRegistry()
     registry.clear()
     registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+    audit_path = tmp_path / "audit" / "security.jsonl"
 
     loop = ReActLoop(
         llm=DummyProvider(),
@@ -254,14 +352,24 @@ async def test_react_loop_checks_execute_command_aliases_for_dangerous_commands(
         stream=False,
         guardrails=Guardrails(),
         working_dir=str(tmp_path),
+        audit_logger=SecurityAuditLogger(path=audit_path, session_id="test-session"),
     )
 
     result = await loop._act(
-        ParsedAction(tool_name="execute_command", arguments={"cmd": "rm -rf /"})
+        ParsedAction(
+            tool_name="execute_command",
+            arguments={"cmd": "rm -rf /", "api_key": "secret-value"},
+        )
     )
 
     assert result.success is False
     assert "dangerous" in (result.error or "").lower()
+    audit_event = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+    assert audit_event["session_id"] == "test-session"
+    assert audit_event["tool_name"] == "execute_command"
+    assert audit_event["arguments"]["api_key"] == "[REDACTED]"
+    assert audit_event["confirmation_outcome"] == "blocked"
+    assert audit_event["guard"]["risk_level"] == "block"
 
 
 @pytest.mark.asyncio

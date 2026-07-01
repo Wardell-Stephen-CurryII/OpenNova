@@ -61,6 +61,8 @@ class ExecuteCommandTool(BaseTool):
             always_allow_tools=self.config.get("always_allow_tools", []),
             always_deny_tools=self.config.get("always_deny_tools", []),
             always_ask_tools=self.config.get("always_ask_tools", []),
+            permission_rules=self.config.get("permission_rules", []),
+            strict_shell_parsing=self.strict_shell_parsing,
         )
 
     def get_parameters_schema(self) -> dict[str, Any]:
@@ -171,6 +173,7 @@ class ExecuteCommandTool(BaseTool):
                     "risk_level": guard_result.risk_level.value,
                     "suggestions": guard_result.suggestions,
                     "guard_blocked": True,
+                    **guard_result.metadata,
                 },
             )
 
@@ -187,6 +190,7 @@ class ExecuteCommandTool(BaseTool):
                     "guard_blocked": True,
                     "requires_confirmation": True,
                     "risk_level": "block",
+                    **guard_result.metadata,
                 },
             )
 
@@ -297,6 +301,7 @@ class ExecuteCommandTool(BaseTool):
                     "shell_fallback": prepared.run_with_shell,
                     "requires_confirmation": prepared.guard_result.requires_confirmation,
                     "risk_level": prepared.guard_result.risk_level.value,
+                    **prepared.guard_result.metadata,
                 },
             )
 
@@ -401,6 +406,7 @@ class ExecuteCommandTool(BaseTool):
                     "shell_fallback": prepared.run_with_shell,
                     "requires_confirmation": prepared.guard_result.requires_confirmation,
                     "risk_level": prepared.guard_result.risk_level.value,
+                    **prepared.guard_result.metadata,
                 },
             )
 

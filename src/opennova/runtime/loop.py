@@ -88,6 +88,7 @@ class ReActLoop:
         guardrails: Guardrails | None = None,
         working_dir: str | None = None,
         hook_manager: HookManager | None = None,
+        audit_logger: Any | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -113,6 +114,7 @@ class ReActLoop:
         self.guardrails = guardrails
         self.working_dir = working_dir
         self.hook_manager = hook_manager
+        self.audit_logger = audit_logger
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
@@ -589,6 +591,9 @@ class ReActLoop:
         """
         tool = self.tool_registry.get(action.tool_name)
         action.arguments = self._normalize_tool_arguments(tool, action.arguments)
+        started_at = perf_counter()
+        guard_result: GuardResult | None = None
+        checkpoint_metadata: dict[str, Any] = {}
         action_record = None
         if self.working_memory:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
@@ -614,7 +619,7 @@ class ReActLoop:
                         ActionStatus.FAILED,
                         error=guard_result.reason,
                     )
-                return ToolResult(
+                blocked_result = ToolResult(
                     success=False,
                     output="",
                     error=guard_result.reason,
@@ -623,8 +628,18 @@ class ReActLoop:
                         "risk_level": guard_result.risk_level.value,
                         "requires_confirmation": guard_result.requires_confirmation,
                         "suggestions": guard_result.suggestions,
+                        **guard_result.metadata,
                     },
                 )
+                self._audit_tool_action(
+                    action,
+                    guard_result,
+                    blocked_result,
+                    confirmation_outcome="blocked",
+                    checkpoint_metadata=checkpoint_metadata,
+                    started_at=started_at,
+                )
+                return blocked_result
 
             if guard_result.requires_confirmation and guard_result.risk_level == RiskLevel.WARN:
                 confirm_result = await self._confirm_warn_action(action, guard_result)
@@ -635,7 +650,18 @@ class ReActLoop:
                             ActionStatus.FAILED,
                             error=confirm_result.error or "User declined action",
                         )
+                    self._audit_tool_action(
+                        action,
+                        guard_result,
+                        confirm_result,
+                        confirmation_outcome="declined",
+                        checkpoint_metadata=checkpoint_metadata,
+                        started_at=started_at,
+                    )
                     return confirm_result
+                confirmation_outcome = "confirmed"
+            else:
+                confirmation_outcome = None
 
             checkpoint_metadata = self._create_checkpoint_for_action(action)
             if hasattr(tool, "async_execute"):
@@ -669,6 +695,14 @@ class ReActLoop:
                     error=result.error,
                 )
                 self._record_file_observation(action, result)
+            self._audit_tool_action(
+                action,
+                guard_result,
+                result,
+                confirmation_outcome=confirmation_outcome,
+                checkpoint_metadata=checkpoint_metadata,
+                started_at=started_at,
+            )
             return result
         except Exception as e:
             if self.working_memory and action_record:
@@ -677,11 +711,46 @@ class ReActLoop:
                     ActionStatus.FAILED,
                     error=str(e),
                 )
-            return ToolResult(
+            error_result = ToolResult(
                 success=False,
                 output="",
                 error=f"Tool execution failed: {e}",
             )
+            self._audit_tool_action(
+                action,
+                guard_result,
+                error_result,
+                confirmation_outcome="error",
+                checkpoint_metadata=checkpoint_metadata,
+                started_at=started_at,
+            )
+            return error_result
+
+    def _audit_tool_action(
+        self,
+        action: ParsedAction,
+        guard_result: GuardResult | None,
+        result: ToolResult,
+        *,
+        confirmation_outcome: str | None,
+        checkpoint_metadata: dict[str, Any],
+        started_at: float,
+    ) -> None:
+        """Best-effort security audit event emission."""
+        if not self.audit_logger:
+            return
+        checkpoint_id = None
+        if checkpoint_metadata:
+            checkpoint_id = checkpoint_metadata.get("checkpoint_id")
+        self.audit_logger.log_tool_event(
+            tool_name=action.tool_name,
+            arguments=dict(action.arguments),
+            guard_result=guard_result,
+            result=result,
+            confirmation_outcome=confirmation_outcome,
+            checkpoint_id=checkpoint_id,
+            duration_ms=round((perf_counter() - started_at) * 1000, 3),
+        )
 
     def _create_checkpoint_for_action(self, action: ParsedAction) -> dict[str, Any]:
         """Create a best-effort checkpoint before destructive file mutations."""

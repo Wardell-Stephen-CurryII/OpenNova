@@ -56,6 +56,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "always_allow_tools": [],
         "always_deny_tools": [],
         "always_ask_tools": [],
+        "permission_rules": [],
+        "audit": {
+            "enabled": True,
+            "path": ".opennova/audit/security.jsonl",
+            "max_arg_chars": 500,
+        },
         "read_only": False,
         "max_file_size": 104857600,
     },
