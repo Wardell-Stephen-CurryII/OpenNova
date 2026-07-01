@@ -185,6 +185,8 @@ class AgentRuntime:
             "permission_rules": security_config.get("permission_rules", []),
             "network_policy": security_config.get("network", {}),
             "secrets_policy": security_config.get("secrets", {}),
+            "process_sandbox": security_config.get("process_sandbox", {}),
+            "temp_dir": security_config.get("process_sandbox", {}).get("tmp_dir"),
             "read_only": security_config.get("read_only", False),
             "max_file_size": security_config.get("max_file_size", 100 * 1024 * 1024),
         }

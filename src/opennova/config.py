@@ -70,6 +70,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "block_on_write": False,
             "max_scan_chars": 200000,
         },
+        "process_sandbox": {
+            "enabled": True,
+            "backend": "auto",
+            "enforce": False,
+            "tmp_dir": None,
+            "extra_read_roots": [],
+            "extra_writable_roots": [],
+        },
         "audit": {
             "enabled": True,
             "path": ".opennova/audit/security.jsonl",

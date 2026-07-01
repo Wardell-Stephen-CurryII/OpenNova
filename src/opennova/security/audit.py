@@ -68,9 +68,11 @@ class SecurityAuditLogger:
                     "mcp_trusted": metadata.get("mcp_trusted"),
                 }
             if result is not None:
+                result_metadata = getattr(result, "metadata", {}) or {}
                 event["result"] = {
                     "success": getattr(result, "success", None),
                     "error": self._redact(getattr(result, "error", "") or ""),
+                    "process_sandbox": result_metadata.get("process_sandbox"),
                 }
 
             self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -426,7 +426,13 @@ def test_file_write_tool_respects_sandbox_boundaries(tmp_path: Path):
 
 
 def test_execute_command_prefers_argv_and_falls_back_to_shell():
-    tool = ExecuteCommandTool(config={"working_dir": ".", "strict_shell_parsing": False})
+    tool = ExecuteCommandTool(
+        config={
+            "working_dir": ".",
+            "strict_shell_parsing": False,
+            "process_sandbox": {"enabled": False},
+        }
+    )
 
     with patch("opennova.tools.shell_tools.subprocess.run") as mock_run:
         mock_run.side_effect = [
@@ -453,7 +459,11 @@ def test_execute_command_rejects_shell_syntax_in_strict_mode():
 async def test_react_loop_normalizes_execute_command_model_aliases_before_guard(tmp_path: Path):
     registry = ToolRegistry()
     registry.clear()
-    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+    registry.register(
+        ExecuteCommandTool(
+            config={"working_dir": str(tmp_path), "process_sandbox": {"enabled": False}}
+        )
+    )
 
     loop = ReActLoop(
         llm=DummyProvider(),
@@ -482,7 +492,11 @@ async def test_react_loop_normalizes_execute_command_model_aliases_before_guard(
 async def test_react_loop_checks_execute_command_aliases_for_dangerous_commands(tmp_path: Path):
     registry = ToolRegistry()
     registry.clear()
-    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+    registry.register(
+        ExecuteCommandTool(
+            config={"working_dir": str(tmp_path), "process_sandbox": {"enabled": False}}
+        )
+    )
     audit_path = tmp_path / "audit" / "security.jsonl"
 
     loop = ReActLoop(
@@ -516,7 +530,11 @@ async def test_react_loop_checks_execute_command_aliases_for_dangerous_commands(
 async def test_react_loop_normalizes_execute_command_array_commands(tmp_path: Path):
     registry = ToolRegistry()
     registry.clear()
-    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+    registry.register(
+        ExecuteCommandTool(
+            config={"working_dir": str(tmp_path), "process_sandbox": {"enabled": False}}
+        )
+    )
 
     loop = ReActLoop(
         llm=DummyProvider(),
@@ -545,7 +563,11 @@ async def test_react_loop_normalizes_execute_command_array_commands(tmp_path: Pa
 async def test_react_loop_normalizes_execute_command_args_field(tmp_path: Path):
     registry = ToolRegistry()
     registry.clear()
-    registry.register(ExecuteCommandTool(config={"working_dir": str(tmp_path)}))
+    registry.register(
+        ExecuteCommandTool(
+            config={"working_dir": str(tmp_path), "process_sandbox": {"enabled": False}}
+        )
+    )
 
     loop = ReActLoop(
         llm=DummyProvider(),

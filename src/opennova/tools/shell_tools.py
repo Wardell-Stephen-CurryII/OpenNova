@@ -17,6 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from opennova.security.guardrails import Guardrails, GuardResult
+from opennova.security.process_sandbox import (
+    ProcessSandbox,
+    ProcessSandboxConfig,
+    ProcessSandboxError,
+)
 from opennova.tools.base import BaseTool, ToolResult
 from opennova.utils.encoding import utf8_environment
 
@@ -30,8 +35,9 @@ class PreparedCommand:
     timeout: int | float
     working_dir: str
     run_with_shell: bool
-    argv: list[str] | None
+    argv: list[str]
     guard_result: GuardResult
+    sandbox_metadata: dict[str, Any]
 
 
 class ExecuteCommandTool(BaseTool):
@@ -51,6 +57,7 @@ class ExecuteCommandTool(BaseTool):
         self.default_timeout = self.config.get("command_timeout", DEFAULT_TIMEOUT)
         self.working_dir = self.config.get("working_dir", os.getcwd())
         self.strict_shell_parsing = bool(self.config.get("strict_shell_parsing", False))
+        self.process_sandbox_config = self.config.get("process_sandbox", {})
         self.guardrails = Guardrails(
             sandbox_mode=bool(self.config.get("sandbox_mode", True)),
             allowed_paths=self.config.get("allowed_paths", []),
@@ -228,13 +235,45 @@ class ExecuteCommandTool(BaseTool):
             if not argv:
                 return ToolResult(success=False, output="", error="Empty command")
 
+        try:
+            sandbox = ProcessSandbox(
+                ProcessSandboxConfig.from_config(
+                    self.process_sandbox_config,
+                    working_dir=work_dir,
+                    allowed_paths=self.config.get("allowed_paths", []),
+                    allow_network=bool(self.config.get("allow_network", True)),
+                    tmp_dir=self.config.get("temp_dir"),
+                )
+            )
+            sandbox_plan = sandbox.wrap(
+                command=command,
+                argv=argv,
+                run_with_shell=run_with_shell,
+                working_dir=work_dir,
+                env=utf8_environment(),
+            )
+            final_run_with_shell = run_with_shell and not sandbox_plan.metadata.get("applied")
+        except ProcessSandboxError as e:
+            return ToolResult(
+                success=False,
+                output="",
+                error=str(e),
+                metadata={
+                    "guard_blocked": True,
+                    "requires_confirmation": guard_result.requires_confirmation,
+                    "risk_level": "block",
+                    **guard_result.metadata,
+                },
+            )
+
         return PreparedCommand(
             command=command,
             timeout=resolved_timeout,
-            working_dir=work_dir,
-            run_with_shell=run_with_shell,
-            argv=argv,
+            working_dir=sandbox_plan.cwd,
+            run_with_shell=final_run_with_shell,
+            argv=sandbox_plan.argv,
             guard_result=guard_result,
+            sandbox_metadata=sandbox_plan.metadata,
         )
 
     def execute(
@@ -303,6 +342,7 @@ class ExecuteCommandTool(BaseTool):
                     "shell_fallback": prepared.run_with_shell,
                     "requires_confirmation": prepared.guard_result.requires_confirmation,
                     "risk_level": prepared.guard_result.risk_level.value,
+                    "process_sandbox": prepared.sandbox_metadata,
                     **prepared.guard_result.metadata,
                 },
             )
@@ -315,6 +355,7 @@ class ExecuteCommandTool(BaseTool):
                 metadata={
                     "command": command,
                     "timeout": prepared.timeout,
+                    "process_sandbox": prepared.sandbox_metadata,
                 },
             )
         except Exception as e:
@@ -356,7 +397,7 @@ class ExecuteCommandTool(BaseTool):
                 )
             else:
                 process = await asyncio.create_subprocess_exec(
-                    *(prepared.argv or []),
+                    *prepared.argv,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=prepared.working_dir,
@@ -408,6 +449,7 @@ class ExecuteCommandTool(BaseTool):
                     "shell_fallback": prepared.run_with_shell,
                     "requires_confirmation": prepared.guard_result.requires_confirmation,
                     "risk_level": prepared.guard_result.risk_level.value,
+                    "process_sandbox": prepared.sandbox_metadata,
                     **prepared.guard_result.metadata,
                 },
             )
