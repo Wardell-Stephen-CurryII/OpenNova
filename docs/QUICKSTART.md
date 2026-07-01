@@ -57,11 +57,8 @@ providers:
 ## 第三步：开始使用
 
 ```bash
-# 启动交互模式（默认进入 TUI，包含 Windows 中文输入法兼容处理）
+# 启动 Textual TUI（默认交互界面，包含 Windows 中文输入法兼容处理）
 uv run opennova
-
-# 使用经典 REPL
-uv run opennova run --no-tui
 
 # 显式使用 Textual TUI
 uv run opennova run --tui
@@ -111,9 +108,8 @@ opennova> /init
 
 | 命令 | 说明 |
 |------|------|
-| `uv run opennova` | 启动交互模式 |
+| `uv run opennova` | 启动 Textual TUI |
 | `uv run opennova run "task"` | 执行单次任务 |
-| `uv run opennova run --no-tui` | 使用经典 REPL |
 | `uv run opennova run --tui` | 显式使用 Textual TUI |
 | `uv run opennova --version` | 查看版本 |
 | `uv run opennova init` | 初始化全局配置 |

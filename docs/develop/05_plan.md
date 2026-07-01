@@ -11,7 +11,7 @@
 - 自动化 monitor：新增 `LocalAutomationMonitor`，支持 tick/run_due、记录 history、输出 monitor event；为后续 daemon/notification 做准备。
 
 ## Implementation Plan
-- 在 `opennova.cli.checkpoint_commands` 中实现 checkpoint 子命令，REPL/TUI `/checkpoint` 复用同一处理器。
+- 在 `opennova.cli.checkpoint_commands` 中实现 checkpoint 子命令，TUI `/checkpoint` 复用同一处理器。
 - 在 `opennova.cli.tool_cards` 中实现纯数据层，不直接改复杂 Textual UI；TUI callback 将 tool events 同步进 store。
 - 在 diagnostics 工具 metadata 中暴露 `backend`、`backend_available` 和 import graph；新增 backend 探测 helper。
 - 在插件 manager 中校验 trusted plugin tools：必须有 name/description/command，args 必须是字符串数组，permission 只能是 `read`/`edit`/`command`。

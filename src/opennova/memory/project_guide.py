@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-import tomllib
-
 
 GUIDE_FILENAME = "OPENNOVA.md"
 DEFAULT_CONTEXT_MAX_CHARS = 5000
@@ -274,8 +272,6 @@ README excerpt:
             stack.append("DeepSeek API")
         if any("textual" in dep for dep in deps):
             stack.append("Textual TUI")
-        if any("prompt-toolkit" in dep for dep in deps):
-            stack.append("prompt_toolkit REPL")
         if any("pytest" in dep for dep in dev_deps):
             stack.append("pytest")
         if any("ruff" in dep for dep in dev_deps):

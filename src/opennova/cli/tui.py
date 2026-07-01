@@ -37,6 +37,12 @@ from opennova.cli.commands import SlashCommandRegistry
 from opennova.cli.session_picker_dialog import SessionPickerDialog
 from opennova.cli.tool_cards import ToolCardStore
 from opennova.cli.tool_progress import ToolProgressTracker
+from opennova.cli.tui_blocks import (
+    render_assistant_block,
+    render_tool_result_block,
+    render_tool_start_block,
+    render_user_block,
+)
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
 from opennova.runtime.agent import AgentRuntime
@@ -47,7 +53,7 @@ from opennova.tools.base import ToolResult
 _SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 
 # Tool names where the "Result:" label is shown but raw stdout is hidden.
-_SUPPRESSED_RESULT_OUTPUT = {"execute_command"}
+_SUPPRESSED_RESULT_OUTPUT: set[str] = set()
 
 # Parameter names whose values are hidden in the action display (too long/unreadable).
 _REDACTED_ACTION_PARAMS = {"content"}
@@ -455,7 +461,8 @@ class OpenNovaTUI(App):
             self.agent.record_session_transcript_event(kind, **payload)
 
     def _write_user_message(self, log: _MessagesLog, text: str, *, record: bool = True) -> None:
-        log.write(_format_user_message(text))
+        log.write("")
+        log.write(render_user_block(text))
         if record:
             self._record_transcript_event("user_message", text=text)
 
@@ -466,7 +473,7 @@ class OpenNovaTUI(App):
         *,
         record: bool = True,
     ) -> None:
-        log.write(Markdown(text))
+        log.write(render_assistant_block(text))
         if record:
             self._record_transcript_event("assistant_markdown", content=text)
 
@@ -478,7 +485,7 @@ class OpenNovaTUI(App):
         *,
         record: bool = True,
     ) -> None:
-        log.write(_format_tool_execution(tool_name, detail))
+        log.write(render_tool_start_block(tool_name, detail))
         if record:
             self._record_transcript_event(
                 "tool_start",
@@ -498,13 +505,16 @@ class OpenNovaTUI(App):
         diff_max_lines: int = _MAX_OUTPUT_LINES,
         record: bool = True,
     ) -> None:
-        log.write(summary_markup)
-        if output:
-            log.write(output)
-        if error:
-            log.write(f"[red]Error: {error}[/red]")
-        if diff:
-            self._write_diff(log, diff, max_lines=diff_max_lines)
+        for renderable in render_tool_result_block(
+            tool_name=tool_name,
+            summary_markup=summary_markup,
+            output=output,
+            error=error,
+            diff=diff,
+            diff_max_lines=diff_max_lines,
+            max_output_lines=_MAX_OUTPUT_LINES,
+        ):
+            log.write(renderable)
         if record:
             self._record_transcript_event(
                 "tool_result",

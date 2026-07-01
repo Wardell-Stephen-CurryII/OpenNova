@@ -1,4 +1,4 @@
-"""Shared slash command registry for REPL, TUI, and plugins."""
+"""Shared slash command registry for the TUI and plugins."""
 
 from __future__ import annotations
 

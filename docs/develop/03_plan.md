@@ -33,7 +33,7 @@
 - 全量验收：使用 UTF-8 locale 运行 `LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1 uv run pytest -q`。
 
 ## Assumptions
-- 继续保持现有工具名、REPL/TUI 命令语义和配置兼容。
+- 继续保持现有工具名、TUI slash 命令语义和配置兼容。
 - 插件系统仍只支持本地项目插件，不做远程市场、签名分发或自动下载。
 - AST 符号理解保持无依赖可用，LSP/pyright 作为后续增强。
 - 自动化先做本地运行面，不引入远程调度服务。

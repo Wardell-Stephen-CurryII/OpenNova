@@ -25,12 +25,11 @@ from rich.progress import (
 )
 from rich.syntax import Syntax
 from rich.table import Table
-from rich.text import Text
 from rich.tree import Tree
 
 from opennova.diff.parser import ChangeType
 from opennova.providers.base import StreamChunk
-from opennova.runtime.state import Plan, PlanStep
+from opennova.runtime.state import Plan
 from opennova.tools.base import ToolResult
 
 
@@ -84,7 +83,7 @@ class Renderer:
 | `/resume [id]` | Resume a past session |
 | `/sessions` | List all saved sessions |
 | `/help` | Show this help message |
-| `/exit` / `/quit` | Exit the REPL |
+| `/exit` / `/quit` | Exit OpenNova |
 
 ## Tips
 
@@ -96,10 +95,7 @@ class Renderer:
 
     def print_thinking(self, thought: str, collapsed: bool = False) -> None:
         """Display thinking process."""
-        if collapsed and len(thought) > 200:
-            preview = thought[:200] + "..."
-        else:
-            preview = thought
+        preview = thought[:200] + "..." if collapsed and len(thought) > 200 else thought
 
         self.console.print(
             Panel(
@@ -112,10 +108,10 @@ class Renderer:
 
     def print_action(self, tool_name: str, args: dict[str, Any]) -> None:
         """Display tool action."""
-        _REDACTED = {"content"}
+        redacted = {"content"}
         args_preview = []
         for k, v in args.items():
-            if k in _REDACTED:
+            if k in redacted:
                 if isinstance(v, str):
                     args_preview.append(f"[dim]{k}[/dim]=<{len(v)} chars>")
                 else:

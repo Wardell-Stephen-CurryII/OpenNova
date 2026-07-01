@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Project Overview
 
-OpenNova is a lightweight CLI AI Coding Agent built from scratch in Python (v0.3.0). It's a minimalist AI coding assistant that runs in your terminal with support for multiple LLM providers (OpenAI, Anthropic, DeepSeek), a plugin-based tool system with Skill support, built-in safety guardrails, session management, context compression, and both REPL and Textual TUI interfaces.
+OpenNova is a lightweight CLI AI Coding Agent built from scratch in Python (v0.3.0). It's a minimalist AI coding assistant that runs in your terminal with support for multiple LLM providers (OpenAI, Anthropic, DeepSeek), a plugin-based tool system with Skill support, built-in safety guardrails, session management, context compression, and a Textual TUI interface.
 
 ## Development Commands
 
@@ -22,10 +22,10 @@ uv run opennova init
 
 ### Running the Application
 ```bash
-# Interactive REPL mode (default, prompt_toolkit)
+# Interactive Textual TUI mode
 uv run opennova
 
-# Textual TUI mode (split-pane chat interface)
+# Explicit Textual TUI mode (split-pane chat interface)
 uv run opennova tui
 
 # Single task execution
@@ -37,8 +37,8 @@ uv run opennova run --plan "Refactor the authentication module"
 # Use specific model
 uv run opennova run -m gpt-4o "Create a new Python module"
 
-# Resume a previous session
-uv run opennova resume <session_id>
+# Open the TUI session picker
+uv run opennova --resume
 
 # List available tools
 uv run opennova list-tools
@@ -132,8 +132,7 @@ uv run mypy src/opennova
    - `examples.py`: Bundled skill directory discovery
 
 10. **CLI Interface** (`src/opennova/cli/`)
-    - `repl.py`: Interactive REPL with command history (prompt_toolkit)
-    - `tui.py`: Textual TUI with split-pane chat, copy overlay, session support
+   - `tui.py`: Textual TUI with split-pane chat, copy overlay, session support
     - `renderer.py`: Rich terminal rendering (syntax highlighting, diff preview)
 
 11. **Session Management** (`src/opennova/session/`): Conversation persistence
@@ -285,7 +284,7 @@ opennova/
 │   ├── mcp/              # MCP integration
 │   ├── skills/           # Skills system
 │   ├── session/          # Session persistence (JSONL)
-│   ├── cli/              # CLI (REPL + TUI)
+│   ├── cli/              # CLI and Textual TUI
 │   ├── config.py         # Configuration management
 │   └── main.py           # CLI entry point
 ├── tests/                # Test files

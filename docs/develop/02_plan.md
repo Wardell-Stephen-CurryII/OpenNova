@@ -4,7 +4,7 @@
 本轮在 01 计划已完成的基础能力上继续深化三条主线：TUI 工具体验、插件声明系统、代码理解工具。目标是让 OpenNova 更接近 Claude Code 的可视化执行体验、可扩展能力模型和符号级代码理解能力。
 
 ## Key Changes
-- 深化 TUI：基于现有 `ToolProgressTracker` 增加可折叠工具结果、diff preview、统一审批弹窗和工具耗时展示；保持现有 REPL/TUI 命令兼容。
+- 深化 TUI：基于现有 `ToolProgressTracker` 增加可折叠工具结果、diff preview、统一审批弹窗和工具耗时展示；保持现有 TUI slash 命令兼容。
 - 深化插件系统：新增本地插件 manifest，插件可声明 commands、tools、skills、MCP servers 和 hooks；先只支持项目内 `.opennova/plugins/`，不做远程市场。
 - 深化代码理解：在 `python_diagnostics` 基础上新增 Python 符号工具，包括 `python_definition`、`python_references`、`python_symbols`；优先使用静态 AST，后续再接 pyright/ruff server。
 - 统一事件模型：扩展 SDK/TUI 可消费的 tool event metadata，包括 `tool_id`、`started_at`、`duration_ms`、`risk_level`、`diff`、`collapsible`。

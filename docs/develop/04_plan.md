@@ -14,7 +14,7 @@
 ## Implementation Plan
 - 新增 checkpoint runtime hook：在 ReActLoop 工具执行前根据工具名和文件参数创建快照；失败不阻断主工具，但会写入 metadata warning。
 - 新增 transcript event buffer：AgentRuntime 记录 canonical tool events，`TranscriptExporter` 支持从 runtime 直接导出。
-- 扩展 slash command registry：增加 `/export`，完善 `/automations` 参数解析；REPL/TUI 使用同一命令语义。
+- 扩展 slash command registry：增加 `/export`，完善 `/automations` 参数解析；TUI 使用同一命令语义。
 - 新增 `PluginCommandTool`：manifest 中 `tools` 支持 `name`、`description`、`command`、`args`、`read_only`；只在 plugin trusted 后注册。
 - 增强 `PythonASTIndexer`：记录 `imports` metadata，definition 查找先匹配 qualified name，再解析 import alias 到跨文件符号。
 
@@ -34,7 +34,7 @@
 - 将 automations 扩展为后台 daemon/monitor，并支持线程唤醒、通知和 transcript 自动归档。
 
 ## Assumptions
-- 保持现有工具名、REPL/TUI 命令和配置兼容。
+- 保持现有工具名、TUI slash 命令和配置兼容。
 - 04 仍只做本地能力，不接远程服务。
 - Plugin tools 只支持 trusted 本地插件声明的 command-backed tool，不执行远程下载。
 - Checkpoint 自动创建是 best-effort；checkpoint 失败会记录 warning，但不阻断原工具。

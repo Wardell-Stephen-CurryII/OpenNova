@@ -10,7 +10,6 @@ import sys
 import click
 
 from opennova import __version__
-from opennova.cli.repl import run_repl
 from opennova.config import (
     Config,
     create_default_config,
@@ -67,7 +66,7 @@ def main(
     """
     OpenNova - A lightweight CLI AI Coding Agent.
 
-    Run without arguments to start interactive REPL mode.
+    Run without arguments to start the Textual TUI.
     """
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
@@ -85,11 +84,6 @@ def main(
 @click.option("--provider", help="Override provider to use.")
 @click.option("--no-stream", is_flag=True, help="Disable streaming output.")
 @click.option(
-    "--no-tui",
-    is_flag=True,
-    help="Use the original line-based REPL instead of the TUI.",
-)
-@click.option(
     "--tui",
     "force_tui",
     is_flag=True,
@@ -103,14 +97,12 @@ def run(
     model: str | None,
     provider: str | None,
     no_stream: bool,
-    no_tui: bool,
     force_tui: bool,
 ) -> None:
     """
     Run OpenNova agent on a task.
 
-    If no task is provided, starts interactive TUI mode. Use --no-tui to
-    start the prompt_toolkit REPL instead.
+    If no task is provided, starts interactive TUI mode.
 
     Examples:
 
@@ -128,14 +120,10 @@ def run(
         raise click.UsageError("Use only one of --resume or --continue.")
     if (resume_mode or continue_mode) and task:
         raise click.UsageError("--resume/--continue cannot be used with a direct task.")
-    if (resume_mode or continue_mode) and no_tui:
-        raise click.UsageError("--resume/--continue require the Textual TUI.")
 
     if task:
         asyncio.run(_run_single_task(config, task, plan, not no_stream))
-    elif not _use_tui_for_interactive(no_tui=no_tui, force_tui=force_tui):
-        asyncio.run(run_repl(config))
-    else:
+    elif _use_tui_for_interactive(force_tui=force_tui):
         from opennova.cli.tui import run_tui
 
         startup_resume_mode = None
@@ -212,9 +200,9 @@ def init() -> None:
     click.echo("  - DEEPSEEK_API_KEY")
 
 
-def _use_tui_for_interactive(*, no_tui: bool, force_tui: bool, platform: str | None = None) -> bool:
+def _use_tui_for_interactive(*, force_tui: bool, platform: str | None = None) -> bool:
     """Return whether the interactive command should launch the Textual TUI."""
-    return not no_tui
+    return True
 
 
 async def _run_single_task(

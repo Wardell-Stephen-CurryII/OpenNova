@@ -97,7 +97,7 @@ class MyTool(BaseTool):
 说明：
 - `web_fetch` 会发起真实 HTTP 请求。
 - `web_search` 如果没有配置后端，会明确返回未配置错误。
-- `ask_user_question` 在 REPL 环境下可通过 interaction callback 收集用户选择。
+- `ask_user_question` 在 TUI 环境下可通过 interaction callback 收集用户选择。
 - `init_project_guide` 会驱动模型分析仓库并生成 `OPENNOVA.md`，供后续任务作为项目长期记忆使用。
 
 ## Provider API
@@ -249,7 +249,7 @@ summary = memory.get_summary()
 运行时中的计划能力通常包括：
 - 生成结构化步骤
 - 跟踪步骤状态
-- 在 REPL 中展示计划
+- 在 TUI 中展示计划
 - 等待用户确认后继续执行
 
 ## Security API
@@ -284,7 +284,7 @@ print(result.risk_level)
 
 ### Runtime Tool Events
 
-运行时会为工具调用发出统一事件，SDK/TUI/REPL 可以消费同一套元信息。
+运行时会为工具调用发出统一事件，SDK 和 TUI 可以消费同一套元信息。
 
 ```python
 from opennova.runtime.events import ToolEvent, ToolUseContext

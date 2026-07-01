@@ -13,7 +13,7 @@
 
 ## 功能优化 / Claude Code 对齐
 - P1：升级工具接口为“声明式工具协议”。在 `BaseTool` 增加 `is_read_only()`、`is_destructive()`、`requires_permission()`、`is_concurrency_safe()`、`max_result_chars`、`search_hint`、`aliases`、`progress metadata`。运行时根据这些元信息统一做权限、并发、结果截断、UI 展示，而不是每个工具各管一段。
-- P1：把 Guardrails 升级为权限决策系统。参考 Claude Code 的 `canUseTool`/permission context，新增 `PermissionMode`：`default`、`ask`、`allowEdits`、`readOnly`、`bypass`。支持 session 级 always allow/deny/ask 规则，并在 REPL/TUI 里持久化用户选择。
+- P1：把 Guardrails 升级为权限决策系统。参考 Claude Code 的 `canUseTool`/permission context，新增 `PermissionMode`：`default`、`ask`、`allowEdits`、`readOnly`、`bypass`。支持 session 级 always allow/deny/ask 规则，并在 TUI 里持久化用户选择。
 - P1：引入 `Read`/`Edit`/`MultiEdit` 风格的精细编辑工具。当前 `write_file` 偏覆盖式，Claude Code 的核心体验更依赖可审查的局部编辑。新增 `edit_file` 与 `multi_edit_file`，要求 old/new 精确匹配，失败时返回上下文建议，所有写入输出 unified diff。
 - P1：补齐 `grep` / `glob` / `list` 搜索工具。不要让模型靠 shell `rg` 才能搜索代码。实现 `glob_files`、`grep_code`，支持 max results、ignore hidden、respect `.gitignore`，输出结构化结果，便于模型稳定引用。
 - P2：增强 TUI 的工具进度和审批体验。展示 in-progress tool id、耗时、可取消状态、工具结果折叠、diff 预览、确认弹窗。`/init`、shell fallback、文件写入、delete、敏感文件访问都走统一确认组件。

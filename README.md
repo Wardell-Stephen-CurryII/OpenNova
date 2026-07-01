@@ -10,7 +10,7 @@ OpenNova v0.3.0 is a lightweight CLI AI coding agent built from scratch in Pytho
 
 OpenNova runs in your terminal and combines a small core with practical coding-agent workflows:
 - **Multi-provider runtime** for OpenAI, Anthropic, and DeepSeek
-- **Dual interface**: prompt_toolkit REPL and Textual TUI with split-pane chat
+- **Textual TUI** with split-pane chat, streaming output, session resume, and slash commands
 - **Session management**: save, resume, and list sessions (JSONL persistence)
 - **Context compression**: LLM-driven summarization for long conversations
 - **Plan + act workflows** for decomposing larger tasks before execution
@@ -26,12 +26,12 @@ The current release adds session management, context compression, Textual TUI, a
 - **Textual TUI**: Split-pane chat interface with copy overlay, history navigation, and real-time streaming
 - **Expanded built-in tools**: file ops, shell execution, git, task tracking, TodoWrite, plan mode, sub-agents, skills, web, project guide init, code search, Python diagnostics/symbols, MCP resources, worktrees
 - ReAct runtime with streaming responses and tool execution
-- Plan mode with approval flow inside the REPL and TUI
+- Plan mode with approval flow inside the TUI
 - Diff/patch editing pipeline
 - Context, working memory, and project memory components
 - MCP stdio and SSE transport support
 - Skill auto-discovery and bundled example skills
-- Interactive user-question prompts in REPL and TUI runs
+- Interactive user-question prompts in TUI and task runs
 - Real HTTP-backed `web_fetch` behavior
 
 Note: `web_search` is present as a tool surface, but in this runtime it reports that search is not configured instead of fabricating results.
@@ -124,27 +124,24 @@ export DEEPSEEK_API_KEY=your_key_here
 
 ## Usage
 
-### Interactive modes
+### Interactive mode
 
 ```bash
-# Interactive mode (Textual TUI by default, including Windows IME support)
+# Textual TUI (default interactive interface, including Windows IME support)
 uv run opennova
 
-# Explicit Textual TUI mode (split-pane chat interface)
+# Explicit Textual TUI mode
 uv run opennova run --tui
-
-# REPL mode (prompt_toolkit)
-uv run opennova run --no-tui
 ```
 
 ### Session management
 
 ```bash
-# Resume a previous session
-uv run opennova resume <session_id>
+# Open the TUI session picker
+uv run opennova --resume
 
-# List all sessions
-uv run opennova sessions
+# Continue the most recent saved session in the TUI
+uv run opennova --continue
 ```
 
 ### Single task mode
@@ -160,9 +157,9 @@ uv run opennova run --plan "Refactor the authentication module"
 uv run opennova run -m gpt-4o "Create a new Python module"
 ```
 
-### REPL commands
+### TUI slash commands
 
-Inside the interactive REPL:
+Inside the Textual TUI:
 
 | Command | Description |
 |---------|-------------|
@@ -207,7 +204,7 @@ Inside the interactive REPL:
 | `/sessions` | List saved sessions |
 | `/clear` | Clear current conversation state |
 | `/help` | Show help message |
-| `/exit` | Exit |
+| `/exit` | Exit OpenNova |
 
 ## Built-in tools
 
@@ -329,7 +326,7 @@ When a session resumes, only messages after the last compression boundary are lo
 Conversations are automatically persisted to `~/.opennova/sessions/` as JSONL files:
 
 ```bash
-# Inside REPL or TUI
+# Inside the TUI
 /resume <session_id>   # Resume a previous session
 /sessions              # List all saved sessions
 ```
@@ -343,7 +340,7 @@ opennova/
 ├── providers/         # LLM provider implementations
 ├── tools/             # Built-in tools and tool registry (17 tools)
 ├── runtime/           # Agent runtime, loop, and state
-├── cli/               # REPL (prompt_toolkit) and TUI (Textual)
+├── cli/               # Textual TUI and shared CLI helpers
 ├── diff/              # Diff/patch system
 ├── memory/            # Context management, compression, working/project memory
 ├── planning/          # Plan data structures and planner

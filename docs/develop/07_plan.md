@@ -33,7 +33,7 @@
 - Automation daemon 产品化：增加本地后台循环、通知、线程唤醒、失败重试策略和 transcript 自动归档。
 
 ## Assumptions
-- 07 继续保持向后兼容，不破坏现有工具名、配置字段和 REPL/TUI 命令语义。
+- 07 继续保持向后兼容，不破坏现有工具名、配置字段和 TUI slash 命令语义。
 - Tool Card 本轮做 adapter，不直接重写 Textual 布局。
 - Python 外部分析本轮只做命令规划，不启动常驻进程。
 - Checkpoint 自动绑定默认只对已有文件覆盖生效，避免为全新文件生成空快照。

@@ -157,7 +157,10 @@ hooks:
     loaded = manager.load_enabled_plugins(config=config, hook_manager=hooks)
 
     assert [plugin.name for plugin in loaded] == ["demo"]
-    assert str(plugin_dir / "skills") in config["skills"]["dirs"]
+    sources = manager.get_skill_sources()
+    assert len(sources) == 1
+    assert sources[0].root == plugin_dir / "skills"
+    assert sources[0].plugin_name == "demo"
     assert config["mcp"]["servers"][0]["name"] == "demo_mcp"
     assert manager.commands[0]["plugin"] == "demo"
     assert (
@@ -505,7 +508,7 @@ def test_slash_command_registry_exposes_03_productization_commands():
 def test_interactive_mode_defaults_to_tui_on_windows():
     from opennova.main import _use_tui_for_interactive
 
-    assert _use_tui_for_interactive(no_tui=False, force_tui=False, platform="win32") is True
+    assert _use_tui_for_interactive(force_tui=False, platform="win32") is True
 
 
 def test_windows_tui_keeps_ime_committed_unicode_chars():
@@ -588,10 +591,22 @@ def test_windows_tui_debug_writer_appends_jsonl(tmp_path: Path):
     assert json.loads(path.read_text(encoding="utf-8"))["key"] == "中"
 
 
-def test_no_tui_still_disables_tui_on_windows():
+def test_interactive_mode_always_uses_tui():
     from opennova.main import _use_tui_for_interactive
 
-    assert _use_tui_for_interactive(no_tui=True, force_tui=False, platform="win32") is False
+    assert _use_tui_for_interactive(force_tui=False, platform="win32") is True
+    assert _use_tui_for_interactive(force_tui=False, platform="darwin") is True
+
+
+def test_cli_rejects_removed_no_tui_option(monkeypatch):
+    from opennova.main import main
+
+    monkeypatch.setattr("opennova.main._load_and_validate_config", lambda *args, **kwargs: {})
+
+    result = CliRunner().invoke(main, ["run", "--no-tui"])
+
+    assert result.exit_code != 0
+    assert "No such option: --no-tui" in result.output
 
 
 def test_cli_resume_flag_launches_tui_in_picker_mode(monkeypatch):
@@ -628,18 +643,15 @@ def test_cli_continue_flag_launches_tui_in_continue_mode(monkeypatch):
     assert seen == ["continue"]
 
 
-def test_cli_resume_flag_rejects_task_and_no_tui(monkeypatch):
+def test_cli_resume_flag_rejects_task(monkeypatch):
     from opennova.main import main
 
     monkeypatch.setattr("opennova.main._load_and_validate_config", lambda *args, **kwargs: {})
 
     task_result = CliRunner().invoke(main, ["--resume", "run", "hello"])
-    no_tui_result = CliRunner().invoke(main, ["--resume", "run", "--no-tui"])
 
     assert task_result.exit_code != 0
     assert "--resume/--continue cannot be used with a direct task." in task_result.output
-    assert no_tui_result.exit_code != 0
-    assert "--resume/--continue require the Textual TUI." in no_tui_result.output
 
 
 def test_tui_system_clipboard_uses_native_platform_commands():

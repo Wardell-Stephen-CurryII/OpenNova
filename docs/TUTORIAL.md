@@ -81,7 +81,7 @@ uv sync
 - `openai`
 - `anthropic`
 - `rich`
-- `prompt-toolkit`
+- `textual`
 - `click`
 - `httpx`
 - 以及其他运行时依赖
@@ -179,11 +179,6 @@ uv run opennova
 ```
 
 默认交互模式会进入 Textual TUI。Windows 上会使用专门的 TUI 输入驱动，以兼容中文输入法提交的 Unicode 字符。
-如果你想显式使用经典 REPL，可以执行：
-
-```bash
-uv run opennova run --no-tui
-```
 
 如果你想显式进入 Textual TUI，可以执行：
 
@@ -262,7 +257,7 @@ uv run opennova run -m deepseek-v4-pro "分析项目结构"
 uv run opennova run --provider deepseek "写一个测试用例"
 ```
 
-### 4.6 REPL 内置命令
+### 4.6 TUI 内置命令
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
@@ -307,7 +302,7 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/resume [id]` | 恢复历史会话 | `/resume abc123` |
 | `/sessions` | 列出历史会话 | `/sessions` |
 | `/clear` | 清空当前会话状态 | `/clear` |
-| `/exit` | 退出 REPL | `/exit` |
+| `/exit` | 退出 OpenNova | `/exit` |
 
 ### 4.7 初始化项目记忆
 
@@ -337,12 +332,12 @@ opennova> /init --force
 uv run opennova run --plan "为用户管理模块添加单元测试"
 ```
 
-或在 REPL 中：
+或在 TUI 中：
 ```text
 opennova> /plan 为用户管理模块添加单元测试
 ```
 
-生成计划后，REPL 会展示计划内容并询问是否立即执行。这让复杂任务在落地前先经过一次人工确认。
+生成计划后，TUI 会展示计划内容并询问是否立即执行。这让复杂任务在落地前先经过一次人工确认。
 
 ### 5.2 多模型切换
 
@@ -539,7 +534,7 @@ uv sync
 | `Tab` | 自动补全建议 |
 | `↑` / `↓` | 浏览历史命令 |
 | `Ctrl+C` | 清空当前输入 |
-| `Ctrl+D` | 退出 REPL |
+| `Ctrl+D` | 退出 OpenNova |
 | `Enter` | 执行命令 |
 
 ---

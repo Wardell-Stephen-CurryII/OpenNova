@@ -22,7 +22,6 @@ dependencies = [
     "openai>=1.54.0",
     "anthropic>=0.39.0",
     "rich>=13.9.0",
-    "prompt-toolkit>=3.0.48",
     "click>=8.1.7",
     "pydantic>=2.9.0",
     "pyyaml>=6.0.2",

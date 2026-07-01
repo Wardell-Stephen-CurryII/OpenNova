@@ -27,7 +27,7 @@
 
 ## 14 Plan 建议
 - 将 `render_tool_card_binding_help()` 真正接入 Textual Tool Card widget 的底部快捷键栏，支持动态刷新和焦点态样式。
-- 为 `/plugins warnings` 增加配置项，例如 `plugins.warning_policy = default|strict|silent`，并在 REPL/TUI 启动时自动显示一次。
+- 为 `/plugins warnings` 增加配置项，例如 `plugins.warning_policy = default|strict|silent`，并在 TUI 启动时自动显示一次。
 - 为 automation daemon 增加真实后台 loop、通知事件和最近运行历史详情面板。
 - 将 diagnostics server lifecycle 从 runner metadata 推进到真实 pyright-langserver/ruff server subprocess，补 JSON-RPC hover/definition/references 解析。
 - 把 checkpoint session lookup 接入 transcript export/list 命令，支持用户从 session 列表直接选择 checkpoint diff。
