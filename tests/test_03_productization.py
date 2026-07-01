@@ -926,6 +926,81 @@ def test_tui_ctrl_c_still_cancels_running_agent(monkeypatch):
     assert "Cancelling" in statuses[-1]
 
 
+def test_tui_show_welcome_uses_compact_workspace_block():
+    from opennova.cli.tui import OpenNovaTUI
+
+    writes: list[Any] = []
+
+    class Agent:
+        session_manager = type("SessionManager", (), {"session_id": "session-123456"})()
+
+        def get_model_info(self):
+            return {"provider": "deepseek", "model": "deepseek-v4-pro"}
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "query_one": lambda self, selector: type(
+                "Log", (), {"write": lambda _self, value: writes.append(value)}
+            )(),
+        },
+    )()
+
+    OpenNovaTUI._show_welcome(app)
+    rendered = "\n".join(str(item) for item in writes)
+
+    assert "████" not in rendered
+    assert writes
+
+
+def test_tui_build_status_text_uses_workspace_context():
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Agent:
+        session_manager = type("SessionManager", (), {"session_id": "session-abcdef"})()
+
+        def get_model_info(self):
+            return {"model": "deepseek-v4-pro"}
+
+    app = type("FakeTUI", (), {"agent": Agent(), "_tool_panel_visible": True})()
+
+    status = OpenNovaTUI._build_status_text(app, "Running grep_code")
+
+    assert "session-abcd" in status
+    assert "deepseek-v4-pro" in status
+    assert "Running grep_code" in status
+    assert "tools:on" in status
+
+
+def test_tui_reset_input_state_restores_workspace_placeholder():
+    from opennova.cli.tui import OpenNovaTUI
+
+    class InputWidget:
+        disabled = True
+        placeholder = ""
+
+    input_widget = InputWidget()
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_task_active": True,
+            "_agent_task": object(),
+            "_set_status": lambda self, text: None,
+            "query_one": lambda self, selector, *args: input_widget,
+            "call_after_refresh": lambda self, callback: None,
+            "_focus_input": lambda self: None,
+        },
+    )()
+
+    OpenNovaTUI._reset_input_state(app)
+
+    assert input_widget.disabled is False
+    assert input_widget.placeholder == "Ask OpenNova, or type / for commands..."
+
+
 def test_tui_user_message_uses_subtle_background():
     from opennova.cli.tui import _USER_MESSAGE_STYLE, _format_user_message
 
@@ -1076,6 +1151,131 @@ def test_tui_canonical_tool_result_hides_read_file_output():
     )
 
     assert ("result", "read_file", "") in writes
+
+
+def test_tui_tool_panel_actions_update_selection_and_expansion():
+    from opennova.cli.tool_cards import ToolCardStore
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.events import ToolEvent
+
+    refreshed: list[str] = []
+    store = ToolCardStore(collapse_threshold=5)
+    store.apply_event(ToolEvent(type="tool_start", tool_id="tool_1", tool_name="read_file"))
+    store.apply_event(ToolEvent(type="tool_start", tool_id="tool_2", tool_name="execute_command"))
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_tool_cards": store,
+            "_tool_panel_visible": True,
+            "_refresh_tool_panel": lambda self: refreshed.append(
+                self._tool_cards.interaction.selected_tool_id or ""
+            ),
+        },
+    )()
+
+    OpenNovaTUI.action_tool_next(app)
+    assert store.interaction.selected_tool_id == "tool_2"
+
+    OpenNovaTUI.action_tool_previous(app)
+    assert store.interaction.selected_tool_id == "tool_1"
+
+    OpenNovaTUI.action_tool_toggle_expanded(app)
+    assert "tool_1" in (store.interaction.expanded_tool_ids or set())
+    assert refreshed[-3:] == ["tool_2", "tool_1", "tool_1"]
+
+
+def test_tui_toggle_tool_panel_changes_visibility():
+    from opennova.cli.tui import OpenNovaTUI
+
+    calls: list[bool] = []
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_tool_panel_visible": False,
+            "_set_tool_panel_visible": lambda self, visible: (
+                calls.append(visible),
+                setattr(self, "_tool_panel_visible", visible),
+            ),
+        },
+    )()
+
+    OpenNovaTUI.action_toggle_tool_panel(app)
+    OpenNovaTUI.action_toggle_tool_panel(app)
+
+    assert calls == [True, False]
+
+
+def test_tui_canonical_tool_event_refreshes_tool_panel():
+    from opennova.cli.tool_cards import ToolCardStore
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.events import ToolEvent
+
+    class Agent:
+        def __init__(self):
+            self.callbacks = {}
+
+        def register_callback(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    class Progress:
+        def __init__(self):
+            self.waiting_for_interaction = False
+            self.interaction_label = ""
+            self.current_tool_name = ""
+            self.current_tool_id = ""
+            self.current_args = {}
+            self.started_at = 0.0
+
+        def clear_interaction(self):
+            self.waiting_for_interaction = False
+
+    writes: list[tuple[str, Any]] = []
+    refreshes: list[str | None] = []
+
+    class Log:
+        def write(self, value):
+            writes.append(("write", value))
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "_tool_progress": Progress(),
+            "_tool_cards": ToolCardStore(),
+            "_tool_panel_visible": False,
+            "query_one": lambda self, selector: Log(),
+            "_write_tool_start": lambda self, log, tool_name, detail: writes.append(
+                ("start", tool_name, detail)
+            ),
+            "_write_tool_result": lambda self, log, **kwargs: writes.append(
+                ("result", kwargs["tool_name"], kwargs["output"])
+            ),
+            "_refresh_tool_panel": lambda self: refreshes.append(
+                self._tool_cards.interaction.selected_tool_id
+            ),
+        },
+    )()
+
+    OpenNovaTUI._register_callbacks(app)
+    app.agent.callbacks["tool_event"](
+        ToolEvent(type="tool_start", tool_id="tool_1", tool_name="read_file")
+    )
+    app.agent.callbacks["tool_event"](
+        ToolEvent(
+            type="tool_result",
+            tool_id="tool_1",
+            tool_name="read_file",
+            success=True,
+            output="content",
+            duration_ms=7,
+        )
+    )
+
+    assert refreshes == ["tool_1", "tool_1"]
+    assert app._tool_cards.get("tool_1").metadata["duration_ms"] == 7
 
 
 def test_tui_resume_without_args_uses_picker():

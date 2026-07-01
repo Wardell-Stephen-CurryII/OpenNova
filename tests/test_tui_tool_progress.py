@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from opennova.cli.tool_cards import ToolCardStore
 from opennova.cli.tool_progress import ToolProgressTracker
+from opennova.runtime.events import ToolEvent
 from opennova.tools.base import ToolResult
 
 
@@ -51,3 +53,39 @@ def test_tool_progress_tracker_marks_long_output_collapsible():
 
     assert event["collapsible"] is True
     assert event["output_preview"] == "xxxxxxxxxx\n... (output collapsed)"
+
+
+def test_tool_card_store_selects_next_and_previous_stably():
+    store = ToolCardStore(collapse_threshold=5)
+    store.apply_event(ToolEvent(type="tool_start", tool_id="tool_1", tool_name="read_file"))
+    store.apply_event(ToolEvent(type="tool_start", tool_id="tool_2", tool_name="execute_command"))
+
+    assert store.interaction.selected_tool_id == "tool_1"
+    assert store.select_next() == "tool_2"
+    assert store.select_previous() == "tool_1"
+    assert store.select_previous() == "tool_2"
+
+
+def test_tool_card_store_expanded_view_uses_full_output():
+    from opennova.cli.tool_cards import build_tool_card_panel
+
+    store = ToolCardStore(collapse_threshold=5)
+    store.apply_event(ToolEvent(type="tool_start", tool_id="tool_1", tool_name="execute_command"))
+    store.apply_event(
+        ToolEvent(
+            type="tool_result",
+            tool_id="tool_1",
+            tool_name="execute_command",
+            success=True,
+            output="abcdefghi",
+            duration_ms=42,
+        )
+    )
+
+    collapsed = build_tool_card_panel(store).cards[0]
+    assert "abcde" in collapsed.rendered
+    assert "abcdefghi" not in collapsed.rendered
+
+    store.toggle_expanded("tool_1")
+    expanded = build_tool_card_panel(store).cards[0]
+    assert "abcdefghi" in expanded.rendered

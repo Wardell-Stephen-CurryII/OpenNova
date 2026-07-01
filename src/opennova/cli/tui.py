@@ -28,20 +28,24 @@ from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 from textual.selection import Selection
 from textual.widgets import Header, Input, Label, RichLog
 
 from opennova.cli.ask_question_dialog import AskQuestionDialog
 from opennova.cli.commands import SlashCommandRegistry
 from opennova.cli.session_picker_dialog import SessionPickerDialog
-from opennova.cli.tool_cards import ToolCardStore
+from opennova.cli.tool_cards import ToolCardStore, build_tool_card_panel
 from opennova.cli.tool_progress import ToolProgressTracker
 from opennova.cli.tui_blocks import (
+    TUI_THEME,
     render_assistant_block,
+    render_status_bar,
+    render_tool_detail_panel,
     render_tool_result_block,
     render_tool_start_block,
     render_user_block,
+    render_welcome_block,
 )
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
@@ -63,6 +67,9 @@ _MAX_OUTPUT_LINES = 20
 
 # Max diff lines shown per tool; fallback is 20.
 _MAX_DIFF_LINES: dict[str, int] = {}
+
+_INPUT_PLACEHOLDER = "Ask OpenNova, or type / for commands..."
+_WORKING_PLACEHOLDER = "OpenNova is working... Ctrl+C to cancel"
 
 # 2a2a2a 001a1a
 _USER_MESSAGE_STYLE = "bright_cyan on #001a1a"
@@ -270,44 +277,76 @@ def _get_driver_class() -> type[Any] | None:
 class OpenNovaTUI(App):
     """Textual TUI application for OpenNova with split-pane layout."""
 
-    CSS = """
-    #messages-area {
-        height: 1fr;
-    }
+    CSS = f"""
+    Screen {{
+        background: {TUI_THEME.background};
+        color: #d7dde3;
+    }}
 
-    #messages {
+    #main-area {{
+        height: 1fr;
+        background: {TUI_THEME.background};
+    }}
+
+    #messages-area {{
+        height: 1fr;
+        width: 1fr;
+        padding: 1 1 0 1;
+        background: {TUI_THEME.background};
+    }}
+
+    #messages {{
         height: 1fr;
         overflow-y: auto;
-    }
-
-    #input-container {
-        height: auto;
+        background: {TUI_THEME.background};
+        border: tall {TUI_THEME.surface_soft};
         padding: 0 1;
-        margin-bottom: 1;
-    }
+    }}
 
-    #input {
+    #tool-panel {{
+        width: 42;
+        height: 1fr;
+        overflow-y: auto;
+        border-left: solid {TUI_THEME.panel_border};
+        background: {TUI_THEME.surface};
+        padding: 1;
+    }}
+
+    #input-container {{
+        height: auto;
+        padding: 0 1 1 1;
+        background: {TUI_THEME.background};
+        border-top: solid {TUI_THEME.surface_soft};
+    }}
+
+    #input {{
         width: 100%;
-    }
+        background: {TUI_THEME.surface};
+        color: #d7dde3;
+        border: tall {TUI_THEME.panel_border};
+    }}
 
-    #suggestions {
+    #suggestions {{
         width: 100%;
         height: 1;
-        color: $text-disabled;
-    }
+        color: {TUI_THEME.muted};
+        background: {TUI_THEME.background};
+    }}
 
-    #status-bar {
+    #status-bar {{
         height: 1;
-        background: $surface;
-    }
+        background: {TUI_THEME.surface};
+        color: {TUI_THEME.muted};
+    }}
 
-    #status-text {
+    #status-text {{
         width: 100%;
-    }
+        padding: 0 1;
+    }}
 
-    RichLog {
+    RichLog {{
         scrollbar-size: 1 1;
-    }
+    }}
     """
 
     BINDINGS = [
@@ -326,6 +365,12 @@ class OpenNovaTUI(App):
         Binding("down", "history_next", "Next", show=False),
         Binding("tab", "complete", "Complete", show=False, priority=True),
         Binding("escape", "focus_input", "", show=False),
+        Binding("alt+j", "tool_next", "Next tool", show=False),
+        Binding("alt+down", "tool_next", "Next tool", show=False),
+        Binding("alt+k", "tool_previous", "Previous tool", show=False),
+        Binding("alt+up", "tool_previous", "Previous tool", show=False),
+        Binding("alt+enter", "tool_toggle_expanded", "Expand tool", show=False),
+        Binding("alt+t", "toggle_tool_panel", "Tools", show=True),
     ]
 
     def __init__(
@@ -353,6 +398,7 @@ class OpenNovaTUI(App):
         self._start_time: float = 0.0
         self._tool_progress = ToolProgressTracker()
         self._tool_cards = ToolCardStore()
+        self._tool_panel_visible = False
         self._automation_daemon = None
         self._startup_resume_mode = startup_resume_mode
         self._replaying_transcript = False
@@ -368,24 +414,27 @@ class OpenNovaTUI(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Container(id="messages-area"):
-            yield _MessagesLog(
-                id="messages",
-                highlight=True,
-                markup=True,
-                wrap=True,
-                max_lines=10000,
-            )
+        with Horizontal(id="main-area"):
+            with Container(id="messages-area"):
+                yield _MessagesLog(
+                    id="messages",
+                    highlight=True,
+                    markup=True,
+                    wrap=True,
+                    max_lines=10000,
+                )
+            yield RichLog(id="tool-panel", highlight=True, markup=True, wrap=True)
         with Container(id="status-bar"):
-            yield Label(id="status-text", markup=False)
+            yield Label(id="status-text", markup=True)
         with Container(id="input-container"):
             yield Input(
                 id="input",
-                placeholder="Type a message or /command...",
+                placeholder=_INPUT_PLACEHOLDER,
             )
             yield Label(id="suggestions", markup=True)
 
     def on_mount(self) -> None:
+        self._set_tool_panel_visible(False)
         self._load_history()
         self.call_after_refresh(self._after_mount)
 
@@ -423,33 +472,20 @@ class OpenNovaTUI(App):
 
     # ── welcome ──────────────────────────────────────────────────
 
-    _BANNER = (
-        " ██████╗ ██████╗ ███████╗███╗   ██╗███╗   ██╗ ██████╗ ██╗   ██╗ █████╗ \n"
-        "██╔═══██╗██╔══██╗██╔════╝████╗  ██║████╗  ██║██╔═══██╗██║   ██║██╔══██╗\n"
-        "██║   ██║██████╔╝█████╗  ██╔██╗ ██║██╔██╗ ██║██║   ██║██║   ██║███████║\n"
-        "██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██║╚██╗██║██║   ██║╚██╗ ██╔╝██╔══██║\n"
-        "╚██████╔╝██║     ███████╗██║ ╚████║██║ ╚████║╚██████╔╝ ╚████╔╝ ██║  ██║\n"
-        " ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝"
-    )
-
     def _show_welcome(self) -> None:
         from opennova import __version__
 
         log = self.query_one("#messages")
-        for line in self._BANNER.split("\n"):
-            log.write(f"[bold cyan]{line}[/bold cyan]")
-        log.write("")
         model_info = self.agent.get_model_info()
-        provider = model_info.get("provider", "—")
-        model = model_info.get("model", "—")
+        provider = str(model_info.get("provider", "-"))
+        model = str(model_info.get("model", "-"))
+        session_id = str(getattr(getattr(self.agent, "session_manager", None), "session_id", ""))
         log.write(
-            Panel.fit(
-                f"[bold]AI Coding Agent[/bold] [dim]v{__version__}[/dim]\n\n"
-                f"[dim]Provider:[/dim] [green]{provider}[/green]  ·  "
-                f"[dim]Model:[/dim] [yellow]{model}[/yellow]\n\n"
-                f"[dim]Type [bold]/help[/bold] for commands  ·  [bold]Ctrl+C[/bold] to cancel[/dim]",
-                border_style="bright_blue",
-                padding=(1, 3),
+            render_welcome_block(
+                version=__version__,
+                provider=provider,
+                model=model,
+                session_id=session_id,
             )
         )
         log.write("")
@@ -525,6 +561,32 @@ class OpenNovaTUI(App):
                 diff=diff,
                 diff_max_lines=diff_max_lines,
             )
+
+    def _set_tool_panel_visible(self, visible: bool) -> None:
+        """Show or hide the session-scoped tool detail panel."""
+        self._tool_panel_visible = visible
+        with suppress(Exception):
+            panel = self.query_one("#tool-panel")
+            panel.display = visible
+        if not getattr(self, "_task_active", False):
+            self._set_status("")
+
+    def _refresh_tool_panel(self) -> None:
+        """Redraw the tool detail panel from the current ToolCardStore state."""
+        try:
+            panel = self.query_one("#tool-panel", RichLog)
+        except Exception:
+            return
+        if not self._tool_cards.cards:
+            panel.clear()
+            self._set_tool_panel_visible(False)
+            return
+        self._set_tool_panel_visible(True)
+        panel.clear()
+        panel_state = build_tool_card_panel(self._tool_cards)
+        for renderable in render_tool_detail_panel(panel_state):
+            panel.write(renderable)
+        panel.scroll_home(animate=False)
 
     def _get_resumable_sessions(self, *, exclude_current: bool) -> list[SessionMeta]:
         sessions = self.agent.get_sessions()
@@ -648,6 +710,24 @@ class OpenNovaTUI(App):
     def action_quit_app(self) -> None:
         self.exit()
 
+    def action_tool_next(self) -> None:
+        self._tool_cards.select_next()
+        self._refresh_tool_panel()
+
+    def action_tool_previous(self) -> None:
+        self._tool_cards.select_previous()
+        self._refresh_tool_panel()
+
+    def action_tool_toggle_expanded(self) -> None:
+        self._tool_cards.toggle_expanded()
+        self._refresh_tool_panel()
+
+    def action_toggle_tool_panel(self) -> None:
+        self._set_tool_panel_visible(not self._tool_panel_visible)
+        if self._tool_panel_visible:
+            with suppress(Exception):
+                self._refresh_tool_panel()
+
     # ── safe state reset ─────────────────────────────────────────
 
     def _reset_input_state(self) -> None:
@@ -662,7 +742,7 @@ class OpenNovaTUI(App):
         with suppress(Exception):
             input_widget = self.query_one("#input", Input)
             input_widget.disabled = False
-            input_widget.placeholder = "Type a message or /command..."
+            input_widget.placeholder = _INPUT_PLACEHOLDER
         self.call_after_refresh(self._focus_input)
 
     def _clear_suggestions(self) -> None:
@@ -781,7 +861,7 @@ class OpenNovaTUI(App):
         """
         try:
             label = self.query_one("#suggestions", Label)
-            display = matches[:8]
+            display = matches[:6]
             if current_idx >= len(display):
                 current_idx = 0
             parts: list[str] = []
@@ -790,8 +870,8 @@ class OpenNovaTUI(App):
                     parts.append(f"[reverse]{m}[/reverse]")
                 else:
                     parts.append(f"[dim]{m}[/dim]")
-            suffix = " …" if len(matches) > 8 else ""
-            label.update("  ".join(parts) + suffix)
+            suffix = " …" if len(matches) > 6 else ""
+            label.update("[dim]commands[/dim]  " + "  ".join(parts) + suffix)
         except Exception:
             pass
 
@@ -1414,7 +1494,7 @@ class OpenNovaTUI(App):
             self.agent.register_callback("interaction", self._handle_interaction)
 
             input_widget.disabled = True
-            input_widget.placeholder = "Working..."
+            input_widget.placeholder = _WORKING_PLACEHOLDER
             await asyncio.sleep(0)  # yield a frame so UI updates
 
             self._agent_task = asyncio.create_task(coro)
@@ -1528,6 +1608,8 @@ class OpenNovaTUI(App):
             _canonical_tools["seen"] = True
             if hasattr(event, "type"):
                 self._tool_cards.apply_event(event)
+                with suppress(Exception):
+                    self._refresh_tool_panel()
             data = event.to_dict() if hasattr(event, "to_dict") else dict(event)
             event_type = data.get("type")
             tool_name = data.get("tool_name", "tool")
@@ -1701,10 +1783,21 @@ class OpenNovaTUI(App):
 
     # ── status bar ───────────────────────────────────────────────
 
+    def _build_status_text(self, message: str = "") -> str:
+        model_info = self.agent.get_model_info() if hasattr(self.agent, "get_model_info") else {}
+        session_id = str(getattr(getattr(self.agent, "session_manager", None), "session_id", ""))
+        model = str(model_info.get("model") or "unknown")
+        return render_status_bar(
+            session_id=session_id,
+            model=model,
+            message=message,
+            tool_panel_visible=bool(getattr(self, "_tool_panel_visible", False)),
+        )
+
     def _set_status(self, text: str) -> None:
         try:
             status = self.query_one("#status-text", Label)
-            status.update(text)
+            status.update(self._build_status_text(text))
         except Exception:
             pass
 

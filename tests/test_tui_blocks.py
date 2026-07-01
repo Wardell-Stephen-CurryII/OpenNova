@@ -102,3 +102,116 @@ def test_error_result_contains_error_and_failed_state():
     assert "write_file" in text
     assert "failed" in text
     assert "Permission denied" in text
+
+
+def test_tool_detail_panel_renders_empty_state():
+    from opennova.cli.tool_cards import ToolCardPanelState
+    from opennova.cli.tui_blocks import render_tool_detail_panel
+
+    text = _plain_many(
+        render_tool_detail_panel(
+            ToolCardPanelState(cards=[], selected_tool_id=None, actions={})
+        )
+    )
+
+    assert "No tool activity" in text
+
+
+def test_tool_detail_panel_renders_selected_card_preview_diff_and_error():
+    from opennova.cli.tool_cards import ToolCardPanelState, ToolCardViewState
+    from opennova.cli.tui_blocks import render_tool_detail_panel
+
+    state = ToolCardPanelState(
+        cards=[
+            ToolCardViewState(
+                tool_id="tool_1",
+                tool_name="execute_command",
+                status="failed",
+                expanded=False,
+                rendered="[failed] execute_command duration=42ms\npreview output",
+                diff_panel="+ changed",
+                approval_state="none",
+            )
+        ],
+        selected_tool_id="tool_1",
+        diff_panel="+ changed",
+        actions={"toggle": True, "cancel": False, "approve": False},
+    )
+
+    text = _plain_many(render_tool_detail_panel(state))
+
+    assert "Tool Details" in text
+    assert "execute_command" in text
+    assert "preview output" in text
+    assert "+ changed" in text
+    assert "alt+enter" in text
+
+
+def test_tool_detail_panel_renders_expanded_full_output():
+    from opennova.cli.tool_cards import ToolCardPanelState, ToolCardViewState
+    from opennova.cli.tui_blocks import render_tool_detail_panel
+
+    state = ToolCardPanelState(
+        cards=[
+            ToolCardViewState(
+                tool_id="tool_1",
+                tool_name="read_file",
+                status="succeeded",
+                expanded=True,
+                rendered="[succeeded] read_file\nFULL SECRET CONTENT",
+            )
+        ],
+        selected_tool_id="tool_1",
+        actions={"toggle": True},
+    )
+
+    text = _plain_many(render_tool_detail_panel(state))
+
+    assert "expanded" in text
+    assert "FULL SECRET CONTENT" in text
+
+
+def test_welcome_block_contains_workspace_context():
+    from opennova.cli.tui_blocks import render_welcome_block
+
+    text = _plain(
+        render_welcome_block(
+            version="0.3.0",
+            provider="deepseek",
+            model="deepseek-v4-pro",
+            session_id="session-123456",
+        )
+    )
+
+    assert "OpenNova" in text
+    assert "0.3.0" in text
+    assert "deepseek" in text
+    assert "deepseek-v4-pro" in text
+    assert "session-123456" in text
+    assert "/help" in text
+    assert "alt+t" in text
+
+
+def test_status_bar_renderer_includes_session_model_and_message():
+    from opennova.cli.tui_blocks import render_status_bar
+
+    status = render_status_bar(
+        session_id="session-abcdef",
+        model="deepseek-v4-pro",
+        message="Working on grep_code",
+        tool_panel_visible=True,
+    )
+
+    assert "session-abcd" in status
+    assert "deepseek-v4-pro" in status
+    assert "Working on grep_code" in status
+    assert "tools:on" in status
+
+
+def test_blocks_share_calm_workspace_theme():
+    from opennova.cli.tui_blocks import TUI_THEME
+
+    assert TUI_THEME.background.startswith("#")
+    assert TUI_THEME.panel_border.startswith("#")
+    assert TUI_THEME.accent.startswith("#")
+    assert TUI_THEME.error.startswith("#")

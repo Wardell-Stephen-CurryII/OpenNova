@@ -124,6 +124,19 @@ class ToolCardStore:
         self.interaction.selected_tool_id = ids[(index + 1) % len(ids)]
         return self.interaction.selected_tool_id
 
+    def select_previous(self) -> str | None:
+        """Select the previous card in insertion order."""
+        ids = list(self.cards)
+        if not ids:
+            self.interaction.selected_tool_id = None
+            return None
+        if self.interaction.selected_tool_id not in ids:
+            self.interaction.selected_tool_id = ids[0]
+            return ids[0]
+        index = ids.index(self.interaction.selected_tool_id)
+        self.interaction.selected_tool_id = ids[(index - 1) % len(ids)]
+        return self.interaction.selected_tool_id
+
     def toggle_expanded(self, tool_id: str | None = None) -> bool:
         """Toggle expanded state for one card."""
         target = tool_id or self.interaction.selected_tool_id
@@ -249,15 +262,8 @@ def apply_tool_card_key(store: ToolCardStore, key: str) -> str:
         selected = store.select_next()
         return f"selected:{selected}" if selected else "selected:none"
     if key in {"k", "up"}:
-        ids = list(store.cards)
-        if not ids:
-            store.interaction.selected_tool_id = None
-            return "selected:none"
-        if selected not in ids:
-            store.interaction.selected_tool_id = ids[0]
-        else:
-            store.interaction.selected_tool_id = ids[(ids.index(selected) - 1) % len(ids)]
-        return f"selected:{store.interaction.selected_tool_id}"
+        selected = store.select_previous()
+        return f"selected:{selected}" if selected else "selected:none"
     if key in {"enter", "space"}:
         expanded = store.toggle_expanded(selected)
         return f"{'expanded' if expanded else 'collapsed'}:{selected}"
