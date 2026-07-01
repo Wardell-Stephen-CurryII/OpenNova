@@ -176,7 +176,7 @@ def test_welcome_block_contains_workspace_context():
 
     text = _plain(
         render_welcome_block(
-            version="0.3.0",
+            version="0.4.0",
             provider="deepseek",
             model="deepseek-v4-pro",
             session_id="session-123456",
@@ -184,7 +184,7 @@ def test_welcome_block_contains_workspace_context():
     )
 
     assert "OpenNova" in text
-    assert "0.3.0" in text
+    assert "0.4.0" in text
     assert "deepseek" in text
     assert "deepseek-v4-pro" in text
     assert "session-123456" in text

@@ -1,6 +1,6 @@
 # OpenNova
 
-OpenNova v0.3.0 is a lightweight CLI AI coding agent built from scratch in Python.
+OpenNova v0.4.0 is a lightweight CLI AI coding agent built from scratch in Python.
 
 **English** | **[简体中文](README.zh-CN.md)**
 
@@ -18,12 +18,16 @@ OpenNova runs in your terminal and combines a small core with practical coding-a
 - **MCP integration** for external tool servers
 - **Built-in safety guardrails** for risky commands and protected paths
 
-## What’s in v0.3.0
+## What’s in v0.4.0
 
-The current release adds session management, context compression, Textual TUI, and Claude Code-style workflow foundations:
+The current release adds stronger plan/skill/security foundations, OS process sandboxing, and a more polished Textual workbench:
+- **Workbench TUI**: two-column chat plus a wider Tools / Plan / Todos side panel with keyboard tab switching
+- **Plan mode upgrades**: persisted plan markdown, per-step refresh, live status writeback, and todo mirroring
+- **Skills upgrades**: namespaced discovery, argument substitution, hooks, path activation, and ranking
+- **Security hardening**: parameter-level permission rules, command/network/MCP policies, secret redaction, audit logs, and process sandbox support
 - **Session management**: `/resume <id>`, `/sessions` — conversations persist to JSONL
 - **Context compression**: LLM summarizes old messages when context exceeds 55% token utilization, keeping long conversations within budget
-- **Textual TUI**: Split-pane chat interface with copy overlay, history navigation, and real-time streaming
+- **Textual TUI**: structured chat blocks, copy overlay, history navigation, real-time streaming, and side-panel details
 - **Expanded built-in tools**: file ops, shell execution, git, task tracking, TodoWrite, plan mode, sub-agents, skills, web, project guide init, code search, Python diagnostics/symbols, MCP resources, worktrees
 - ReAct runtime with streaming responses and tool execution
 - Plan mode with approval flow inside the TUI

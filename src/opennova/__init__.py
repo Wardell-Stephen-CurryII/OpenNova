@@ -2,7 +2,7 @@
 
 from opennova.sdk import OpenNovaClient, SDKEvent
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __author__ = "Xingwang Lin"
 
 __all__ = ["OpenNovaClient", "SDKEvent", "__version__", "__author__"]
