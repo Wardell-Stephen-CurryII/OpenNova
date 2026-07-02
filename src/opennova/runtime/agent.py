@@ -632,6 +632,9 @@ class AgentRuntime:
         normalized = text.strip().lower()
         if not normalized:
             return False
+        rejection_tokens = {"n", "no", "cancel", "取消", "不要", "别", "先不要", "不执行", "暂不"}
+        if normalized in rejection_tokens or any(token in normalized for token in ("不要", "先不要", "别")):
+            return False
         approval_tokens = {
             "y",
             "yes",
@@ -643,18 +646,39 @@ class AgentRuntime:
             "go",
             "continue",
             "开始",
+            "开始开发",
             "开始执行",
+            "开始实现",
+            "开始编码",
+            "开始改",
+            "开始做",
             "开始写代码",
+            "开工",
+            "开发",
             "执行",
             "执行计划",
             "继续",
+            "继续开发",
             "继续执行",
             "同意",
             "批准",
         }
         if normalized in approval_tokens:
             return True
-        return any(token in normalized for token in ("start coding", "execute plan", "开始写代码", "执行计划"))
+        return any(
+            token in normalized
+            for token in (
+                "start coding",
+                "execute plan",
+                "implement the plan",
+                "开始写代码",
+                "开始开发",
+                "开始实现",
+                "开始执行",
+                "按计划开发",
+                "执行计划",
+            )
+        )
 
     def _emit_plan_update(self, plan: Plan) -> None:
         """Notify UI/listeners that plan and mirrored todos changed."""

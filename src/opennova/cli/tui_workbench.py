@@ -63,12 +63,13 @@ def build_workbench_panel_state(
     agent: Any,
     tool_cards: ToolCardStore,
     active_tab: WorkbenchTab,
+    last_plan: PlanWorkbenchSnapshot | None = None,
 ) -> WorkbenchPanelState:
     """Build a side-panel render state from existing runtime data sources."""
     return WorkbenchPanelState(
         active_tab=active_tab if active_tab in WORKBENCH_TABS else "tools",
         tools=build_tool_card_panel(tool_cards),
-        plan=_snapshot_plan(agent),
+        plan=_snapshot_plan(agent) or last_plan,
         todos=TodoWriteTool.current_todos(),
     )
 
@@ -81,6 +82,16 @@ def _snapshot_plan(agent: Any) -> PlanWorkbenchSnapshot | None:
 
     approval = getattr(getattr(state, "plan_approval_status", None), "value", None)
     plan_path = getattr(state, "plan_file_path", None)
+    return snapshot_plan(plan, plan_file_path=plan_path, approval_status=approval)
+
+
+def snapshot_plan(
+    plan: Any,
+    *,
+    plan_file_path: str | Path | None = None,
+    approval_status: str | None = None,
+) -> PlanWorkbenchSnapshot:
+    """Create a durable UI snapshot from a runtime plan object."""
     steps: list[PlanStepSnapshot] = []
     for step in getattr(plan, "steps", []) or []:
         steps.append(
@@ -96,7 +107,7 @@ def _snapshot_plan(agent: Any) -> PlanWorkbenchSnapshot | None:
     return PlanWorkbenchSnapshot(
         task=str(getattr(plan, "task", "") or "(untitled plan)"),
         status=str(getattr(getattr(plan, "status", None), "value", getattr(plan, "status", "planning"))),
-        approval_status=str(approval or "none"),
-        plan_file_path=str(Path(plan_path)) if plan_path else "",
+        approval_status=str(approval_status or "none"),
+        plan_file_path=str(Path(plan_file_path)) if plan_file_path else "",
         steps=steps,
     )

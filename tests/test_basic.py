@@ -1266,6 +1266,48 @@ def test_exit_plan_mode_tool_materializes_markdown_plan_into_runtime_state():
     ]
 
 
+def test_exit_plan_mode_tool_replaces_existing_plan_when_revision_is_provided(tmp_path: Path):
+    """A revised plan submitted after continue-conversation should replace the old plan."""
+    from opennova.runtime.state import Plan, PlanStep
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    TodoWriteTool.replace_todos([])
+    state = AgentState()
+    state.set_plan(Plan(task="Old plan", steps=[PlanStep(id="step_1", description="Old step")]))
+    state.set_plan_file_path(tmp_path / "plan.md")
+    persisted: list[bool] = []
+    emitted: list[str] = []
+
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "_persist_current_plan": lambda self: persisted.append(True),
+            "_emit": lambda self, event, plan, path: emitted.append(plan.task),
+        },
+    )()
+    tool = ExitPlanModeTool(config={"state": state, "runtime": runtime})
+
+    result = tool.execute(
+        task="Revised plan",
+        steps=[{"description": "New first step"}, {"description": "New second step"}],
+    )
+
+    assert result.success is True
+    assert state.current_plan is not None
+    assert state.current_plan.task == "Revised plan"
+    assert [step.description for step in state.current_plan.steps] == [
+        "New first step",
+        "New second step",
+    ]
+    assert persisted == [True]
+    assert emitted[-1] == "Revised plan"
+    assert TodoWriteTool.current_todos() == [
+        {"id": "step_1", "content": "New first step", "status": "pending"},
+        {"id": "step_2", "content": "New second step", "status": "pending"},
+    ]
+
+
 def test_enter_plan_mode_tool_mentions_reusing_existing_plan(tmp_path: Path):
     state = AgentState()
     state.set_plan_file_path(tmp_path / "plan.md")
@@ -1275,6 +1317,38 @@ def test_enter_plan_mode_tool_mentions_reusing_existing_plan(tmp_path: Path):
 
     assert result.success is True
     assert "read the existing saved plan first" in result.metadata["instructions"].lower()
+
+
+def test_react_loop_system_prompt_requires_enter_plan_mode_when_user_requests_plan_first():
+    from opennova.memory.context import ContextManager
+    from opennova.runtime.loop import ReActLoop
+    from opennova.runtime.state import AgentState
+    from opennova.tools.base import ToolRegistry
+
+    class LLM:
+        model = "test-model"
+
+    loop = ReActLoop(
+        llm=LLM(),
+        tool_registry=ToolRegistry(),
+        state=AgentState(),
+        context_manager=ContextManager(),
+    )
+
+    prompt = loop._build_system_prompt()
+
+    assert "If the user asks you to plan before coding" in prompt
+    assert "call enter_plan_mode before any implementation or file modification tool" in prompt
+    assert "Do not modify files before exit_plan_mode has requested user approval" in prompt
+
+
+def test_enter_plan_mode_tool_requires_respecting_plan_first_requests():
+    tool = EnterPlanModeTool(config={"state": AgentState()})
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert "If the user explicitly asked to plan before implementation" in result.metadata["instructions"]
 
 
 def test_exit_plan_mode_tool_requires_existing_plan():
@@ -1310,6 +1384,29 @@ def test_agent_runtime_run_approval_text_executes_awaiting_plan_without_resettin
     assert executed == [True]
     assert runtime.state.current_plan is not None
     assert runtime.state.current_plan.task == "Pending plan"
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.APPROVED
+
+
+def test_agent_runtime_run_development_approval_text_executes_awaiting_plan():
+    """Chinese follow-ups like '开始开发' should approve and execute the existing plan."""
+    from opennova.runtime.state import Plan, PlanStep
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.state.set_plan(Plan(task="Pending plan", steps=[PlanStep(id="step_1", description="Do it")]))
+    runtime.state.mark_plan_awaiting_approval()
+    executed: list[bool] = []
+
+    async def fake_execute(stream: bool = True):
+        executed.append(True)
+        return "executed existing plan"
+
+    runtime.execute_approved_plan = fake_execute
+
+    result = asyncio.run(AgentRuntime.run(runtime, "开始开发", mode="act", stream=False))
+
+    assert result == "executed existing plan"
+    assert executed == [True]
     assert runtime.state.plan_approval_status == PlanApprovalStatus.APPROVED
 
 

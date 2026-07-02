@@ -1182,7 +1182,10 @@ Rules:
 3. Be careful with file operations - read before write when modifying existing files
 4. For multi-step implementation work, maintain explicit progress with todo/progress tracking
 5. If you are executing an approved plan, follow the current plan instead of silently re-planning
-6. When the task is complete, provide a clear summary
+6. If the user asks you to plan before coding, write a plan first, make a plan first,
+   or otherwise requests approval before implementation, call enter_plan_mode before any implementation or file modification tool.
+   Do not modify files before exit_plan_mode has requested user approval.
+7. When the task is complete, provide a clear summary
 """
         return prompt
 

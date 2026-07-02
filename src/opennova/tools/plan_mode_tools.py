@@ -81,6 +81,9 @@ In plan mode, you'll:
 ## Important Notes
 
 - This tool REQUIRES user approval before implementation
+- If the user explicitly asked to plan before implementation, call this tool before any
+  write_file, edit_file, multi_edit_file, create_file, delete_file, or execute_command
+  that changes the project.
 - Once in plan mode, explore thoroughly and create a detailed plan before calling ExitPlanMode
 """
             metadata = _build_plan_mode_metadata(state if isinstance(state, AgentState) else None)
@@ -116,13 +119,16 @@ class ExitPlanModeTool(BaseTool):
         try:
             state = self.config.get("state")
             runtime = self.config.get("runtime")
-            if isinstance(state, AgentState) and not state.current_plan:
+            if isinstance(state, AgentState):
                 materialized_plan = _materialize_plan_from_args(plan=plan, task=task, steps=steps)
                 if materialized_plan is not None:
                     state.set_plan(materialized_plan)
-                    if runtime is not None and hasattr(runtime, "_save_plan_to_project"):
-                        plan_path = runtime._save_plan_to_project(materialized_plan)
-                        state.set_plan_file_path(plan_path)
+                    if runtime is not None:
+                        if state.plan_file_path and hasattr(runtime, "_persist_current_plan"):
+                            runtime._persist_current_plan()
+                        elif hasattr(runtime, "_save_plan_to_project"):
+                            plan_path = runtime._save_plan_to_project(materialized_plan)
+                            state.set_plan_file_path(plan_path)
                     _sync_todos_from_plan(materialized_plan)
                     if runtime is not None and hasattr(runtime, "_emit"):
                         runtime._emit("plan", materialized_plan, state.plan_file_path)

@@ -34,6 +34,7 @@ from textual.widgets import Header, Input, Label, RichLog
 
 from opennova.cli.ask_question_dialog import AskQuestionDialog
 from opennova.cli.commands import SlashCommandRegistry
+from opennova.cli.plan_decision_dialog import PlanDecision, PlanDecisionDialog
 from opennova.cli.session_picker_dialog import SessionPickerDialog
 from opennova.cli.tool_cards import ToolCardStore
 from opennova.cli.tool_progress import ToolProgressTracker
@@ -48,10 +49,12 @@ from opennova.cli.tui_blocks import (
     render_workbench_panel,
 )
 from opennova.cli.tui_workbench import (
+    PlanWorkbenchSnapshot,
     WorkbenchTab,
     build_workbench_panel_state,
     next_workbench_tab,
     previous_workbench_tab,
+    snapshot_plan,
 )
 from opennova.config import Config
 from opennova.providers.base import StreamChunk
@@ -95,17 +98,12 @@ def _format_user_message(text: str) -> Text:
     return message
 
 
-def _looks_like_plan_execution_approval(state: Any, text: str) -> bool:
-    """Fallback approval detector for tests or alternate runtimes."""
+def _has_pending_plan_decision(state: Any) -> bool:
+    """Return whether the TUI should ask how to handle the current plan."""
     if not getattr(state, "current_plan", None):
         return False
     approval_status = getattr(getattr(state, "plan_approval_status", None), "value", "")
-    if approval_status not in {"awaiting_approval", "approved"}:
-        return False
-    normalized = text.strip().lower()
-    return normalized in {"y", "yes", "start", "execute", "开始", "开始写代码", "执行", "执行计划"} or any(
-        token in normalized for token in ("start coding", "execute plan", "开始写代码", "执行计划")
-    )
+    return approval_status in {"awaiting_approval", "approved"}
 
 
 def _format_tool_execution(tool_name: str, detail: str) -> str:
@@ -438,6 +436,8 @@ class OpenNovaTUI(App):
         self._tool_panel_visible = False
         self._workbench_visible = False
         self._workbench_tab: WorkbenchTab = "tools"
+        self._last_plan_snapshot: PlanWorkbenchSnapshot | None = None
+        self._last_plan_chat_signature: tuple[Any, ...] | None = None
         self._automation_daemon = None
         self._startup_resume_mode = startup_resume_mode
         self._replaying_transcript = False
@@ -621,8 +621,10 @@ class OpenNovaTUI(App):
             agent=self.agent,
             tool_cards=self._tool_cards,
             active_tab=self._workbench_tab,
+            last_plan=getattr(self, "_last_plan_snapshot", None),
         )
-        if not self._workbench_visible and not self._tool_cards.cards:
+        has_workbench_content = bool(self._tool_cards.cards or state.plan or state.todos)
+        if not self._workbench_visible and not has_workbench_content:
             panel.clear()
             return
         self._set_tool_panel_visible(True)
@@ -1530,47 +1532,61 @@ class OpenNovaTUI(App):
         log.write(f"[green]Transcript exported to {path}[/green]")
 
     async def _cmd_plan(self, args: str) -> None:
-        log = self.query_one("#messages")
         if not args:
+            log = self.query_one("#messages")
             log.write("[red]Usage: /plan <task>[/red]")
             return
 
-        log.write(f"[yellow]Planning: {args}[/yellow]")
+        await OpenNovaTUI._run_plan_flow(self, args, user_message=f"/plan {args}")
+
+    async def _run_plan_flow(self, task: str, *, user_message: str | None = None) -> None:
+        """Generate a plan and ask the user how to proceed."""
+        log = self.query_one("#messages")
+        log.write(f"[yellow]Planning: {task}[/yellow]")
         self._register_plan_workbench_callback()
 
         # Phase 1: Generate the plan (not running state — user can still cancel)
         try:
-            result = await self.agent.run(args, mode="plan")
+            result = await self.agent.run(task, mode="plan")
             log.write(Markdown(result))
         except Exception as e:
             log.write(f"[red]Planning failed: {type(e).__name__}: {e}[/red]")
             return
 
-        # Phase 2: Ask for plan approval via interaction
-        log.write("[cyan]Execute this plan now? [y/N][/cyan]")
-        answer = await self._ask_user(placeholder="Execute this plan now? [y/N]: ")
-
-        if answer.strip().lower() not in {"y", "yes"}:
-            log.write("[yellow]Plan kept for later execution.[/yellow]")
+        # Phase 2: Ask for plan approval via the same explicit decision dialog used in chat.
+        decision = await self._ask_plan_decision_dialog(user_message or task)
+        if decision == "discard":
+            OpenNovaTUI._discard_pending_plan(self)
+            return
+        if decision == "revise":
+            log.write("[yellow]Plan kept for revision. Send your requested changes next.[/yellow]")
             return
 
         # Phase 3: Execute approved plan — fully guarded by try/finally
-        self.agent.state.mark_plan_approved()
         log.write("[cyan]Executing approved plan...[/cyan]")
-        self._workbench_tab = "plan"
-        with suppress(Exception):
-            self._refresh_workbench_panel()
-        await self._run_agent_task(self.agent.execute_approved_plan())
-        with suppress(Exception):
-            self._refresh_workbench_panel()
+        await OpenNovaTUI._execute_pending_plan(self)
 
-    def _register_plan_workbench_callback(self, *, write_chat: bool = True) -> None:
+    def _register_plan_workbench_callback(self, *, write_chat: bool | None = True) -> None:
         """Register the plan callback that mirrors plan state into the workbench."""
 
         def on_plan(plan, plan_file_path=None):
             try:
                 self._workbench_tab = "plan"
-                if write_chat:
+                state = getattr(self.agent, "state", None)
+                approval = getattr(getattr(state, "plan_approval_status", None), "value", None)
+                plan_path = plan_file_path or getattr(state, "plan_file_path", None)
+                self._last_plan_snapshot = snapshot_plan(
+                    plan,
+                    plan_file_path=plan_path,
+                    approval_status=approval,
+                )
+                should_write_chat = (
+                    OpenNovaTUI._should_write_plan_to_chat(self)
+                    if write_chat is None
+                    else write_chat
+                )
+                signature = OpenNovaTUI._plan_chat_signature(self, plan)
+                if should_write_chat and signature != getattr(self, "_last_plan_chat_signature", None):
                     _log = self.query_one("#messages")
                     table = Table(title=f"Plan: {plan.task}")
                     table.add_column("Step", style="cyan")
@@ -1587,13 +1603,34 @@ class OpenNovaTUI(App):
                         icon = status_icons.get(step.status.value, "❓")
                         table.add_row(step.id, step.description, icon)
                     _log.write(table)
-                    if plan_file_path:
-                        _log.write(f"[green]Plan saved to:[/green] {plan_file_path}")
+                    if plan_path:
+                        _log.write(f"[green]Plan saved to:[/green] {plan_path}")
+                    self._last_plan_chat_signature = signature
                 self._refresh_workbench_panel()
             except Exception:
                 pass
 
         self.agent.register_callback("plan", on_plan)
+
+    def _should_write_plan_to_chat(self) -> bool:
+        """Return whether a plan update is the initial reviewable planning output."""
+        state = getattr(self.agent, "state", None)
+        mode = getattr(getattr(state, "mode", None), "value", getattr(state, "mode", ""))
+        approval = getattr(getattr(state, "plan_approval_status", None), "value", "")
+        return mode == "plan" and approval not in {"approved", "executing"}
+
+    def _plan_chat_signature(self, plan: Any) -> tuple[Any, ...]:
+        """Stable signature used to avoid duplicating the same review table."""
+        return (
+            getattr(plan, "task", ""),
+            tuple(
+                (
+                    getattr(step, "id", ""),
+                    getattr(step, "description", ""),
+                )
+                for step in getattr(plan, "steps", []) or []
+            ),
+        )
 
     # ── interaction helper ───────────────────────────────────────
 
@@ -1677,18 +1714,19 @@ class OpenNovaTUI(App):
         turns within a session. The ReActLoop handles first-turn setup
         (system prompt injection) correctly even with preserve_context=True.
         """
-        approval_checker = getattr(self.agent, "_is_plan_execution_approval", None)
-        is_plan_approval = (
-            approval_checker(task)
-            if callable(approval_checker)
-            else _looks_like_plan_execution_approval(getattr(self.agent, "state", None), task)
-        )
-        if is_plan_approval:
-            self.agent.state.mark_plan_approved()
-            self._workbench_tab = "plan"
-            with suppress(Exception):
-                self._refresh_workbench_panel()
-            await self._run_agent_task(self.agent.execute_approved_plan())
+        if _has_pending_plan_decision(getattr(self.agent, "state", None)):
+            decision = await self._ask_plan_decision_dialog(task)
+            if decision == "execute":
+                await OpenNovaTUI._execute_pending_plan(self)
+                return
+            if decision == "discard":
+                OpenNovaTUI._discard_pending_plan(self)
+                return
+            await OpenNovaTUI._continue_plan_conversation(
+                self,
+                task,
+                preserve_context=preserve_context,
+            )
             return
 
         await self._run_agent_task(
@@ -1699,10 +1737,71 @@ class OpenNovaTUI(App):
             )
         )
 
+    async def _ask_plan_decision_dialog(self, user_message: str) -> PlanDecision:
+        """Show the pending-plan decision modal and wait for the selected action."""
+        state = getattr(self.agent, "state", None)
+        plan = getattr(state, "current_plan", None)
+        plan_title = str(getattr(plan, "task", "") or "")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[PlanDecision] = loop.create_future()
+
+        def _on_decision(decision: PlanDecision | None) -> None:
+            if not future.done():
+                future.set_result(decision or "revise")
+
+        await self.push_screen(
+            PlanDecisionDialog(plan_title=plan_title, user_message=user_message),
+            callback=_on_decision,
+        )
+        return await future
+
+    async def _execute_pending_plan(self) -> None:
+        """Approve and execute the current pending plan."""
+        self.agent.state.mark_plan_approved()
+        self._workbench_tab = "plan"
+        with suppress(Exception):
+            self._refresh_workbench_panel()
+        await self._run_agent_task(self.agent.execute_approved_plan())
+        with suppress(Exception):
+            self._refresh_workbench_panel()
+
+    def _discard_pending_plan(self) -> None:
+        """Discard the current pending plan and mirrored todos."""
+        from opennova.tools.todo_tools import TodoWriteTool
+
+        self.agent.state.clear_plan_state()
+        TodoWriteTool.replace_todos([])
+        self._last_plan_snapshot = None
+        self._last_plan_chat_signature = None
+        self._workbench_tab = "plan"
+        with suppress(Exception):
+            self._refresh_workbench_panel()
+        with suppress(Exception):
+            log = self.query_one("#messages")
+            self._write_assistant_message(log, "Plan discarded. We can continue without it.")
+
+    async def _continue_plan_conversation(self, task: str, preserve_context: bool = True) -> None:
+        """Continue discussing or revising the pending plan without executing it."""
+        self._workbench_tab = "plan"
+        with suppress(Exception):
+            self.agent.state.set_mode("plan")
+            self._refresh_workbench_panel()
+        await self._run_agent_task(
+            self.agent._run_act_mode(
+                task=(
+                    "Continue planning. The user wants to discuss or revise the pending plan; "
+                    f"do not execute implementation steps yet.\n\nUser message: {task}"
+                ),
+                stream=True,
+                preserve_context=preserve_context,
+                preserve_plan_state=True,
+            )
+        )
+
     def _register_callbacks(self) -> None:
         _current_tool: dict[str, str] = {"name": ""}
         _canonical_tools: dict[str, bool] = {"seen": False}
-        OpenNovaTUI._register_plan_workbench_callback(self, write_chat=False)
+        OpenNovaTUI._register_plan_workbench_callback(self, write_chat=None)
 
         def on_thought(thought: str) -> None:
             try:
@@ -1767,7 +1866,8 @@ class OpenNovaTUI(App):
             _canonical_tools["seen"] = True
             if hasattr(event, "type"):
                 self._tool_cards.apply_event(event)
-                self._workbench_tab = "tools"
+                if not getattr(self, "_workbench_visible", False) or self._workbench_tab == "tools":
+                    self._workbench_tab = "tools"
                 with suppress(Exception):
                     self._refresh_tool_panel()
             data = event.to_dict() if hasattr(event, "to_dict") else dict(event)

@@ -1414,6 +1414,53 @@ def test_tui_canonical_tool_event_refreshes_tool_panel():
     assert app._tool_cards.get("tool_1").metadata["duration_ms"] == 7
 
 
+def test_tui_canonical_tool_event_does_not_steal_plan_tab():
+    from opennova.cli.tool_cards import ToolCardStore
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.events import ToolEvent
+
+    class Agent:
+        def __init__(self):
+            self.callbacks = {}
+
+        def register_callback(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    class Progress:
+        waiting_for_interaction = False
+        interaction_label = ""
+        current_tool_name = ""
+        current_tool_id = ""
+        current_args = {}
+        started_at = 0.0
+
+        def clear_interaction(self):
+            self.waiting_for_interaction = False
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "_workbench_tab": "plan",
+            "_workbench_visible": True,
+            "_tool_progress": Progress(),
+            "_tool_cards": ToolCardStore(),
+            "query_one": lambda self, selector: type("Log", (), {"write": lambda self, value: None})(),
+            "_write_tool_start": lambda self, log, tool_name, detail: None,
+            "_write_tool_result": lambda self, log, **kwargs: None,
+            "_refresh_tool_panel": lambda self: None,
+        },
+    )()
+
+    OpenNovaTUI._register_callbacks(app)
+    app.agent.callbacks["tool_event"](
+        ToolEvent(type="tool_start", tool_id="tool_1", tool_name="read_file")
+    )
+
+    assert app._workbench_tab == "plan"
+
+
 def test_tui_plan_callback_switches_workbench_to_plan_tab():
     from opennova.cli.tui import OpenNovaTUI
     from opennova.runtime.state import Plan, PlanStep
@@ -1451,6 +1498,130 @@ def test_tui_plan_callback_switches_workbench_to_plan_tab():
     assert writes
 
 
+def test_tui_runtime_plan_callback_writes_initial_plan_during_plan_mode():
+    from rich.console import Console
+
+    from opennova.cli.tool_cards import ToolCardStore
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.state import AgentMode, AgentState, Plan, PlanStep
+
+    writes: list[Any] = []
+
+    class Agent:
+        def __init__(self):
+            self.callbacks = {}
+            self.state = AgentState()
+            self.state.set_mode(AgentMode.PLAN)
+
+        def register_callback(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    class Progress:
+        waiting_for_interaction = False
+        interaction_label = ""
+
+        def clear_interaction(self):
+            self.waiting_for_interaction = False
+
+    class Log:
+        def write(self, value):
+            writes.append(value)
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "_workbench_tab": "tools",
+            "_tool_progress": Progress(),
+            "_tool_cards": ToolCardStore(),
+            "query_one": lambda self, selector: Log(),
+            "_refresh_workbench_panel": lambda self: None,
+        },
+    )()
+
+    OpenNovaTUI._register_callbacks(app)
+    app.agent.callbacks["plan"](
+        Plan(task="Add menu screen", steps=[PlanStep("step_1", "Create buttons")])
+    )
+
+    assert writes
+    console = Console(no_color=True, force_terminal=False, width=120, record=True)
+    for write in writes:
+        console.print(write)
+    text = console.export_text()
+    assert "Add menu screen" in text
+    assert "Create buttons" in text
+
+
+def test_tui_workbench_keeps_last_plan_snapshot_after_runtime_plan_clears():
+    from rich.console import Console
+
+    from opennova.cli.tool_cards import ToolCardStore
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.state import AgentState, Plan, PlanStep
+
+    class Agent:
+        def __init__(self):
+            self.callbacks = {}
+            self.state = AgentState()
+
+        def register_callback(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    class PanelLog:
+        def __init__(self):
+            self.writes = []
+
+        def clear(self):
+            self.writes.clear()
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def scroll_home(self, animate=False):
+            pass
+
+    class MessageLog:
+        def write(self, value):
+            pass
+
+    panel_log = PanelLog()
+
+    def query_one(self, selector, *args):
+        return panel_log if selector == "#tool-panel" else MessageLog()
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": Agent(),
+            "_workbench_tab": "plan",
+            "_workbench_visible": True,
+            "_tool_panel_visible": True,
+            "_tool_cards": ToolCardStore(),
+            "query_one": query_one,
+            "_set_tool_panel_visible": lambda self, visible: setattr(self, "_workbench_visible", visible),
+            "_set_status": lambda self, message="": None,
+            "_refresh_workbench_panel": lambda self: OpenNovaTUI._refresh_workbench_panel(self),
+        },
+    )()
+
+    OpenNovaTUI._register_plan_workbench_callback(app)
+    app.agent.callbacks["plan"](
+        Plan(task="Add menu screen", steps=[PlanStep("step_1", "Create buttons")])
+    )
+
+    console = Console(no_color=True, force_terminal=False, width=120, record=True)
+    for renderable in panel_log.writes:
+        console.print(renderable)
+    text = console.export_text()
+
+    assert "Add menu screen" in text
+    assert "Create buttons" in text
+    assert "No active plan" not in text
+
+
 def test_tui_todos_command_switches_workbench_to_todos_tab():
     from opennova.cli.tui import OpenNovaTUI
     from opennova.tools.todo_tools import TodoWriteTool
@@ -1481,7 +1652,22 @@ def test_tui_todos_command_switches_workbench_to_todos_tab():
     assert writes
 
 
-def test_tui_execute_task_approval_text_runs_existing_approved_plan():
+def test_plan_decision_dialog_exposes_three_explicit_choices():
+    from opennova.cli.plan_decision_dialog import PlanDecisionDialog
+
+    assert [option[0] for option in PlanDecisionDialog._OPTIONS] == [
+        "execute",
+        "discard",
+        "revise",
+    ]
+    assert [option[1] for option in PlanDecisionDialog._OPTIONS] == [
+        "执行计划",
+        "放弃计划",
+        "继续交谈修改计划",
+    ]
+
+
+def test_tui_execute_task_pending_plan_dialog_execute_runs_plan():
     from opennova.cli.tui import OpenNovaTUI
     from opennova.runtime.state import AgentState, Plan, PlanStep
 
@@ -1502,23 +1688,126 @@ def test_tui_execute_task_approval_text_runs_existing_approved_plan():
     async def fake_run_agent_task(self, coro):
         calls.append(coro)
 
+    async def fake_plan_decision(self, task):
+        return "execute"
+
     app = type(
         "FakeTUI",
         (),
         {
             "agent": agent,
             "_run_agent_task": fake_run_agent_task,
+            "_ask_plan_decision_dialog": fake_plan_decision,
             "_workbench_tab": "tools",
             "_refresh_workbench_panel": lambda self: None,
         },
     )()
 
-    asyncio.run(OpenNovaTUI._execute_task(app, "开始写代码"))
+    asyncio.run(OpenNovaTUI._execute_task(app, "anything the user typed"))
     result = asyncio.run(calls[0])
 
     assert result == "executed plan"
     assert agent.executed == 1
     assert agent.state.plan_approval_status.value == "approved"
+    assert app._workbench_tab == "plan"
+
+
+def test_tui_execute_task_pending_plan_dialog_discard_clears_plan_and_todos():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.state import AgentState, Plan, PlanStep
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    class Agent:
+        def __init__(self):
+            self.state = AgentState()
+            self.state.set_plan(Plan(task="Pending plan", steps=[PlanStep("step_1", "Do it")]))
+            self.state.mark_plan_awaiting_approval()
+
+    TodoWriteTool.replace_todos([{"id": "step_1", "content": "Do it", "status": "pending"}])
+    agent = Agent()
+    writes: list[str] = []
+    refreshes: list[str] = []
+
+    async def fake_plan_decision(self, task):
+        return "discard"
+
+    class Log:
+        def write(self, value):
+            writes.append(str(value))
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": agent,
+            "_ask_plan_decision_dialog": fake_plan_decision,
+            "_workbench_tab": "tools",
+            "_last_plan_snapshot": object(),
+            "_last_plan_chat_signature": ("old",),
+            "_refresh_workbench_panel": lambda self: refreshes.append(self._workbench_tab),
+            "query_one": lambda self, selector: Log(),
+            "_write_assistant_message": lambda self, log, text: writes.append(text),
+        },
+    )()
+
+    asyncio.run(OpenNovaTUI._execute_task(app, "不要执行这个计划了"))
+
+    assert agent.state.current_plan is None
+    assert TodoWriteTool.current_todos() == []
+    assert app._last_plan_snapshot is None
+    assert app._workbench_tab == "plan"
+    assert refreshes == ["plan"]
+    assert writes == ["Plan discarded. We can continue without it."]
+
+
+def test_tui_execute_task_pending_plan_dialog_revise_preserves_plan_state():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.state import AgentState, Plan, PlanStep
+
+    class Agent:
+        def __init__(self):
+            self.state = AgentState()
+            self.state.set_plan(Plan(task="Pending plan", steps=[PlanStep("step_1", "Do it")]))
+            self.state.mark_plan_awaiting_approval()
+            self.calls: list[dict[str, Any]] = []
+
+        def _run_act_mode(self, **kwargs):
+            self.calls.append(kwargs)
+
+            async def _result():
+                return "revised plan"
+
+            return _result()
+
+    agent = Agent()
+    awaited_results: list[str] = []
+
+    async def fake_plan_decision(self, task):
+        return "revise"
+
+    async def fake_run_agent_task(self, coro):
+        awaited_results.append(await coro)
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": agent,
+            "_ask_plan_decision_dialog": fake_plan_decision,
+            "_run_agent_task": fake_run_agent_task,
+            "_workbench_tab": "tools",
+            "_refresh_workbench_panel": lambda self: None,
+        },
+    )()
+
+    asyncio.run(OpenNovaTUI._execute_task(app, "把第二步拆细一点"))
+
+    assert awaited_results == ["revised plan"]
+    assert agent.state.current_plan is not None
+    assert agent.state.current_plan.task == "Pending plan"
+    assert agent.calls[0]["preserve_plan_state"] is True
+    assert agent.calls[0]["preserve_context"] is True
+    assert "把第二步拆细一点" in agent.calls[0]["task"]
     assert app._workbench_tab == "plan"
 
 
