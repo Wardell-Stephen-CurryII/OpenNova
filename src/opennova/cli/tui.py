@@ -90,6 +90,19 @@ def _format_user_message(text: str) -> Text:
     return message
 
 
+def _looks_like_plan_execution_approval(state: Any, text: str) -> bool:
+    """Fallback approval detector for tests or alternate runtimes."""
+    if not getattr(state, "current_plan", None):
+        return False
+    approval_status = getattr(getattr(state, "plan_approval_status", None), "value", "")
+    if approval_status not in {"awaiting_approval", "approved"}:
+        return False
+    normalized = text.strip().lower()
+    return normalized in {"y", "yes", "start", "execute", "开始", "开始写代码", "执行", "执行计划"} or any(
+        token in normalized for token in ("start coding", "execute plan", "开始写代码", "执行计划")
+    )
+
+
 def _format_tool_execution(tool_name: str, detail: str) -> str:
     """Render a tool execution line with a leading marker."""
     suffix = f" {detail}" if detail else ""
@@ -1498,30 +1511,31 @@ class OpenNovaTUI(App):
         with suppress(Exception):
             self._refresh_workbench_panel()
 
-    def _register_plan_workbench_callback(self) -> None:
+    def _register_plan_workbench_callback(self, *, write_chat: bool = True) -> None:
         """Register the plan callback that mirrors plan state into the workbench."""
 
         def on_plan(plan, plan_file_path=None):
             try:
                 self._workbench_tab = "plan"
-                _log = self.query_one("#messages")
-                table = Table(title=f"Plan: {plan.task}")
-                table.add_column("Step", style="cyan")
-                table.add_column("Description")
-                table.add_column("Status", justify="center")
-                status_icons = {
-                    "pending": "⏳",
-                    "running": "🔄",
-                    "done": "✅",
-                    "failed": "❌",
-                    "skipped": "⏭️",
-                }
-                for step in plan.steps:
-                    icon = status_icons.get(step.status.value, "❓")
-                    table.add_row(step.id, step.description, icon)
-                _log.write(table)
-                if plan_file_path:
-                    _log.write(f"[green]Plan saved to:[/green] {plan_file_path}")
+                if write_chat:
+                    _log = self.query_one("#messages")
+                    table = Table(title=f"Plan: {plan.task}")
+                    table.add_column("Step", style="cyan")
+                    table.add_column("Description")
+                    table.add_column("Status", justify="center")
+                    status_icons = {
+                        "pending": "⏳",
+                        "running": "🔄",
+                        "done": "✅",
+                        "failed": "❌",
+                        "skipped": "⏭️",
+                    }
+                    for step in plan.steps:
+                        icon = status_icons.get(step.status.value, "❓")
+                        table.add_row(step.id, step.description, icon)
+                    _log.write(table)
+                    if plan_file_path:
+                        _log.write(f"[green]Plan saved to:[/green] {plan_file_path}")
                 self._refresh_workbench_panel()
             except Exception:
                 pass
@@ -1610,6 +1624,20 @@ class OpenNovaTUI(App):
         turns within a session. The ReActLoop handles first-turn setup
         (system prompt injection) correctly even with preserve_context=True.
         """
+        approval_checker = getattr(self.agent, "_is_plan_execution_approval", None)
+        is_plan_approval = (
+            approval_checker(task)
+            if callable(approval_checker)
+            else _looks_like_plan_execution_approval(getattr(self.agent, "state", None), task)
+        )
+        if is_plan_approval:
+            self.agent.state.mark_plan_approved()
+            self._workbench_tab = "plan"
+            with suppress(Exception):
+                self._refresh_workbench_panel()
+            await self._run_agent_task(self.agent.execute_approved_plan())
+            return
+
         await self._run_agent_task(
             self.agent._run_act_mode(
                 task=task,
@@ -1621,6 +1649,7 @@ class OpenNovaTUI(App):
     def _register_callbacks(self) -> None:
         _current_tool: dict[str, str] = {"name": ""}
         _canonical_tools: dict[str, bool] = {"seen": False}
+        OpenNovaTUI._register_plan_workbench_callback(self, write_chat=False)
 
         def on_thought(thought: str) -> None:
             try:

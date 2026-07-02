@@ -905,7 +905,13 @@ def test_agent_runtime_execute_approved_plan_marks_failures_for_inspection():
     runtime.state.set_plan_file_path("saved-plan.md")
     runtime.state.mark_plan_awaiting_approval()
     runtime.state.mark_plan_approved()
-    runtime._emit = lambda *args, **kwargs: None
+    emitted_plan_statuses = []
+
+    def fake_emit(event: str, plan_obj=None, plan_file_path=None):
+        if event == "plan" and plan_obj is not None:
+            emitted_plan_statuses.append([step.status.value for step in plan_obj.steps])
+
+    runtime._emit = fake_emit
     runtime._sync_plan_progress = lambda plan, active_step_id=None: None
     runtime._persist_current_plan = lambda: None
     runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
@@ -948,7 +954,13 @@ def test_agent_runtime_execute_approved_plan_refreshes_plan_from_file_and_update
     runtime.state.set_plan_file_path("saved-plan.md")
     runtime.state.mark_plan_awaiting_approval()
     runtime.state.mark_plan_approved()
-    runtime._emit = lambda *args, **kwargs: None
+    emitted_plan_statuses = []
+
+    def fake_emit(event: str, plan_obj=None, plan_file_path=None):
+        if event == "plan" and plan_obj is not None:
+            emitted_plan_statuses.append([step.status.value for step in plan_obj.steps])
+
+    runtime._emit = fake_emit
 
     refreshed_plan = Plan(
         task="Execute plan",
@@ -990,6 +1002,8 @@ def test_agent_runtime_execute_approved_plan_refreshes_plan_from_file_and_update
     assert persisted_statuses[0][0][1] == "pending"
     assert persisted_statuses[1][0][1] == "running"
     assert persisted_statuses[-1][0][1] == "done"
+    assert ["running", "done"] in emitted_plan_statuses
+    assert ["done", "done"] in emitted_plan_statuses
     todos = TodoWriteTool.current_todos()
     assert todos == [
         {"id": "step_1", "content": "Fresh description from file", "status": "done"},
@@ -1171,6 +1185,38 @@ def test_exit_plan_mode_tool_reports_runtime_plan_state(tmp_path: Path):
     assert result.metadata["plan_approval_status"] == "awaiting_approval"
 
 
+def test_exit_plan_mode_tool_materializes_markdown_plan_into_runtime_state():
+    """ExitPlanModeTool should turn a written markdown plan into executable runtime state."""
+    from opennova.runtime.state import StepStatus
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    TodoWriteTool.replace_todos([])
+    state = AgentState()
+    state.set_mode("plan")
+    tool = ExitPlanModeTool(config={"state": state})
+
+    result = tool.execute(
+        task="Improve plan mode",
+        plan="1. Inspect current plan flow\n2. Fix plan approval\n3. Verify todos",
+    )
+
+    assert result.success is True
+    assert state.current_plan is not None
+    assert state.current_plan.task == "Improve plan mode"
+    assert [step.description for step in state.current_plan.steps] == [
+        "Inspect current plan flow",
+        "Fix plan approval",
+        "Verify todos",
+    ]
+    assert all(step.status == StepStatus.PENDING for step in state.current_plan.steps)
+    assert state.plan_approval_status == PlanApprovalStatus.AWAITING_APPROVAL
+    assert TodoWriteTool.current_todos() == [
+        {"id": "step_1", "content": "Inspect current plan flow", "status": "pending"},
+        {"id": "step_2", "content": "Fix plan approval", "status": "pending"},
+        {"id": "step_3", "content": "Verify todos", "status": "pending"},
+    ]
+
+
 def test_enter_plan_mode_tool_mentions_reusing_existing_plan(tmp_path: Path):
     state = AgentState()
     state.set_plan_file_path(tmp_path / "plan.md")
@@ -1191,6 +1237,65 @@ def test_exit_plan_mode_tool_requires_existing_plan():
 
     assert result.success is False
     assert "no plan is available" in result.error.lower()
+
+
+def test_agent_runtime_run_approval_text_executes_awaiting_plan_without_resetting_state():
+    """A follow-up like 'start coding' should approve and execute the existing plan."""
+    from opennova.runtime.state import Plan, PlanStep
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.state.set_plan(Plan(task="Pending plan", steps=[PlanStep(id="step_1", description="Do it")]))
+    runtime.state.mark_plan_awaiting_approval()
+    executed: list[bool] = []
+
+    async def fake_execute(stream: bool = True):
+        executed.append(True)
+        return "executed existing plan"
+
+    runtime.execute_approved_plan = fake_execute
+
+    result = asyncio.run(AgentRuntime.run(runtime, "开始写代码", mode="act", stream=False))
+
+    assert result == "executed existing plan"
+    assert executed == [True]
+    assert runtime.state.current_plan is not None
+    assert runtime.state.current_plan.task == "Pending plan"
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.APPROVED
+
+
+def test_react_loop_exit_plan_mode_observation_marks_turn_complete():
+    """A successful exit_plan_mode tool call should stop the current planning turn."""
+    from opennova.runtime.loop import ParsedAction
+
+    class Context:
+        def __init__(self):
+            self.messages = []
+
+        def add_message(self, message):
+            self.messages.append(message)
+
+        async def add_message_and_compress(self, message):
+            self.messages.append(message)
+
+    state = AgentState()
+    loop = ReActLoop.__new__(ReActLoop)
+    loop.state = state
+    loop.context_manager = Context()
+    loop.skill_registry = None
+    loop.hook_manager = None
+
+    action = ParsedAction(tool_name="exit_plan_mode", arguments={}, thought="Plan is ready")
+    result = ToolResult(
+        success=True,
+        output="Plan mode exited. Awaiting user approval of the plan.",
+        metadata={"status": "awaiting_approval"},
+    )
+
+    asyncio.run(ReActLoop._observe(loop, action, result))
+
+    assert state.is_complete is True
+    assert state.last_action == "exit_plan_mode"
 
 
 

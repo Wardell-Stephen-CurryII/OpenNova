@@ -1089,6 +1089,12 @@ class ReActLoop:
 
         self.state.last_action = action.tool_name
         self.state.last_result = result.output
+        if (
+            action.tool_name == "exit_plan_mode"
+            and result.success
+            and result.metadata.get("status") == "awaiting_approval"
+        ):
+            self.state.mark_complete(result.output or "Plan ready for approval")
 
     def _apply_skill_execution_context(self, metadata: dict[str, Any]) -> None:
         """Apply temporary tool/model constraints for the active skill."""

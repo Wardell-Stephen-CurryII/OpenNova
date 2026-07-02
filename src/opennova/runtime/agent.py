@@ -270,8 +270,8 @@ class AgentRuntime:
         self.tool_registry.register(SkillTool(config={"runtime": self}))
 
         # Plan mode tools
-        self.tool_registry.register(EnterPlanModeTool(config={"state": self.state}))
-        self.tool_registry.register(ExitPlanModeTool(config={"state": self.state}))
+        self.tool_registry.register(EnterPlanModeTool(config={"state": self.state, "runtime": self}))
+        self.tool_registry.register(ExitPlanModeTool(config={"state": self.state, "runtime": self}))
 
         # Web tools
         self.tool_registry.register(WebSearchTool(config=tool_config))
@@ -430,6 +430,10 @@ class AgentRuntime:
         Returns:
             Final result string
         """
+        if mode != "plan" and self._is_plan_execution_approval(task):
+            self.state.mark_plan_approved()
+            return await self.execute_approved_plan(stream=stream)
+
         self.state.reset(task)
         self.state.set_mode(mode)
 
@@ -556,6 +560,7 @@ class AgentRuntime:
         self.state.mark_plan_executing()
         plan.status = PlanStatus.EXECUTING
         self._sync_plan_progress(plan)
+        self._emit_plan_update(plan)
         self._persist_current_plan()
 
         while True:
@@ -572,6 +577,7 @@ class AgentRuntime:
 
             plan.mark_step_running(step.id)
             self._sync_plan_progress(plan, active_step_id=step.id)
+            self._emit_plan_update(plan)
             self._persist_current_plan()
             self._emit("thought", f"Executing plan step {step.id}: {step.description}")
 
@@ -586,6 +592,7 @@ class AgentRuntime:
                 plan.mark_step_failed(step.id, "No result returned")
                 self.state.mark_plan_failed()
                 self._sync_plan_progress(plan)
+                self._emit_plan_update(plan)
                 self._persist_current_plan()
                 return self.state.last_result or "Plan execution complete"
 
@@ -593,6 +600,7 @@ class AgentRuntime:
                 plan.mark_step_failed(step.id, result)
                 self.state.mark_plan_failed()
                 self._sync_plan_progress(plan)
+                self._emit_plan_update(plan)
                 self._persist_current_plan()
                 if not self._should_continue_on_failure():
                     return self.state.last_result or result
@@ -600,17 +608,61 @@ class AgentRuntime:
 
             plan.mark_step_done(step.id, result)
             self._sync_plan_progress(plan)
+            self._emit_plan_update(plan)
             self._persist_current_plan()
 
         final_result = self.state.last_result or "Plan execution complete"
         if plan.status == PlanStatus.DONE:
             self._sync_plan_progress(plan)
+            self._emit_plan_update(plan)
             self.state.clear_plan_state()
         elif plan.status == PlanStatus.FAILED:
             self._sync_plan_progress(plan)
             self.state.mark_plan_failed()
+            self._emit_plan_update(plan)
 
         return final_result
+
+    def _is_plan_execution_approval(self, text: str) -> bool:
+        """Return whether user text should approve and execute the current plan."""
+        if not self.state.current_plan:
+            return False
+        if self.state.plan_approval_status not in {
+            PlanApprovalStatus.AWAITING_APPROVAL,
+            PlanApprovalStatus.APPROVED,
+        }:
+            return False
+        normalized = text.strip().lower()
+        if not normalized:
+            return False
+        approval_tokens = {
+            "y",
+            "yes",
+            "approve",
+            "approved",
+            "execute",
+            "run",
+            "start",
+            "go",
+            "continue",
+            "开始",
+            "开始执行",
+            "开始写代码",
+            "执行",
+            "执行计划",
+            "继续",
+            "继续执行",
+            "同意",
+            "批准",
+        }
+        if normalized in approval_tokens:
+            return True
+        return any(token in normalized for token in ("start coding", "execute plan", "开始写代码", "执行计划"))
+
+    def _emit_plan_update(self, plan: Plan) -> None:
+        """Notify UI/listeners that plan and mirrored todos changed."""
+        with suppress(Exception):
+            self._emit("plan", plan, self.state.plan_file_path)
 
     async def _create_plan(self, task: str) -> Plan:
         """

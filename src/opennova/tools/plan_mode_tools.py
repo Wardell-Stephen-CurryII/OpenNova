@@ -7,10 +7,12 @@ Provides:
 - Metadata aligned with runtime plan state and saved plan files
 """
 
+import re
 from typing import Any
 
-from opennova.runtime.state import AgentState
+from opennova.runtime.state import AgentState, Plan, PlanStep
 from opennova.tools.base import BaseTool, ToolResult
+from opennova.tools.todo_tools import TodoWriteTool
 
 
 def _build_plan_mode_metadata(state: AgentState | None) -> dict[str, Any]:
@@ -99,7 +101,12 @@ class ExitPlanModeTool(BaseTool):
     name = "exit_plan_mode"
     description = "Use this tool when you are in plan mode and have finished writing your plan and are ready for user approval. This tool signals that you're done planning and ready for the user to review and approve your plan."
 
-    def execute(self, **kwargs: Any) -> ToolResult:
+    def execute(
+        self,
+        plan: str = "",
+        task: str = "",
+        steps: list[dict[str, Any]] | None = None,
+    ) -> ToolResult:
         """
         Exit plan mode and request approval.
 
@@ -108,6 +115,17 @@ class ExitPlanModeTool(BaseTool):
         """
         try:
             state = self.config.get("state")
+            runtime = self.config.get("runtime")
+            if isinstance(state, AgentState) and not state.current_plan:
+                materialized_plan = _materialize_plan_from_args(plan=plan, task=task, steps=steps)
+                if materialized_plan is not None:
+                    state.set_plan(materialized_plan)
+                    if runtime is not None and hasattr(runtime, "_save_plan_to_project"):
+                        plan_path = runtime._save_plan_to_project(materialized_plan)
+                        state.set_plan_file_path(plan_path)
+                    _sync_todos_from_plan(materialized_plan)
+                    if runtime is not None and hasattr(runtime, "_emit"):
+                        runtime._emit("plan", materialized_plan, state.plan_file_path)
             if isinstance(state, AgentState) and not state.current_plan:
                 return ToolResult(
                     success=False,
@@ -116,6 +134,10 @@ class ExitPlanModeTool(BaseTool):
                 )
             if isinstance(state, AgentState):
                 state.mark_plan_awaiting_approval()
+                if state.current_plan:
+                    _sync_todos_from_plan(state.current_plan)
+                    if runtime is not None and hasattr(runtime, "_emit"):
+                        runtime._emit("plan", state.current_plan, state.plan_file_path)
 
             instructions = """## How This Tool Works
 
@@ -140,3 +162,63 @@ Ensure your plan is complete and unambiguous:
             )
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
+
+
+def _materialize_plan_from_args(
+    *,
+    plan: str = "",
+    task: str = "",
+    steps: list[dict[str, Any]] | None = None,
+) -> Plan | None:
+    """Build a structured Plan from ExitPlanMode arguments."""
+    parsed_steps: list[PlanStep] = []
+    if steps:
+        for index, raw_step in enumerate(steps, start=1):
+            description = str(raw_step.get("description") or raw_step.get("content") or "").strip()
+            if not description:
+                continue
+            parsed_steps.append(
+                PlanStep(
+                    id=str(raw_step.get("id") or f"step_{index}"),
+                    description=description,
+                    tool_hint=str(raw_step.get("tool_hint") or "") or None,
+                )
+            )
+    if not parsed_steps and plan.strip():
+        parsed_steps = _parse_markdown_plan_steps(plan)
+    if not parsed_steps:
+        return None
+    return Plan(task=task.strip() or _infer_plan_task(plan) or "Approved plan", steps=parsed_steps)
+
+
+def _parse_markdown_plan_steps(plan_text: str) -> list[PlanStep]:
+    """Parse common markdown plan formats into top-level PlanStep objects."""
+    steps: list[PlanStep] = []
+    for raw_line in plan_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(
+            r"^(?:[-*]\s+\[[ xX]\]\s+|[-*]\s+|\d+[.)]\s+)(?:\*\*)?(.+?)(?:\*\*)?$",
+            line,
+        )
+        if not match:
+            continue
+        description = match.group(1).strip()
+        description = description.split(" - ", 1)[-1].strip() if description.lower().startswith("step_") else description
+        if description:
+            steps.append(PlanStep(id=f"step_{len(steps) + 1}", description=description))
+    return steps
+
+
+def _infer_plan_task(plan_text: str) -> str:
+    for raw_line in plan_text.splitlines():
+        line = raw_line.strip().lstrip("#").strip()
+        if line and not line[0].isdigit() and not line.startswith(("-", "*")):
+            return line
+    return ""
+
+
+def _sync_todos_from_plan(plan: Plan) -> None:
+    todos = [{"id": step.id, "content": step.description, "status": "pending"} for step in plan.steps]
+    TodoWriteTool.replace_todos(todos)

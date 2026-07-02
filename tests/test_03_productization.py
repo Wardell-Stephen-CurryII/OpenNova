@@ -1388,6 +1388,47 @@ def test_tui_todos_command_switches_workbench_to_todos_tab():
     assert writes
 
 
+def test_tui_execute_task_approval_text_runs_existing_approved_plan():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.state import AgentState, Plan, PlanStep
+
+    class Agent:
+        def __init__(self):
+            self.state = AgentState()
+            self.state.set_plan(Plan(task="Pending plan", steps=[PlanStep("step_1", "Do it")]))
+            self.state.mark_plan_awaiting_approval()
+            self.executed = 0
+
+        async def execute_approved_plan(self):
+            self.executed += 1
+            return "executed plan"
+
+    agent = Agent()
+    calls: list[Any] = []
+
+    async def fake_run_agent_task(self, coro):
+        calls.append(coro)
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": agent,
+            "_run_agent_task": fake_run_agent_task,
+            "_workbench_tab": "tools",
+            "_refresh_workbench_panel": lambda self: None,
+        },
+    )()
+
+    asyncio.run(OpenNovaTUI._execute_task(app, "开始写代码"))
+    result = asyncio.run(calls[0])
+
+    assert result == "executed plan"
+    assert agent.executed == 1
+    assert agent.state.plan_approval_status.value == "approved"
+    assert app._workbench_tab == "plan"
+
+
 def test_tui_resume_without_args_uses_picker():
     from opennova.cli.tui import OpenNovaTUI
 
