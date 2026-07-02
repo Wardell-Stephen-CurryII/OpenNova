@@ -34,6 +34,21 @@ from opennova.skills.hook_adapter import register_skill_hooks
 from opennova.skills.registry import SkillRegistry
 from opennova.tools.base import ToolRegistry, ToolResult
 
+PLAN_MODE_IMPLEMENTATION_TOOLS = {
+    "write_file",
+    "create_file",
+    "edit_file",
+    "multi_edit_file",
+    "delete_file",
+    "execute_command",
+    "git_commit",
+    "git_branch",
+    "git_push",
+    "enter_worktree",
+    "exit_worktree",
+    "init_project_guide",
+}
+
 
 @dataclass
 class ParsedAction:
@@ -800,6 +815,23 @@ class ReActLoop:
                     f"Tool '{action.tool_name}' is not allowed by the currently active skill. "
                     f"Allowed tools: {', '.join(sorted(self._active_skill_allowed_tools))}"
                 ),
+            )
+        plan_mode = getattr(getattr(self.state, "mode", None), "value", getattr(self.state, "mode", ""))
+        if plan_mode == "plan" and action.tool_name in PLAN_MODE_IMPLEMENTATION_TOOLS:
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason=(
+                    f"Tool '{action.tool_name}' is blocked in plan mode. "
+                    "Continue researching with read/search tools, then call exit_plan_mode "
+                    "with a concrete plan and wait for user approval before implementation."
+                ),
+                requires_confirmation=False,
+                suggestions=[
+                    "Use read_file, list_directory, glob_files, grep_code, or ask_user_question to finish the plan.",
+                    "Call exit_plan_mode with the proposed plan before modifying files.",
+                ],
+                metadata={"plan_mode_blocked": True},
             )
         if not self.guardrails:
             return GuardResult(

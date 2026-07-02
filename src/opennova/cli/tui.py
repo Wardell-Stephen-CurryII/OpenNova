@@ -326,7 +326,7 @@ class OpenNovaTUI(App):
     }}
 
     #tool-panel {{
-        width: 66;
+        width: 88;
         height: 1fr;
         overflow-y: auto;
         border-left: solid {TUI_THEME.panel_border};

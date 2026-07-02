@@ -15,6 +15,7 @@ from opennova.providers.factory import ProviderFactory
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.loop import ReActLoop
 from opennova.runtime.state import AgentState, PlanApprovalStatus
+from opennova.security.guardrails import RiskLevel
 from opennova.tasks import TaskManager, TaskStatus, TaskType
 from opennova.tools.agent_tools import AgentTool, SendMessageTool
 from opennova.tools.ask_question_tool import AskUserQuestionTool
@@ -1340,6 +1341,91 @@ def test_react_loop_system_prompt_requires_enter_plan_mode_when_user_requests_pl
     assert "If the user asks you to plan before coding" in prompt
     assert "call enter_plan_mode before any implementation or file modification tool" in prompt
     assert "Do not modify files before exit_plan_mode has requested user approval" in prompt
+
+
+def test_react_loop_blocks_implementation_tools_while_in_plan_mode():
+    from opennova.runtime.loop import ParsedAction
+
+    state = AgentState()
+    state.set_mode("plan")
+    loop = ReActLoop(
+        llm=object(),
+        tool_registry=ToolRegistry(),
+        state=state,
+        context_manager=ContextManager(),
+        guardrails=None,
+    )
+
+    result = loop._check_tool_guard(
+        ParsedAction(tool_name="edit_file", arguments={"file_path": "snake_game.py"})
+    )
+
+    assert result.allowed is False
+    assert result.risk_level == RiskLevel.BLOCK
+    assert "plan mode" in result.reason.lower()
+    assert "exit_plan_mode" in result.reason
+
+
+def test_react_loop_allows_research_tools_while_in_plan_mode_without_guardrails():
+    from opennova.runtime.loop import ParsedAction
+
+    state = AgentState()
+    state.set_mode("plan")
+    loop = ReActLoop(
+        llm=object(),
+        tool_registry=ToolRegistry(),
+        state=state,
+        context_manager=ContextManager(),
+        guardrails=None,
+    )
+
+    result = loop._check_tool_guard(
+        ParsedAction(tool_name="read_file", arguments={"file_path": "snake_game.py"})
+    )
+
+    assert result.allowed is True
+
+
+def test_react_loop_does_not_execute_edit_tool_after_entering_plan_mode():
+    from opennova.runtime.loop import ParsedAction
+    from opennova.tools.plan_mode_tools import EnterPlanModeTool
+
+    class EditTool(BaseTool):
+        name = "edit_file"
+        description = "Edit a file"
+
+        def __init__(self):
+            super().__init__()
+            self.called = False
+
+        def execute(self, **kwargs):
+            self.called = True
+            return ToolResult(success=True, output="edited")
+
+    state = AgentState()
+    registry = ToolRegistry()
+    registry.register(EnterPlanModeTool(config={"state": state}))
+    edit_tool = EditTool()
+    registry.register(edit_tool)
+    loop = ReActLoop(
+        llm=object(),
+        tool_registry=registry,
+        state=state,
+        context_manager=ContextManager(),
+        guardrails=None,
+    )
+
+    enter_result = asyncio.run(loop._act(ParsedAction(tool_name="enter_plan_mode", arguments={})))
+    edit_result = asyncio.run(
+        loop._act(ParsedAction(tool_name="edit_file", arguments={"file_path": "snake_game.py"}))
+    )
+
+    assert enter_result.success is True
+    assert state.mode == "plan"
+    assert edit_result.success is False
+    assert edit_result.metadata["guard_blocked"] is True
+    assert edit_result.metadata["plan_mode_blocked"] is True
+    assert edit_tool.called is False
 
 
 def test_enter_plan_mode_tool_requires_respecting_plan_first_requests():

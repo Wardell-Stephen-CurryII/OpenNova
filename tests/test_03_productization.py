@@ -1211,7 +1211,7 @@ def test_tui_toggle_tool_panel_changes_visibility():
 def test_tui_workbench_panel_is_wider_than_original_tool_panel():
     from opennova.cli.tui import OpenNovaTUI
 
-    assert "width: 66;" in OpenNovaTUI.CSS
+    assert "width: 88;" in OpenNovaTUI.CSS
 
 
 def test_tui_workbench_tab_bindings_include_escape_sequence_aliases():
