@@ -1061,6 +1061,62 @@ def test_agent_runtime_execute_approved_plan_continues_after_each_step_completio
     ]
 
 
+def test_agent_runtime_execute_approved_plan_resumes_failed_and_running_steps():
+    """Interrupted plans should requeue incomplete steps instead of falling out of plan execution."""
+    from opennova.runtime.state import Plan, PlanStatus, PlanStep, StepStatus
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    TodoWriteTool.replace_todos([])
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.show_thinking = True
+    plan = Plan(
+        task="Resume interrupted plan",
+        steps=[
+            PlanStep(id="step_1", description="Already done", status=StepStatus.DONE),
+            PlanStep(id="step_2", description="Retry failed", status=StepStatus.FAILED, error="old failure"),
+            PlanStep(id="step_3", description="Retry running", status=StepStatus.RUNNING),
+            PlanStep(id="step_4", description="Do pending"),
+        ],
+        status=PlanStatus.FAILED,
+    )
+    runtime.state.set_plan(plan)
+    runtime.state.set_plan_file_path("saved-plan.md")
+    runtime.state.mark_plan_failed()
+    runtime._emit = lambda *args, **kwargs: None
+    runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
+    runtime._persist_current_plan = lambda: None
+    runtime._sync_plan_progress = AgentRuntime._sync_plan_progress.__get__(runtime, AgentRuntime)
+
+    captured_steps: list[str] = []
+
+    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+        if "Current step (step_2): Retry failed" in task:
+            captured_steps.append("step_2")
+        elif "Current step (step_3): Retry running" in task:
+            captured_steps.append("step_3")
+        elif "Current step (step_4): Do pending" in task:
+            captured_steps.append("step_4")
+        runtime.state.last_result = f"done {captured_steps[-1]}"
+        return runtime.state.last_result
+
+    runtime._run_act_mode = fake_run_act_mode
+    runtime._should_continue_on_failure = lambda: False
+
+    result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
+
+    assert result == "done step_4"
+    assert captured_steps == ["step_2", "step_3", "step_4"]
+    assert runtime.state.current_plan is None
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.NONE
+    assert TodoWriteTool.current_todos() == [
+        {"id": "step_1", "content": "Already done", "status": "done"},
+        {"id": "step_2", "content": "Retry failed", "status": "done"},
+        {"id": "step_3", "content": "Retry running", "status": "done"},
+        {"id": "step_4", "content": "Do pending", "status": "done"},
+    ]
+
+
 def test_agent_runtime_execute_approved_plan_requires_approval():
     """Plan execution should refuse to start before approval."""
     from opennova.runtime.state import Plan, PlanStep

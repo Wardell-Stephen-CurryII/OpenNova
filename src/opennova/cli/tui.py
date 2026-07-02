@@ -103,7 +103,7 @@ def _has_pending_plan_decision(state: Any) -> bool:
     if not getattr(state, "current_plan", None):
         return False
     approval_status = getattr(getattr(state, "plan_approval_status", None), "value", "")
-    return approval_status in {"awaiting_approval", "approved"}
+    return approval_status in {"awaiting_approval", "approved", "executing", "failed"}
 
 
 def _format_tool_execution(tool_name: str, detail: str) -> str:

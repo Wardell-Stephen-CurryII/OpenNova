@@ -1712,6 +1712,60 @@ def test_tui_execute_task_pending_plan_dialog_execute_runs_plan():
     assert app._workbench_tab == "plan"
 
 
+def test_tui_execute_task_failed_plan_dialog_executes_plan_instead_of_act_mode():
+    from opennova.cli.tui import OpenNovaTUI
+    from opennova.runtime.state import AgentState, Plan, PlanStep
+
+    class Agent:
+        def __init__(self):
+            self.state = AgentState()
+            self.state.set_plan(Plan(task="Interrupted plan", steps=[PlanStep("step_1", "Do it")]))
+            self.state.mark_plan_failed()
+            self.executed = 0
+            self.act_calls = 0
+
+        async def execute_approved_plan(self):
+            self.executed += 1
+            return "resumed plan"
+
+        def _run_act_mode(self, **kwargs):
+            self.act_calls += 1
+
+            async def _result():
+                return "act mode"
+
+            return _result()
+
+    agent = Agent()
+    calls: list[Any] = []
+
+    async def fake_run_agent_task(self, coro):
+        calls.append(coro)
+
+    async def fake_plan_decision(self, task):
+        return "execute"
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "agent": agent,
+            "_run_agent_task": fake_run_agent_task,
+            "_ask_plan_decision_dialog": fake_plan_decision,
+            "_workbench_tab": "tools",
+            "_refresh_workbench_panel": lambda self: None,
+        },
+    )()
+
+    asyncio.run(OpenNovaTUI._execute_task(app, "继续完成剩下的计划"))
+    result = asyncio.run(calls[0])
+
+    assert result == "resumed plan"
+    assert agent.executed == 1
+    assert agent.act_calls == 0
+    assert app._workbench_tab == "plan"
+
+
 def test_tui_execute_task_pending_plan_dialog_discard_clears_plan_and_todos():
     from opennova.cli.tui import OpenNovaTUI
     from opennova.runtime.state import AgentState, Plan, PlanStep

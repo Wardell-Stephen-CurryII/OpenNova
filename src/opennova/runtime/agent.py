@@ -36,6 +36,7 @@ from opennova.runtime.state import (
     PlanApprovalStatus,
     PlanStatus,
     PlanStep,
+    StepStatus,
 )
 from opennova.tasks import TaskManager
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
@@ -554,11 +555,17 @@ class AgentRuntime:
         if self.state.plan_approval_status not in {
             PlanApprovalStatus.APPROVED,
             PlanApprovalStatus.EXECUTING,
+            PlanApprovalStatus.FAILED,
         }:
             return "Plan approval required before execution"
 
+        self._prepare_plan_for_execution(plan)
         self.state.mark_plan_executing()
-        plan.status = PlanStatus.EXECUTING
+        plan.status = (
+            PlanStatus.DONE
+            if all(step.status == StepStatus.DONE for step in plan.steps)
+            else PlanStatus.EXECUTING
+        )
         self._sync_plan_progress(plan)
         self._emit_plan_update(plan)
         self._persist_current_plan()
@@ -619,6 +626,13 @@ class AgentRuntime:
             self._emit_plan_update(plan)
 
         return final_result
+
+    def _prepare_plan_for_execution(self, plan: Plan) -> None:
+        """Requeue interrupted or failed steps before executing an existing plan."""
+        for step in plan.steps:
+            if step.status in {StepStatus.RUNNING, StepStatus.FAILED}:
+                step.status = StepStatus.PENDING
+                step.error = None
 
     def _is_plan_execution_approval(self, text: str) -> bool:
         """Return whether user text should approve and execute the current plan."""
