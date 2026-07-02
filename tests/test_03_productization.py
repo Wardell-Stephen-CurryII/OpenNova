@@ -1965,6 +1965,89 @@ async def test_tui_input_submission_launches_resume_picker_in_background():
     assert ("user", "/resume") in log.writes
 
 
+def test_messages_log_only_auto_scrolls_when_already_at_bottom(monkeypatch):
+    from textual.widgets import RichLog
+
+    from opennova.cli.tui import _MessagesLog
+
+    calls: list[dict[str, Any]] = []
+    log = _MessagesLog()
+
+    def fake_write(self, text, *args, **kwargs):
+        calls.append(dict(kwargs))
+        return self
+
+    monkeypatch.setattr(RichLog, "write", fake_write)
+
+    monkeypatch.setattr(log, "_is_following_tail", lambda: False)
+    log.write("while user reads history")
+
+    monkeypatch.setattr(log, "_is_following_tail", lambda: True)
+    log.write("while user is at bottom")
+
+    assert calls[0]["scroll_end"] is False
+    assert calls[1]["scroll_end"] is True
+
+
+@pytest.mark.asyncio
+async def test_tui_input_submission_does_not_force_scroll_to_bottom_after_echo():
+    from opennova.cli.tui import OpenNovaTUI
+
+    class Event:
+        value = "hello"
+
+        def stop(self) -> None:
+            return None
+
+    class InputWidget:
+        value = "hello"
+
+    class Log:
+        def __init__(self) -> None:
+            self.writes = []
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def scroll_end(self, animate=False):
+            raise AssertionError("user-submitted echo should not force scroll_end")
+
+    input_widget = InputWidget()
+    log = Log()
+    launched = []
+
+    def launch_task(self, coro) -> None:
+        launched.append(coro)
+        coro.close()
+
+    async def fake_execute_task(self, text):
+        return None
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_SYNC_COMMANDS": OpenNovaTUI._SYNC_COMMANDS,
+            "_interaction_mode": False,
+            "_interaction_future": None,
+            "_last_submitted_text": "",
+            "_last_submitted_time": 0.0,
+            "_clear_suggestions": lambda self: None,
+            "_add_to_history": lambda self, text: None,
+            "_write_user_message": lambda self, log, text: log.write(("user", text)),
+            "_is_agent_running": lambda self: False,
+            "_launch_agent_task": launch_task,
+            "_execute_task": fake_execute_task,
+            "query_one": lambda self, selector, *args: input_widget if selector == "#input" else log,
+        },
+    )()
+
+    await OpenNovaTUI.on_input_submitted(app, Event())
+
+    assert launched
+    assert log.writes == [("user", "hello")]
+
+
 def test_tui_startup_continue_restores_newest_session():
     from opennova.cli.tui import OpenNovaTUI
     from opennova.session import SessionMeta

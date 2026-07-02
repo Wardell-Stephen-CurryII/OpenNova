@@ -135,7 +135,16 @@ class _MessagesLog(RichLog):
         super().__init__(**kwargs)
         self._plain_lines: list[str] = []
 
+    def _is_following_tail(self) -> bool:
+        """Return whether new messages should keep the log pinned to the bottom."""
+        try:
+            return bool(self.is_vertical_scroll_end)
+        except Exception:
+            return True
+
     def write(self, text: Any, *args: Any, **kwargs: Any) -> None:
+        if len(args) < 4 and kwargs.get("scroll_end") is None:
+            kwargs["scroll_end"] = self._is_following_tail()
         super().write(text, *args, **kwargs)
         self._plain_lines.append(_to_plain(text))
 
@@ -1060,7 +1069,6 @@ class OpenNovaTUI(App):
 
         log = self.query_one("#messages")
         self._write_user_message(log, text)
-        log.scroll_end(animate=False)
 
         # Fast commands: handle synchronously (they return quickly).
         if text.startswith("/"):
@@ -1693,7 +1701,6 @@ class OpenNovaTUI(App):
             self._set_status("")
             if isinstance(result, str) and result:
                 self._write_assistant_message(log, result)
-                log.scroll_end(animate=False)
             return result
 
         except asyncio.CancelledError:
