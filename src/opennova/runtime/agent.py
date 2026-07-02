@@ -781,14 +781,31 @@ class AgentRuntime:
         canonical_lines = content.splitlines()
         current_step: PlanStep | None = None
         saw_canonical = False
+        in_steps_section = False
+
+        def append_current_step() -> None:
+            nonlocal current_step
+            if current_step is not None and current_step.description.strip():
+                steps.append(current_step)
+            current_step = None
+
         for raw_line in canonical_lines:
             line = raw_line.strip()
+            section_match = re.match(r"^##\s+(.+)$", line)
+            if section_match:
+                in_steps_section = section_match.group(1).strip().lower() == "steps"
+                if not in_steps_section:
+                    append_current_step()
+                continue
+            if not in_steps_section:
+                continue
             heading_match = re.match(r"^###\s+(.+)$", line)
             if heading_match:
-                saw_canonical = True
-                if current_step is not None:
-                    steps.append(current_step)
-                current_step = PlanStep(id=heading_match.group(1).strip(), description="")
+                heading = heading_match.group(1).strip()
+                if self._is_canonical_plan_step_heading(heading):
+                    saw_canonical = True
+                    append_current_step()
+                    current_step = PlanStep(id=heading, description="")
                 continue
             if current_step is None:
                 continue
@@ -803,8 +820,7 @@ class AgentRuntime:
                 current_step.result_summary = line.split(":", 1)[1].strip()
             elif line.startswith("- Error:"):
                 current_step.error = line.split(":", 1)[1].strip()
-        if current_step is not None:
-            steps.append(current_step)
+        append_current_step()
 
         if not saw_canonical:
             steps = self._load_legacy_plan_steps(content)
@@ -812,6 +828,15 @@ class AgentRuntime:
         plan = Plan(task=task or "Saved plan", steps=steps)
         plan._update_plan_status()
         return plan
+
+    @staticmethod
+    def _is_canonical_plan_step_heading(heading: str) -> bool:
+        """Return whether a level-three heading is a canonical plan step id."""
+        normalized = heading.strip()
+        if not re.match(r"^[A-Za-z0-9_.-]+$", normalized):
+            return False
+        lowered = normalized.lower()
+        return lowered.startswith("step") or bool(re.search(r"\d", normalized))
 
     def _load_legacy_plan_steps(self, content: str) -> list[PlanStep]:
         """Parse the original numbered-list saved plan format."""
@@ -879,7 +904,8 @@ class AgentRuntime:
                 status = "done"
             elif step.status.value == "failed":
                 status = "cancelled"
-            todos.append({"id": step.id, "content": step.description, "status": status})
+            content = step.description.strip() or step.id
+            todos.append({"id": step.id, "content": content, "status": status})
         TodoWriteTool.replace_todos(todos)
 
     async def _confirm_plan(self, plan: Plan) -> bool:

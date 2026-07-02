@@ -808,6 +808,65 @@ def test_agent_runtime_plan_markdown_round_trip_preserves_status_fields(tmp_path
     assert loaded.steps[1].error == "boom"
 
 
+def test_agent_runtime_load_plan_ignores_non_step_markdown_headings():
+    from opennova.runtime.agent import AgentRuntime
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    content = """# Saved Plan: Food animation
+
+- Task: Plan the development
+
+## Summary
+
+### What the document covers
+
+This is documentation content, not a plan step.
+
+## Steps
+
+### step_1
+- Description: Define food animation requirements
+- Status: `done`
+- Result: Requirements documented.
+### What the document covers
+This nested result heading should not become a step.
+
+### step_2
+- Description: Implement the animation controller
+- Status: `pending`
+"""
+
+    plan = AgentRuntime._load_plan_from_markdown(runtime, content)
+    runtime._sync_plan_progress = AgentRuntime._sync_plan_progress.__get__(runtime, AgentRuntime)
+
+    assert [(step.id, step.description) for step in plan.steps] == [
+        ("step_1", "Define food animation requirements"),
+        ("step_2", "Implement the animation controller"),
+    ]
+
+    runtime._sync_plan_progress(plan)
+
+    assert TodoWriteTool.current_todos() == [
+        {"id": "step_1", "content": "Define food animation requirements", "status": "done"},
+        {"id": "step_2", "content": "Implement the animation controller", "status": "pending"},
+    ]
+
+
+def test_agent_runtime_sync_plan_progress_falls_back_for_empty_descriptions():
+    from opennova.runtime.state import Plan, PlanStep
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    plan = Plan(task="Recover todos", steps=[PlanStep(id="step_1", description="")])
+
+    AgentRuntime._sync_plan_progress(runtime, plan)
+
+    assert TodoWriteTool.current_todos() == [
+        {"id": "step_1", "content": "step_1", "status": "pending"},
+    ]
+
+
 def test_agent_runtime_execute_approved_plan_runs_steps():
     """Approved plans should execute only after explicit approval."""
     from opennova.runtime.state import Plan, PlanStep
