@@ -829,6 +829,8 @@ This is documentation content, not a plan step.
 - Description: Define food animation requirements
 - Status: `done`
 - Result: Requirements documented.
+## Step 1 Complete
+This result heading should not end the steps section.
 ### What the document covers
 This nested result heading should not become a step.
 
@@ -853,6 +855,33 @@ This nested result heading should not become a step.
     ]
 
 
+def test_agent_runtime_load_plan_reindexes_saved_step_ids():
+    from opennova.runtime.agent import AgentRuntime
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    content = """# Saved Plan: Jumping ids
+
+## Steps
+
+### step_1
+- Description: First
+- Status: `done`
+
+### step_3
+- Description: Second
+- Status: `pending`
+
+### step_6
+- Description: Third
+- Status: `pending`
+"""
+
+    plan = AgentRuntime._load_plan_from_markdown(runtime, content)
+
+    assert [step.id for step in plan.steps] == ["step_1", "step_2", "step_3"]
+    assert [step.description for step in plan.steps] == ["First", "Second", "Third"]
+
+
 def test_agent_runtime_sync_plan_progress_falls_back_for_empty_descriptions():
     from opennova.runtime.state import Plan, PlanStep
     from opennova.tools.todo_tools import TodoWriteTool
@@ -865,6 +894,29 @@ def test_agent_runtime_sync_plan_progress_falls_back_for_empty_descriptions():
     assert TodoWriteTool.current_todos() == [
         {"id": "step_1", "content": "step_1", "status": "pending"},
     ]
+
+
+def test_planner_optimize_plan_reindexes_steps_after_merging():
+    from opennova.planning.planner import Planner
+    from opennova.runtime.state import Plan, PlanStep
+
+    planner = Planner(llm=object())  # type: ignore[arg-type]
+    plan = Plan(
+        task="Build food animation",
+        steps=[
+            PlanStep(id="step_1", description="Design food items", tool_hint="docs"),
+            PlanStep(id="step_2", description="Document special behavior", tool_hint="docs"),
+            PlanStep(id="step_3", description="Create animation assets", tool_hint="art"),
+            PlanStep(id="step_6", description="Test all interactions", tool_hint="tests"),
+        ],
+    )
+
+    optimized = planner.optimize_plan(plan)
+
+    assert [step.id for step in optimized.steps] == ["step_1", "step_2", "step_3"]
+    assert optimized.steps[0].description == "Design food items; then document special behavior"
+    assert optimized.steps[1].description == "Create animation assets"
+    assert optimized.steps[2].description == "Test all interactions"
 
 
 def test_agent_runtime_execute_approved_plan_runs_steps():
@@ -1379,6 +1431,33 @@ def test_exit_plan_mode_tool_materializes_markdown_plan_into_runtime_state():
         {"id": "step_1", "content": "Inspect current plan flow", "status": "pending"},
         {"id": "step_2", "content": "Fix plan approval", "status": "pending"},
         {"id": "step_3", "content": "Verify todos", "status": "pending"},
+    ]
+
+
+def test_exit_plan_mode_tool_reindexes_structured_steps():
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    TodoWriteTool.replace_todos([])
+    state = AgentState()
+    state.set_mode("plan")
+    tool = ExitPlanModeTool(config={"state": state})
+
+    result = tool.execute(
+        task="Fix skipped steps",
+        steps=[
+            {"id": "step_1", "description": "Inspect the current plan"},
+            {"id": "step_3", "description": "Implement the fix"},
+            {"id": "step_6", "description": "Verify behavior"},
+        ],
+    )
+
+    assert result.success is True
+    assert state.current_plan is not None
+    assert [step.id for step in state.current_plan.steps] == ["step_1", "step_2", "step_3"]
+    assert TodoWriteTool.current_todos() == [
+        {"id": "step_1", "content": "Inspect the current plan", "status": "pending"},
+        {"id": "step_2", "content": "Implement the fix", "status": "pending"},
+        {"id": "step_3", "content": "Verify behavior", "status": "pending"},
     ]
 
 

@@ -9,12 +9,10 @@ Provides:
 """
 
 import json
-from typing import Any
 
+from opennova.planning.models import COMMON_TEMPLATES, PlanTemplate
 from opennova.providers.base import BaseLLMProvider, Message
-from opennova.runtime.state import Plan, PlanStep, PlanStatus
-from opennova.planning.models import PlanTemplate, PlanResult, COMMON_TEMPLATES
-
+from opennova.runtime.state import Plan, PlanStep
 
 TEMPLATE_PREFERRED_KEYWORDS = {
     "unit test",
@@ -177,7 +175,6 @@ class Planner:
         """
         json_str = response
 
-        json_match = None
         import re
 
         json_patterns = [
@@ -214,7 +211,7 @@ class Planner:
         return Plan(
             task=task_summary,
             steps=steps,
-        )
+        ).reindex_steps()
 
     def _create_fallback_plan(self, task: str) -> Plan:
         """
@@ -234,7 +231,7 @@ class Planner:
                     description=task,
                 )
             ],
-        )
+        ).reindex_steps()
 
     def optimize_plan(self, plan: Plan) -> Plan:
         """
@@ -247,7 +244,7 @@ class Planner:
             Optimized plan
         """
         if len(plan.steps) <= 3:
-            return plan
+            return plan.reindex_steps()
 
         optimized_steps = []
         merged = set()
@@ -278,7 +275,7 @@ class Planner:
 
             optimized_steps.append(current_step)
 
-        return Plan(task=plan.task, steps=optimized_steps)
+        return Plan(task=plan.task, steps=optimized_steps).reindex_steps()
 
     def get_next_step(self, plan: Plan) -> PlanStep | None:
         """

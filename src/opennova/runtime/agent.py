@@ -793,9 +793,8 @@ class AgentRuntime:
             line = raw_line.strip()
             section_match = re.match(r"^##\s+(.+)$", line)
             if section_match:
-                in_steps_section = section_match.group(1).strip().lower() == "steps"
-                if not in_steps_section:
-                    append_current_step()
+                if section_match.group(1).strip().lower() == "steps":
+                    in_steps_section = True
                 continue
             if not in_steps_section:
                 continue
@@ -825,7 +824,7 @@ class AgentRuntime:
         if not saw_canonical:
             steps = self._load_legacy_plan_steps(content)
 
-        plan = Plan(task=task or "Saved plan", steps=steps)
+        plan = Plan(task=task or "Saved plan", steps=steps).reindex_steps()
         plan._update_plan_status()
         return plan
 

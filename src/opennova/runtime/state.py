@@ -8,19 +8,19 @@ Defines the state data structures for tracking agent execution:
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
 
-class AgentMode(str, Enum):
+class AgentMode(StrEnum):
     """Agent operation modes."""
 
     PLAN = "plan"
     ACT = "act"
 
 
-class StepStatus(str, Enum):
+class StepStatus(StrEnum):
     """Status of a plan step."""
 
     PENDING = "pending"
@@ -30,7 +30,7 @@ class StepStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-class PlanStatus(str, Enum):
+class PlanStatus(StrEnum):
     """Overall plan status."""
 
     PLANNING = "planning"
@@ -39,7 +39,7 @@ class PlanStatus(str, Enum):
     FAILED = "failed"
 
 
-class PlanApprovalStatus(str, Enum):
+class PlanApprovalStatus(StrEnum):
     """Approval lifecycle for the current plan."""
 
     NONE = "none"
@@ -138,6 +138,12 @@ class Plan:
             "created_at": self.created_at.isoformat(),
         }
 
+    def reindex_steps(self) -> "Plan":
+        """Normalize top-level step ids to a stable contiguous step_N sequence."""
+        for index, step in enumerate(self.steps, start=1):
+            step.id = f"step_{index}"
+        return self
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Plan":
         """Create Plan from dictionary."""
@@ -157,7 +163,7 @@ class Plan:
             task=data["task"],
             steps=steps,
             status=PlanStatus(data.get("status", "planning")),
-        )
+        ).reindex_steps()
 
 
 @dataclass
@@ -229,6 +235,7 @@ class AgentState:
 
     def set_plan(self, plan: Plan) -> None:
         """Set the current plan."""
+        plan.reindex_steps()
         self.current_plan = plan
         self.mode = "plan"
         self.plan_approval_status = PlanApprovalStatus.DRAFT

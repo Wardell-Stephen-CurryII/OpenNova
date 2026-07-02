@@ -194,7 +194,7 @@ def _materialize_plan_from_args(
         parsed_steps = _parse_markdown_plan_steps(plan)
     if not parsed_steps:
         return None
-    return Plan(task=task.strip() or _infer_plan_task(plan) or "Approved plan", steps=parsed_steps)
+    return Plan(task=task.strip() or _infer_plan_task(plan) or "Approved plan", steps=parsed_steps).reindex_steps()
 
 
 def _parse_markdown_plan_steps(plan_text: str) -> list[PlanStep]:
