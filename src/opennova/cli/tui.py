@@ -76,6 +76,11 @@ _MAX_DIFF_LINES: dict[str, int] = {}
 
 _INPUT_PLACEHOLDER = "Ask OpenNova, or type / for commands..."
 _WORKING_PLACEHOLDER = "OpenNova is working... Ctrl+C to cancel"
+_MAC_OPTION_DIGIT_TABS = {
+    "¡": "tools",
+    "™": "plan",
+    "£": "todos",
+}
 
 # 2a2a2a 001a1a
 _USER_MESSAGE_STYLE = "bright_cyan on #001a1a"
@@ -396,6 +401,9 @@ class OpenNovaTUI(App):
         Binding("escape,1", "workbench_tools", "Tools tab", show=False),
         Binding("escape,2", "workbench_plan", "Plan tab", show=False),
         Binding("escape,3", "workbench_todos", "Todos tab", show=False),
+        Binding("¡", "workbench_tools", "Tools tab", show=False),
+        Binding("™", "workbench_plan", "Plan tab", show=False),
+        Binding("£", "workbench_todos", "Todos tab", show=False),
         Binding("alt+[", "workbench_previous_tab", "Previous tab", show=False),
         Binding("alt+]", "workbench_next_tab", "Next tab", show=False),
         Binding("escape,[", "workbench_previous_tab", "Previous tab", show=False),
@@ -959,6 +967,9 @@ class OpenNovaTUI(App):
     def on_input_changed(self, event: Input.Changed) -> None:
         """Show completion hints in real-time as the user types."""
         text = event.value
+        if self._handle_option_digit_shortcut(text):
+            self._clear_suggestions()
+            return
         if not text:
             self._clear_suggestions()
             return
@@ -968,6 +979,48 @@ class OpenNovaTUI(App):
             self._show_suggestions(matches, -1)
         else:
             self._clear_suggestions()
+
+    def on_key(self, event: Any) -> None:
+        """Handle macOS Option+digit shortcuts when no input widget owns the event."""
+        if not OpenNovaTUI._handle_option_digit_key(
+            self,
+            getattr(event, "key", None),
+            getattr(event, "character", None),
+        ):
+            return
+        with suppress(Exception):
+            event.prevent_default()
+        with suppress(Exception):
+            event.stop()
+
+    def _handle_option_digit_key(self, key: str | None, character: str | None = None) -> bool:
+        """Handle macOS Option+1/2/3 when Textual emits a key event instead of text."""
+        pressed = character if character in _MAC_OPTION_DIGIT_TABS else key
+        if pressed not in _MAC_OPTION_DIGIT_TABS:
+            return False
+
+        with suppress(Exception):
+            input_widget = self.query_one("#input", Input)
+            if pressed in input_widget.value and self._handle_option_digit_shortcut(input_widget.value):
+                return True
+
+        self._set_workbench_tab(_MAC_OPTION_DIGIT_TABS[pressed])
+        return True
+
+    def _handle_option_digit_shortcut(self, text: str) -> bool:
+        """Handle macOS Option+1/2/3 when it arrives as text input."""
+        pressed = [char for char in text if char in _MAC_OPTION_DIGIT_TABS]
+        if not pressed:
+            return False
+
+        tab = _MAC_OPTION_DIGIT_TABS[pressed[-1]]
+        cleaned = "".join(char for char in text if char not in _MAC_OPTION_DIGIT_TABS)
+        with suppress(Exception):
+            input_widget = self.query_one("#input", Input)
+            input_widget.value = cleaned
+            input_widget.cursor_position = min(getattr(input_widget, "cursor_position", len(cleaned)), len(cleaned))
+        self._set_workbench_tab(tab)
+        return True
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()

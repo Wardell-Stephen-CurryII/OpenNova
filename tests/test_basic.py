@@ -1011,6 +1011,55 @@ def test_agent_runtime_execute_approved_plan_refreshes_plan_from_file_and_update
     ]
 
 
+def test_agent_runtime_execute_approved_plan_continues_after_each_step_completion():
+    """Per-step act completion should not stop the outer approved-plan loop."""
+    from opennova.runtime.state import Plan, PlanStep
+    from opennova.tools.todo_tools import TodoWriteTool
+
+    TodoWriteTool.replace_todos([])
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.state = AgentState()
+    runtime.show_thinking = True
+    runtime.state.set_plan(
+        Plan(
+            task="Execute multi-step plan",
+            steps=[
+                PlanStep(id="step_1", description="First step"),
+                PlanStep(id="step_2", description="Second step"),
+                PlanStep(id="step_3", description="Third step"),
+            ],
+        )
+    )
+    runtime.state.set_plan_file_path("saved-plan.md")
+    runtime.state.mark_plan_awaiting_approval()
+    runtime.state.mark_plan_approved()
+    runtime._emit = lambda *args, **kwargs: None
+    runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
+    runtime._persist_current_plan = lambda: None
+    runtime._sync_plan_progress = AgentRuntime._sync_plan_progress.__get__(runtime, AgentRuntime)
+
+    captured_tasks: list[str] = []
+
+    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+        captured_tasks.append(task)
+        runtime.state.is_complete = True
+        runtime.state.last_result = f"done {len(captured_tasks)}"
+        return runtime.state.last_result
+
+    runtime._run_act_mode = fake_run_act_mode
+    runtime._should_continue_on_failure = lambda: False
+
+    result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
+
+    assert result == "done 3"
+    assert len(captured_tasks) == 3
+    assert TodoWriteTool.current_todos() == [
+        {"id": "step_1", "content": "First step", "status": "done"},
+        {"id": "step_2", "content": "Second step", "status": "done"},
+        {"id": "step_3", "content": "Third step", "status": "done"},
+    ]
+
+
 def test_agent_runtime_execute_approved_plan_requires_approval():
     """Plan execution should refuse to start before approval."""
     from opennova.runtime.state import Plan, PlanStep

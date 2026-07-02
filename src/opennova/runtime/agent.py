@@ -564,9 +564,6 @@ class AgentRuntime:
         self._persist_current_plan()
 
         while True:
-            if self.state.is_complete:
-                break
-
             refreshed_plan = self._refresh_plan_from_file()
             if refreshed_plan is not None:
                 plan = refreshed_plan

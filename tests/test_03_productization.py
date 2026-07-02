@@ -1225,6 +1225,99 @@ def test_tui_workbench_tab_bindings_include_escape_sequence_aliases():
     assert ("escape,1", "workbench_tools") in bindings
     assert ("escape,2", "workbench_plan") in bindings
     assert ("escape,3", "workbench_todos") in bindings
+    assert ("¡", "workbench_tools") in bindings
+    assert ("™", "workbench_plan") in bindings
+    assert ("£", "workbench_todos") in bindings
+
+
+def test_tui_mac_option_digit_characters_switch_workbench_tabs_and_clear_input():
+    from opennova.cli.tui import OpenNovaTUI
+
+    class InputWidget:
+        value = "hello ¡"
+        cursor_position = 7
+
+    input_widget = InputWidget()
+    refreshes: list[str] = []
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_workbench_tab": "tools",
+            "_set_workbench_tab": lambda self, tab: (
+                setattr(self, "_workbench_tab", tab),
+                refreshes.append(tab),
+            ),
+            "query_one": lambda self, selector, *args: input_widget,
+        },
+    )()
+
+    handled = OpenNovaTUI._handle_option_digit_shortcut(app, input_widget.value)
+
+    assert handled is True
+    assert app._workbench_tab == "tools"
+    assert input_widget.value == "hello "
+    assert input_widget.cursor_position == len("hello ")
+
+    input_widget.value = "™"
+    handled = OpenNovaTUI._handle_option_digit_shortcut(app, input_widget.value)
+
+    assert handled is True
+    assert app._workbench_tab == "plan"
+    assert input_widget.value == ""
+
+    input_widget.value = "£"
+    handled = OpenNovaTUI._handle_option_digit_shortcut(app, input_widget.value)
+
+    assert handled is True
+    assert app._workbench_tab == "todos"
+    assert input_widget.value == ""
+    assert refreshes == ["tools", "plan", "todos"]
+
+
+def test_tui_mac_option_digit_key_events_switch_workbench_tabs_outside_input():
+    from opennova.cli.tui import OpenNovaTUI
+
+    refreshes: list[str] = []
+
+    class KeyEvent:
+        def __init__(self, key: str, character: str | None = None):
+            self.key = key
+            self.character = character
+            self.prevented = False
+            self.stopped = False
+
+        def prevent_default(self):
+            self.prevented = True
+
+        def stop(self):
+            self.stopped = True
+
+    app = type(
+        "FakeTUI",
+        (),
+        {
+            "_workbench_tab": "tools",
+            "_set_workbench_tab": lambda self, tab: (
+                setattr(self, "_workbench_tab", tab),
+                refreshes.append(tab),
+            ),
+            "query_one": lambda self, selector, *args: (_ for _ in ()).throw(LookupError()),
+        },
+    )()
+
+    events = [
+        KeyEvent("¡", "¡"),
+        KeyEvent("unknown", "™"),
+        KeyEvent("£", None),
+    ]
+
+    for event in events:
+        OpenNovaTUI.on_key(app, event)
+
+    assert refreshes == ["tools", "plan", "todos"]
+    assert [event.prevented for event in events] == [True, True, True]
+    assert [event.stopped for event in events] == [True, True, True]
 
 
 def test_tui_workbench_tab_actions_switch_tabs_and_refresh():
