@@ -955,10 +955,10 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
     assert "Current step (step_1): Do thing" in captured_tasks[0][0]
     assert "Plan file: saved-plan.md" in captured_tasks[0][0]
     assert "Complete plan snapshot:" in captured_tasks[0][0]
-    assert runtime.state.plan_approval_status == PlanApprovalStatus.NONE
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.COMPLETED
     assert runtime.state.mode == "act"
-    assert runtime.state.current_plan is None
-    assert runtime.state.plan_file_path is None
+    assert runtime.state.current_plan is not None
+    assert runtime.state.plan_file_path is not None
     assert emitted_thoughts == ["Executing plan step step_1: Do thing"]
 
 
@@ -1002,8 +1002,8 @@ def test_agent_runtime_execute_approved_plan_skips_completed_steps():
     assert len(captured_tasks) == 1
     assert "Current step (step_2): Do next" in captured_tasks[0][0]
     assert emitted_thoughts == ["Executing plan step step_2: Do next"]
-    assert runtime.state.current_plan is None
-    assert runtime.state.plan_approval_status == PlanApprovalStatus.NONE
+    assert runtime.state.current_plan is not None
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.COMPLETED
 
 
 def test_agent_runtime_execute_approved_plan_marks_failures_for_inspection():
@@ -1218,8 +1218,8 @@ def test_agent_runtime_execute_approved_plan_resumes_failed_and_running_steps():
 
     assert result == "done step_4"
     assert captured_steps == ["step_2", "step_3", "step_4"]
-    assert runtime.state.current_plan is None
-    assert runtime.state.plan_approval_status == PlanApprovalStatus.NONE
+    assert runtime.state.current_plan is not None
+    assert runtime.state.plan_approval_status == PlanApprovalStatus.COMPLETED
     assert TodoWriteTool.current_todos() == [
         {"id": "step_1", "content": "Already done", "status": "done"},
         {"id": "step_2", "content": "Retry failed", "status": "done"},

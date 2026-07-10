@@ -1554,7 +1554,7 @@ def test_tui_runtime_plan_callback_writes_initial_plan_during_plan_mode():
     assert "Create buttons" in text
 
 
-def test_tui_workbench_keeps_last_plan_snapshot_after_runtime_plan_clears():
+def test_tui_workbench_renders_completed_runtime_plan_without_snapshot_fallback():
     from rich.console import Console
 
     from opennova.cli.tool_cards import ToolCardStore
@@ -1607,10 +1607,10 @@ def test_tui_workbench_keeps_last_plan_snapshot_after_runtime_plan_clears():
         },
     )()
 
+    plan = Plan(task="Add menu screen", steps=[PlanStep("step_1", "Create buttons")])
+    app.agent.state.set_plan(plan)
     OpenNovaTUI._register_plan_workbench_callback(app)
-    app.agent.callbacks["plan"](
-        Plan(task="Add menu screen", steps=[PlanStep("step_1", "Create buttons")])
-    )
+    app.agent.callbacks["plan"](plan)
 
     console = Console(no_color=True, force_terminal=False, width=120, record=True)
     for renderable in panel_log.writes:

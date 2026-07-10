@@ -447,6 +447,11 @@ class OpenNovaTUI(App):
         self._workbench_tab: WorkbenchTab = "tools"
         self._last_plan_snapshot: PlanWorkbenchSnapshot | None = None
         self._last_plan_chat_signature: tuple[Any, ...] | None = None
+        self._state_unsubscribe = None
+        self._runtime_unsubscribers: list[Any] = []
+        self._callbacks_registered = False
+        self._plan_callback_registered = False
+        self._pending_workbench_revision = -1
         self._automation_daemon = None
         self._startup_resume_mode = startup_resume_mode
         self._replaying_transcript = False
@@ -484,7 +489,44 @@ class OpenNovaTUI(App):
     def on_mount(self) -> None:
         self._set_tool_panel_visible(False)
         self._load_history()
+        self._subscribe_runtime_state()
         self.call_after_refresh(self._after_mount)
+
+    def on_unmount(self) -> None:
+        if callable(self._state_unsubscribe):
+            self._state_unsubscribe()
+        for unsubscribe in self._runtime_unsubscribers:
+            if callable(unsubscribe):
+                unsubscribe()
+        self._runtime_unsubscribers.clear()
+
+    def _subscribe_runtime_state(self) -> None:
+        """Subscribe once to the workbench-relevant runtime state projection."""
+        state_store = getattr(self.agent, "state_store", None)
+        if state_store is None or callable(self._state_unsubscribe):
+            return
+
+        def selector(snapshot):
+            return (
+                snapshot.run.phase,
+                snapshot.plan.revision,
+                snapshot.todos,
+            )
+
+        def on_state_changed(selected, event) -> None:
+            revision = int(event.revision)
+            if revision <= self._pending_workbench_revision:
+                return
+            self._pending_workbench_revision = revision
+
+            def refresh() -> None:
+                if self._pending_workbench_revision != revision:
+                    return
+                self._refresh_workbench_panel()
+
+            self.call_after_refresh(refresh)
+
+        self._state_unsubscribe = state_store.subscribe(selector, on_state_changed)
 
     def _after_mount(self) -> None:
         if self._startup_resume_mode:
@@ -1508,7 +1550,7 @@ class OpenNovaTUI(App):
         with suppress(Exception):
             self._refresh_workbench_panel()
 
-        todos = TodoWriteTool.current_todos()
+        todos = TodoWriteTool.current_todos(getattr(self.agent, "state_store", None))
         if not todos:
             task = getattr(self.agent.state, "current_task", "") or "(none)"
             log.write(f"[cyan]Current task:[/cyan] {task}\n[yellow]No todos recorded.[/yellow]")
@@ -1576,6 +1618,9 @@ class OpenNovaTUI(App):
 
     def _register_plan_workbench_callback(self, *, write_chat: bool | None = True) -> None:
         """Register the plan callback that mirrors plan state into the workbench."""
+        if getattr(self, "_plan_callback_registered", False):
+            return
+        self._plan_callback_registered = True
 
         def on_plan(plan, plan_file_path=None):
             try:
@@ -1618,7 +1663,13 @@ class OpenNovaTUI(App):
             except Exception:
                 pass
 
-        self.agent.register_callback("plan", on_plan)
+        unsubscribe = self.agent.register_callback("plan", on_plan)
+        if callable(unsubscribe):
+            unsubscribers = getattr(self, "_runtime_unsubscribers", None)
+            if unsubscribers is None:
+                unsubscribers = []
+                self._runtime_unsubscribers = unsubscribers
+            unsubscribers.append(unsubscribe)
 
     def _should_write_plan_to_chat(self) -> bool:
         """Return whether a plan update is the initial reviewable planning output."""
@@ -1777,7 +1828,7 @@ class OpenNovaTUI(App):
         from opennova.tools.todo_tools import TodoWriteTool
 
         self.agent.state.clear_plan_state()
-        TodoWriteTool.replace_todos([])
+        TodoWriteTool.replace_todos([], getattr(self.agent, "state_store", None))
         self._last_plan_snapshot = None
         self._last_plan_chat_signature = None
         self._workbench_tab = "plan"
@@ -1806,6 +1857,9 @@ class OpenNovaTUI(App):
         )
 
     def _register_callbacks(self) -> None:
+        if getattr(self, "_callbacks_registered", False):
+            return
+        self._callbacks_registered = True
         _current_tool: dict[str, str] = {"name": ""}
         _canonical_tools: dict[str, bool] = {"seen": False}
         OpenNovaTUI._register_plan_workbench_callback(self, write_chat=None)
@@ -1926,11 +1980,20 @@ class OpenNovaTUI(App):
         def on_stream(chunk: StreamChunk) -> None:
             return None
 
-        self.agent.register_callback("thought", on_thought)
-        self.agent.register_callback("action", on_action)
-        self.agent.register_callback("result", on_result)
-        self.agent.register_callback("stream", on_stream)
-        self.agent.register_callback("tool_event", on_tool_event)
+        for event_name, callback in (
+            ("thought", on_thought),
+            ("action", on_action),
+            ("result", on_result),
+            ("stream", on_stream),
+            ("tool_event", on_tool_event),
+        ):
+            unsubscribe = self.agent.register_callback(event_name, callback)
+            if callable(unsubscribe):
+                unsubscribers = getattr(self, "_runtime_unsubscribers", None)
+                if unsubscribers is None:
+                    unsubscribers = []
+                    self._runtime_unsubscribers = unsubscribers
+                unsubscribers.append(unsubscribe)
 
     # ── interaction ──────────────────────────────────────────────
 

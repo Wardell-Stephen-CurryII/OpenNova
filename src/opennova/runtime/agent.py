@@ -11,6 +11,8 @@ Manages the agent lifecycle:
 """
 
 import copy
+import hashlib
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -28,6 +30,7 @@ from opennova.planning.planner import Planner
 from opennova.plugins import PluginManager
 from opennova.providers.base import Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
+from opennova.runtime.event_bus import RuntimeEventBus
 from opennova.runtime.events import ToolEvent
 from opennova.runtime.loop import ReActLoop
 from opennova.runtime.state import (
@@ -38,8 +41,11 @@ from opennova.runtime.state import (
     PlanStep,
     StepStatus,
 )
+from opennova.runtime.store import RuntimeAction, RuntimeStateStore, StateChanged
 from opennova.tasks import TaskManager
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class AgentRuntime:
@@ -114,9 +120,14 @@ class AgentRuntime:
         self.session_manager = SessionManager(project_path=os.getcwd())
         self.session_manager.start_session()
         self.session_transcript: list[dict[str, Any]] = []
+        self.state_store = RuntimeStateStore(
+            self.state,
+            session_id=str(self.session_manager.session_id or ""),
+        )
+        self._state_persistence_ready = False
 
         self.loop: ReActLoop | None = None
-        self._callbacks: dict[str, Callable] = {}
+        self.events = RuntimeEventBus()
         self.tool_events: list[dict[str, Any]] = []
         self.planner = Planner(self.llm)
 
@@ -166,6 +177,18 @@ class AgentRuntime:
 
         if enable_mcp:
             self._init_mcp()
+
+        self._state_persistence_ready = True
+        self.state_store.subscribe(
+            lambda snapshot: snapshot.revision,
+            self._on_runtime_state_changed,
+        )
+
+    def _on_runtime_state_changed(self, revision: int, event: StateChanged) -> None:
+        """Fan out state changes and persist lifecycle boundaries."""
+        self._emit("state_changed", self.state_store.get_state(), event)
+        if event.critical and getattr(self, "_state_persistence_ready", False):
+            self._save_session_messages()
 
     def _register_builtin_tools(self) -> None:
         """Register all built-in tools."""
@@ -260,7 +283,7 @@ class AgentRuntime:
         self.tool_registry.register(TaskUpdateTool())
         self.tool_registry.register(TaskStopTool())
         self.tool_registry.register(TaskOutputTool())
-        self.tool_registry.register(TodoWriteTool())
+        self.tool_registry.register(TodoWriteTool(config={"state_store": self.state_store}))
 
         # Agent tools (Claude Code-style)
         self.tool_registry.register(AgentTool(config={"runtime": self}))
@@ -398,7 +421,7 @@ class AgentRuntime:
         """
         self.tool_registry.register(tool)
 
-    def register_callback(self, event: str, callback: Callable) -> None:
+    def register_callback(self, event: str, callback: Callable) -> Callable[[], None]:
         """
         Register an event callback.
 
@@ -406,12 +429,30 @@ class AgentRuntime:
             event: Event name ('thought', 'action', 'result', 'stream')
             callback: Callback function
         """
-        self._callbacks[event] = callback
+        event_bus = getattr(self, "events", None)
+        if event_bus is not None:
+            return event_bus.subscribe(event, callback)
+        callbacks = getattr(self, "_callbacks", None)
+        if callbacks is None:
+            callbacks = {}
+            self._callbacks = callbacks
+        callbacks[event] = callback
+
+        def unsubscribe() -> None:
+            if callbacks.get(event) is callback:
+                callbacks.pop(event, None)
+
+        return unsubscribe
 
     def _emit(self, event: str, *args, **kwargs) -> None:
         """Emit an event to registered callback."""
-        if event in self._callbacks:
-            self._callbacks[event](*args, **kwargs)
+        event_bus = getattr(self, "events", None)
+        if event_bus is not None:
+            event_bus.publish(event, *args, **kwargs)
+            return
+        callback = getattr(self, "_callbacks", {}).get(event)
+        if callback:
+            callback(*args, **kwargs)
 
     async def run(
         self,
@@ -456,6 +497,7 @@ class AgentRuntime:
         """
         plan = await self._create_plan(task)
         result = self._prepare_plan_for_approval(plan)
+        self.state.finish_run(result, success=True, run_id=self.state.run_id)
         self._save_session_messages()
         return result
 
@@ -463,7 +505,7 @@ class AgentRuntime:
         """Persist plan state and return an approval-gated response."""
         self.state.set_plan(plan)
         plan_file_path = self._save_plan_to_project(plan)
-        self.state.set_plan_file_path(plan_file_path)
+        self.state.set_plan_file_path(plan_file_path, self._hash_file(plan_file_path))
         self.state.mark_plan_awaiting_approval()
         self._sync_plan_progress(plan)
 
@@ -561,11 +603,7 @@ class AgentRuntime:
 
         self._prepare_plan_for_execution(plan)
         self.state.mark_plan_executing()
-        plan.status = (
-            PlanStatus.DONE
-            if all(step.status == StepStatus.DONE for step in plan.steps)
-            else PlanStatus.EXECUTING
-        )
+        plan = self.state.current_plan or plan
         self._sync_plan_progress(plan)
         self._emit_plan_update(plan)
         self._persist_current_plan()
@@ -579,7 +617,10 @@ class AgentRuntime:
             if not step:
                 break
 
-            plan.mark_step_running(step.id)
+            self.state.mark_step_running(step.id)
+            plan = self.state.current_plan or plan
+            step = next(item for item in plan.steps if item.id == step.id)
+            step_plan_revision = self.state.plan_revision
             self._sync_plan_progress(plan, active_step_id=step.id)
             self._emit_plan_update(plan)
             self._persist_current_plan()
@@ -592,8 +633,28 @@ class AgentRuntime:
                 preserve_plan_state=True,
             )
 
+            refreshed_after_execution = self._refresh_plan_from_file()
+            if refreshed_after_execution is not None:
+                plan = refreshed_after_execution
+                refreshed_step = next(
+                    (
+                        item
+                        for item in plan.steps
+                        if item.uid == step.uid or item.id == step.id
+                    ),
+                    None,
+                )
+                if refreshed_step is not None:
+                    step = refreshed_step
+                    step_plan_revision = self.state.plan_revision
+
             if not result:
-                plan.mark_step_failed(step.id, "No result returned")
+                self.state.mark_step_failed(
+                    step.id,
+                    "No result returned",
+                    expected_plan_revision=step_plan_revision,
+                )
+                plan = self.state.current_plan or plan
                 self.state.mark_plan_failed()
                 self._sync_plan_progress(plan)
                 self._emit_plan_update(plan)
@@ -601,7 +662,12 @@ class AgentRuntime:
                 return self.state.last_result or "Plan execution complete"
 
             if result.startswith("Task incomplete:") or result.startswith("Task failed:"):
-                plan.mark_step_failed(step.id, result)
+                self.state.mark_step_failed(
+                    step.id,
+                    result,
+                    expected_plan_revision=step_plan_revision,
+                )
+                plan = self.state.current_plan or plan
                 self.state.mark_plan_failed()
                 self._sync_plan_progress(plan)
                 self._emit_plan_update(plan)
@@ -610,7 +676,12 @@ class AgentRuntime:
                     return self.state.last_result or result
                 continue
 
-            plan.mark_step_done(step.id, result)
+            self.state.mark_step_done(
+                step.id,
+                result,
+                expected_plan_revision=step_plan_revision,
+            )
+            plan = self.state.current_plan or plan
             self._sync_plan_progress(plan)
             self._emit_plan_update(plan)
             self._persist_current_plan()
@@ -619,7 +690,7 @@ class AgentRuntime:
         if plan.status == PlanStatus.DONE:
             self._sync_plan_progress(plan)
             self._emit_plan_update(plan)
-            self.state.clear_plan_state()
+            self.state.mark_plan_completed()
         elif plan.status == PlanStatus.FAILED:
             self._sync_plan_progress(plan)
             self.state.mark_plan_failed()
@@ -629,6 +700,9 @@ class AgentRuntime:
 
     def _prepare_plan_for_execution(self, plan: Plan) -> None:
         """Requeue interrupted or failed steps before executing an existing plan."""
+        if self.state.store is not None:
+            self.state.requeue_interrupted_plan_steps()
+            return
         for step in plan.steps:
             if step.status in {StepStatus.RUNNING, StepStatus.FAILED}:
                 step.status = StepStatus.PENDING
@@ -718,7 +792,10 @@ class AgentRuntime:
         plan_dir = Path(".opennova") / "plan"
         plan_dir.mkdir(parents=True, exist_ok=True)
         plan_path = plan_dir / f"plan_{timestamp}.md"
-        plan_path.write_text(self._render_saved_plan(plan, plan_path), encoding="utf-8")
+        content = self._render_saved_plan(plan, plan_path)
+        temporary = plan_path.with_name(f".{plan_path.name}.tmp")
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, plan_path)
         return plan_path
 
     def _render_saved_plan(self, plan: Plan, plan_path: Path) -> str:
@@ -741,6 +818,7 @@ class AgentRuntime:
 
         for step in plan.steps:
             lines.append(f"### {step.id}")
+            lines.append(f"<!-- opennova-step-uid: {step.uid} -->")
             lines.append(f"- Description: {step.description}")
             if step.tool_hint:
                 lines.append(f"- Tool hint: `{step.tool_hint}`")
@@ -808,7 +886,11 @@ class AgentRuntime:
                 continue
             if current_step is None:
                 continue
-            if line.startswith("- Description:"):
+            if line.startswith("<!-- opennova-step-uid:") and line.endswith("-->"):
+                uid = line.removeprefix("<!-- opennova-step-uid:").removesuffix("-->").strip()
+                if uid:
+                    current_step.uid = uid
+            elif line.startswith("- Description:"):
                 current_step.description = line.split(":", 1)[1].strip()
             elif line.startswith("- Tool hint:"):
                 current_step.tool_hint = line.split(":", 1)[1].strip().strip("`")
@@ -873,7 +955,15 @@ class AgentRuntime:
             return
         path = Path(plan_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self._render_saved_plan(plan, path), encoding="utf-8")
+        content = self._render_saved_plan(plan, path)
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, path)
+        state_store = getattr(self, "state_store", None)
+        if state_store is not None:
+            state_store.dispatch(
+                RuntimeAction("plan_file_persisted", {"file_hash": self._hash_content(content)})
+            )
 
     def _refresh_plan_from_file(self) -> Plan | None:
         """Reload the current plan from disk if a saved plan file exists."""
@@ -884,15 +974,44 @@ class AgentRuntime:
         if not path.exists():
             return self.state.current_plan
         try:
-            plan = self._load_plan_from_markdown(path.read_text(encoding="utf-8"))
+            content = path.read_text(encoding="utf-8")
+            file_hash = self._hash_content(content)
+            state_store = getattr(self, "state_store", None)
+            if state_store is not None and state_store.get_state().plan.file_hash == file_hash:
+                return self.state.current_plan
+            plan = self._load_plan_from_markdown(content)
         except Exception:
             return self.state.current_plan
+        if state_store is not None:
+            state_store.dispatch(
+                RuntimeAction(
+                    "plan_file_changed",
+                    {"plan": plan, "file_hash": file_hash},
+                    expected_plan_revision=self.state.plan_revision,
+                )
+            )
+            refreshed = self.state.current_plan
+            if refreshed is not None:
+                self._emit_plan_update(refreshed)
+            return refreshed
         self.state.current_plan = plan
-        return plan
+        return self.state.current_plan
+
+    @staticmethod
+    def _hash_content(content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _hash_file(cls, path: Path) -> str:
+        return cls._hash_content(path.read_text(encoding="utf-8"))
 
     def _sync_plan_progress(self, plan: Plan, active_step_id: str | None = None) -> None:
         """Mirror the top-level plan steps into the shared todo list state."""
         from opennova.tools.todo_tools import TodoWriteTool
+
+        state_store = getattr(self, "state_store", None)
+        if state_store is not None:
+            return
 
         todos = []
         for step in plan.steps:
@@ -920,8 +1039,14 @@ class AgentRuntime:
         Returns:
             True if confirmed, False otherwise
         """
-        if "plan_confirm" in self._callbacks:
-            return self._callbacks["plan_confirm"](plan)
+        event_bus = getattr(self, "events", None)
+        plan_confirm = (
+            event_bus.latest("plan_confirm")
+            if event_bus is not None
+            else getattr(self, "_callbacks", {}).get("plan_confirm")
+        )
+        if plan_confirm:
+            return plan_confirm(plan)
         return True
 
     def _should_continue_on_failure(self) -> bool:
@@ -958,7 +1083,11 @@ class AgentRuntime:
             stream=stream,
             progress_callback=progress_callback,
             iteration_start_callback=lambda messages: self._emit("iteration_start", messages),
-            interaction_callback=self._callbacks.get("interaction"),
+            interaction_callback=(
+                self.events.latest("interaction")
+                if getattr(self, "events", None) is not None
+                else getattr(self, "_callbacks", {}).get("interaction")
+            ),
             skill_registry=getattr(self, "skill_registry", None),
             context_manager=self.context_manager,
             working_memory=self.working_memory,
@@ -1009,6 +1138,12 @@ class AgentRuntime:
             )
         except Exception:
             self.working_memory.complete_task(success=False, error="Act mode execution failed")
+            active_run_id = getattr(getattr(self, "loop", None), "active_run_id", None)
+            self.state.finish_run(
+                "Act mode execution failed",
+                success=False,
+                run_id=active_run_id,
+            )
             self._record_run_session(task, success=False, started_at=started_at)
             self._save_session_messages()
             raise
@@ -1018,6 +1153,10 @@ class AgentRuntime:
             or result.startswith("Task failed:")
             or result == "Plan approval required before execution"
         )
+        active_run_id = getattr(self.loop, "active_run_id", None)
+        if active_run_id is not None and self.state.run_id != active_run_id:
+            return result
+        self.state.finish_run(result, success=success, run_id=active_run_id)
         self.working_memory.complete_task(success=success, error=None if success else result)
         self._record_run_session(task, success=success, started_at=started_at)
         self._save_session_messages()
@@ -1060,7 +1199,10 @@ class AgentRuntime:
         sm = getattr(self, "session_manager", None)
         if sm is not None:
             sm.clear_session()
-            sm.start_session()
+            session_id = sm.start_session()
+            state_store = getattr(self, "state_store", None)
+            if state_store is not None:
+                state_store.bind_session(session_id)
 
     def _save_session_messages(self) -> None:
         """Persist all context messages and compression markers to session JSONL."""
@@ -1071,9 +1213,32 @@ class AgentRuntime:
                 compression_summary=summary,
                 transcript_events=self.session_transcript,
                 plan_state=self._serialize_plan_state(),
+                runtime_state=(
+                    self.state_store.serialize()
+                    if getattr(self, "state_store", None) is not None
+                    else None
+                ),
+                state_events=(
+                    [
+                        {
+                            "action_type": event.action_type,
+                            "previous_revision": event.previous_revision,
+                            "revision": event.revision,
+                            "run_id": event.run_id,
+                            "plan_revision": event.plan_revision,
+                            "session_id": event.session_id,
+                            "critical": event.critical,
+                        }
+                        for event in self.state_store.recent_events()
+                    ]
+                    if getattr(self, "state_store", None) is not None
+                    else None
+                ),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning("Failed to persist OpenNova session state: %s", exc)
+            with suppress(Exception):
+                self._emit("diagnostic", "session_persistence_failed", str(exc))
 
     def record_session_transcript_event(self, kind: str, **payload: Any) -> None:
         """Record a replayable TUI transcript event for the active session."""
@@ -1093,7 +1258,14 @@ class AgentRuntime:
         # Keep writing to the resumed session instead of spawning a duplicate file.
         self.session_manager.resume_session(session_id)
         self.session_transcript = [dict(event.payload) for event in loaded.transcript_events]
-        self._restore_plan_state(loaded.plan_state)
+        state_store = getattr(self, "state_store", None)
+        if state_store is not None:
+            state_store.bind_session(session_id)
+        if state_store is not None and loaded.runtime_state:
+            state_store.restore(loaded.runtime_state)
+            self._refresh_plan_from_file()
+        else:
+            self._restore_plan_state(loaded.plan_state)
         self._save_session_messages()
         return loaded
 

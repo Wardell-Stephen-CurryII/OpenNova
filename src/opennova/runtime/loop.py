@@ -192,6 +192,7 @@ class ReActLoop:
             self.state.reset_execution(task)
         else:
             self.state.reset(task)
+        self.active_run_id = self.state.run_id
         self.on_thought = on_thought
         self.on_action = on_action
         self.on_result = on_result
@@ -227,11 +228,12 @@ class ReActLoop:
         try:
             while (
                 not self.state.is_complete
+                and self.state.run_id == self.active_run_id
                 and self.state.iteration < self.max_iterations
                 and not self.state.has_too_many_errors()
             ):
                 self._emit_iteration_start()
-                self.state.increment_iteration()
+                self.state.increment_iteration(self.active_run_id)
 
                 try:
                     if pending_routed_action:
@@ -243,7 +245,10 @@ class ReActLoop:
                         action = self._parse_response(response, task)
 
                     if action.is_final:
-                        self.state.mark_complete(action.thought or response.content or "")
+                        self.state.mark_complete(
+                            action.thought or response.content or "",
+                            run_id=self.active_run_id,
+                        )
                         self._report_progress(activity="Completed task", mark_complete=True)
                         break
 
@@ -264,6 +269,8 @@ class ReActLoop:
 
                         self._report_progress(activity=f"Running tool: {action.tool_name}", last_tool_name=action.tool_name)
                         result = await self._act(action)
+                        if self.state.run_id != self.active_run_id:
+                            break
                         self._finish_tool_context(result)
 
                         if self.on_result:
@@ -285,7 +292,7 @@ class ReActLoop:
                         self.add_message(observation)
 
                 except Exception as e:
-                    self.state.increment_error()
+                    self.state.increment_error(self.active_run_id)
                     error_detail = f"Error in iteration {self.state.iteration}: {type(e).__name__}: {e}"
                     tb = traceback.format_exc()
                     full_error = f"{error_detail}\n\nTraceback:\n{tb}"
@@ -1119,14 +1126,20 @@ class ReActLoop:
                 )
             )
 
-        self.state.last_action = action.tool_name
-        self.state.last_result = result.output
+        self.state.record_action_result(
+            action.tool_name,
+            result.output,
+            run_id=getattr(self, "active_run_id", None),
+        )
         if (
             action.tool_name == "exit_plan_mode"
             and result.success
             and result.metadata.get("status") == "awaiting_approval"
         ):
-            self.state.mark_complete(result.output or "Plan ready for approval")
+            self.state.mark_complete(
+                result.output or "Plan ready for approval",
+                run_id=getattr(self, "active_run_id", None),
+            )
 
     def _apply_skill_execution_context(self, metadata: dict[str, Any]) -> None:
         """Apply temporary tool/model constraints for the active skill."""

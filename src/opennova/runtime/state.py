@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
+
+if TYPE_CHECKING:
+    from opennova.runtime.store import RuntimeStateStore
 
 
 class AgentMode(StrEnum):
@@ -47,7 +51,10 @@ class PlanApprovalStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
     EXECUTING = "executing"
+    COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+    DISCARDED = "discarded"
 
 
 @dataclass
@@ -56,6 +63,7 @@ class PlanStep:
 
     id: str
     description: str
+    uid: str = field(default_factory=lambda: uuid4().hex)
     status: StepStatus = StepStatus.PENDING
     tool_hint: str | None = None
     result_summary: str | None = None
@@ -65,6 +73,7 @@ class PlanStep:
         """Convert to dictionary."""
         return {
             "id": self.id,
+            "uid": self.uid,
             "description": self.description,
             "status": self.status.value,
             "tool_hint": self.tool_hint,
@@ -119,7 +128,9 @@ class Plan:
 
     def _update_plan_status(self) -> None:
         """Update overall plan status based on steps."""
-        all_done = all(s.status == StepStatus.DONE for s in self.steps)
+        all_done = bool(self.steps) and all(
+            s.status in {StepStatus.DONE, StepStatus.SKIPPED} for s in self.steps
+        )
         any_failed = any(s.status == StepStatus.FAILED for s in self.steps)
 
         if any_failed:
@@ -151,6 +162,7 @@ class Plan:
             PlanStep(
                 id=s["id"],
                 description=s["description"],
+                uid=str(s.get("uid") or uuid4().hex),
                 status=StepStatus(s.get("status", "pending")),
                 tool_hint=s.get("tool_hint"),
                 result_summary=s.get("result_summary"),
@@ -162,6 +174,11 @@ class Plan:
         return cls(
             task=data["task"],
             steps=steps,
+            created_at=(
+                datetime.fromisoformat(data["created_at"])
+                if data.get("created_at")
+                else datetime.now()
+            ),
             status=PlanStatus(data.get("status", "planning")),
         ).reindex_steps()
 
@@ -186,9 +203,45 @@ class AgentState:
     max_errors: int = 3
     last_action: str | None = None
     last_result: str | None = None
+    run_id: str | None = None
+    plan_revision: int = 0
+    _store: "RuntimeStateStore | None" = field(default=None, init=False, repr=False, compare=False)
+
+    def attach_store(self, store: "RuntimeStateStore") -> None:
+        """Attach the compatibility facade to its authoritative runtime store."""
+        object.__setattr__(self, "_store", store)
+
+    @property
+    def store(self) -> "RuntimeStateStore | None":
+        return self._store
+
+    def _dispatch(
+        self,
+        action_type: str,
+        *,
+        expected_run_id: str | None = None,
+        expected_plan_revision: int | None = None,
+        **payload: Any,
+    ) -> bool:
+        store = self._store
+        if store is None:
+            return False
+        from opennova.runtime.store import RuntimeAction
+
+        store.dispatch(
+            RuntimeAction(
+                type=action_type,
+                payload=payload,
+                expected_run_id=expected_run_id,
+                expected_plan_revision=expected_plan_revision,
+            )
+        )
+        return True
 
     def reset(self, task: str = "") -> None:
         """Reset state for a new task."""
+        if self._dispatch("run_started", task=task, preserve_plan=False):
+            return
         self.current_task = task
         self.mode = "act"
         self.iteration = 0
@@ -203,6 +256,8 @@ class AgentState:
 
     def reset_execution(self, task: str = "") -> None:
         """Reset per-run execution fields while preserving approved plan state."""
+        if self._dispatch("run_started", task=task, preserve_plan=True):
+            return
         self.current_task = task
         self.mode = "act"
         self.iteration = 0
@@ -212,58 +267,92 @@ class AgentState:
         self.last_action = None
         self.last_result = None
 
-    def increment_iteration(self) -> None:
+    def increment_iteration(self, run_id: str | None = None) -> None:
         """Increment iteration counter."""
+        if self._dispatch("run_iteration_incremented", expected_run_id=run_id):
+            return
         self.iteration += 1
 
-    def increment_error(self) -> None:
+    def increment_error(self, run_id: str | None = None) -> None:
         """Increment error counter."""
+        if self._dispatch("run_error_incremented", expected_run_id=run_id):
+            return
         self.error_count += 1
 
     def has_too_many_errors(self) -> bool:
         """Check if error count exceeds threshold."""
         return self.error_count >= self.max_errors
 
-    def mark_complete(self, result: str | None = None) -> None:
+    def mark_complete(self, result: str | None = None, run_id: str | None = None) -> None:
         """Mark task as complete."""
+        if self._dispatch(
+            "run_completed", expected_run_id=run_id, result=result, success=True
+        ):
+            return
         self.is_complete = True
+        self.last_result = result
+
+    def finish_run(self, result: str, *, success: bool, run_id: str | None = None) -> None:
+        """Finalize a run if the supplied run identity is still current."""
+        if self._dispatch(
+            "run_completed",
+            expected_run_id=run_id,
+            result=result,
+            success=success,
+        ):
+            return
+        self.is_complete = success
         self.last_result = result
 
     def set_mode(self, mode: Literal["plan", "act"]) -> None:
         """Set agent mode."""
+        if self._dispatch("mode_changed", mode=mode):
+            return
         self.mode = mode
 
     def set_plan(self, plan: Plan) -> None:
         """Set the current plan."""
+        if self._dispatch("plan_created", plan=plan):
+            return
         plan.reindex_steps()
         self.current_plan = plan
         self.mode = "plan"
         self.plan_approval_status = PlanApprovalStatus.DRAFT
         self.requires_confirmation = False
 
-    def set_plan_file_path(self, path: str | Path) -> None:
+    def set_plan_file_path(self, path: str | Path, file_hash: str | None = None) -> None:
         """Set the saved plan file path."""
+        if self._dispatch("plan_path_set", path=Path(path), file_hash=file_hash):
+            return
         self.plan_file_path = Path(path)
 
     def mark_plan_awaiting_approval(self) -> None:
         """Mark the current plan as ready for user approval."""
+        if self._dispatch("plan_awaiting_approval"):
+            return
         self.mode = "plan"
         self.plan_approval_status = PlanApprovalStatus.AWAITING_APPROVAL
         self.requires_confirmation = True
 
     def mark_plan_approved(self) -> None:
         """Mark the current plan as approved for execution."""
+        if self._dispatch("plan_approved"):
+            return
         self.plan_approval_status = PlanApprovalStatus.APPROVED
         self.requires_confirmation = False
 
     def mark_plan_executing(self) -> None:
         """Mark the current plan as executing."""
+        if self._dispatch("plan_executing"):
+            return
         self.mode = "act"
         self.plan_approval_status = PlanApprovalStatus.EXECUTING
         self.requires_confirmation = False
 
     def clear_plan_state(self) -> None:
         """Clear any active plan lifecycle state."""
+        if self._dispatch("plan_cleared"):
+            return
         self.current_plan = None
         self.plan_file_path = None
         self.plan_approval_status = PlanApprovalStatus.NONE
@@ -271,9 +360,84 @@ class AgentState:
 
     def mark_plan_failed(self) -> None:
         """Mark the current plan as failed while preserving it for inspection."""
+        if self._dispatch("plan_failed"):
+            return
         self.mode = "act"
         self.plan_approval_status = PlanApprovalStatus.FAILED
         self.requires_confirmation = False
+
+    def mark_plan_completed(self) -> None:
+        """Keep the completed plan available for inspection and derived todos."""
+        if self._dispatch("plan_completed"):
+            return
+        self.mode = "act"
+        self.plan_approval_status = PlanApprovalStatus.COMPLETED
+        self.requires_confirmation = False
+
+    def mark_step_running(self, step_id: str) -> None:
+        if self._dispatch("plan_step_started", step_id=step_id):
+            return
+        if self.current_plan:
+            self.current_plan.mark_step_running(step_id)
+
+    def mark_step_done(
+        self,
+        step_id: str,
+        result: str | None = None,
+        *,
+        expected_plan_revision: int | None = None,
+    ) -> None:
+        if self._dispatch(
+            "plan_step_completed",
+            expected_plan_revision=expected_plan_revision,
+            step_id=step_id,
+            result=result,
+        ):
+            return
+        if self.current_plan:
+            self.current_plan.mark_step_done(step_id, result)
+
+    def mark_step_failed(
+        self,
+        step_id: str,
+        error: str,
+        *,
+        expected_plan_revision: int | None = None,
+    ) -> None:
+        if self._dispatch(
+            "plan_step_failed",
+            expected_plan_revision=expected_plan_revision,
+            step_id=step_id,
+            error=error,
+        ):
+            return
+        if self.current_plan:
+            self.current_plan.mark_step_failed(step_id, error)
+
+    def requeue_interrupted_plan_steps(self) -> None:
+        """Move failed/running steps back to pending through one transition."""
+        if self._dispatch("plan_steps_requeued"):
+            return
+        if self.current_plan:
+            for step in self.current_plan.steps:
+                if step.status in {StepStatus.RUNNING, StepStatus.FAILED}:
+                    step.status = StepStatus.PENDING
+                    step.error = None
+
+    def record_action_result(
+        self,
+        action: str,
+        result: str | None,
+        *,
+        run_id: str | None = None,
+    ) -> None:
+        """Record a tool result through the state store when available."""
+        if self._dispatch(
+            "run_action_recorded", expected_run_id=run_id, action=action, result=result
+        ):
+            return
+        self.last_action = action
+        self.last_result = result
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -287,4 +451,6 @@ class AgentState:
             "plan_approval_status": self.plan_approval_status.value,
             "plan_file_path": str(self.plan_file_path) if self.plan_file_path else None,
             "current_plan": self.current_plan.to_dict() if self.current_plan else None,
+            "run_id": self.run_id,
+            "plan_revision": self.plan_revision,
         }

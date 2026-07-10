@@ -69,8 +69,8 @@ def build_workbench_panel_state(
     return WorkbenchPanelState(
         active_tab=active_tab if active_tab in WORKBENCH_TABS else "tools",
         tools=build_tool_card_panel(tool_cards),
-        plan=_snapshot_plan(agent) or last_plan,
-        todos=TodoWriteTool.current_todos(),
+        plan=_snapshot_plan(agent),
+        todos=TodoWriteTool.current_todos(getattr(agent, "state_store", None)),
     )
 
 

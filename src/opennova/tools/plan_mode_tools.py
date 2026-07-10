@@ -9,6 +9,7 @@ Provides:
 
 import re
 from typing import Any
+from uuid import uuid4
 
 from opennova.runtime.state import AgentState, Plan, PlanStep
 from opennova.tools.base import BaseTool, ToolResult
@@ -129,7 +130,7 @@ class ExitPlanModeTool(BaseTool):
                         elif hasattr(runtime, "_save_plan_to_project"):
                             plan_path = runtime._save_plan_to_project(materialized_plan)
                             state.set_plan_file_path(plan_path)
-                    _sync_todos_from_plan(materialized_plan)
+                    _sync_todos_from_plan(materialized_plan, state=state)
                     if runtime is not None and hasattr(runtime, "_emit"):
                         runtime._emit("plan", materialized_plan, state.plan_file_path)
             if isinstance(state, AgentState) and not state.current_plan:
@@ -141,7 +142,7 @@ class ExitPlanModeTool(BaseTool):
             if isinstance(state, AgentState):
                 state.mark_plan_awaiting_approval()
                 if state.current_plan:
-                    _sync_todos_from_plan(state.current_plan)
+                    _sync_todos_from_plan(state.current_plan, state=state)
                     if runtime is not None and hasattr(runtime, "_emit"):
                         runtime._emit("plan", state.current_plan, state.plan_file_path)
 
@@ -187,6 +188,7 @@ def _materialize_plan_from_args(
                 PlanStep(
                     id=str(raw_step.get("id") or f"step_{index}"),
                     description=description,
+                    uid=str(raw_step.get("uid") or uuid4().hex),
                     tool_hint=str(raw_step.get("tool_hint") or "") or None,
                 )
             )
@@ -225,6 +227,7 @@ def _infer_plan_task(plan_text: str) -> str:
     return ""
 
 
-def _sync_todos_from_plan(plan: Plan) -> None:
+def _sync_todos_from_plan(plan: Plan, state: AgentState | None = None) -> None:
     todos = [{"id": step.id, "content": step.description, "status": "pending"} for step in plan.steps]
-    TodoWriteTool.replace_todos(todos)
+    if not isinstance(state, AgentState) or state.store is None:
+        TodoWriteTool.replace_todos(todos)

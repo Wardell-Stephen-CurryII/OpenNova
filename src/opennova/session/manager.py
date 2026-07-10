@@ -5,6 +5,7 @@ in ``~/.opennova/sessions/<sanitized-project-path>/``.
 """
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -55,6 +56,8 @@ class LoadedSession:
     messages: list[Any]
     transcript_events: list[SessionTranscriptEvent]
     plan_state: dict[str, Any] = field(default_factory=dict)
+    runtime_state: dict[str, Any] = field(default_factory=dict)
+    state_events: list[dict[str, Any]] = field(default_factory=list)
     compression_summary: str | None = None
     compression_markers: list[CompressionMarker] | None = None
 
@@ -148,6 +151,8 @@ class SessionManager:
         compression_summary: str | None = None,
         transcript_events: list[dict[str, Any]] | list[SessionTranscriptEvent] | None = None,
         plan_state: dict[str, Any] | None = None,
+        runtime_state: dict[str, Any] | None = None,
+        state_events: list[dict[str, Any]] | None = None,
     ) -> None:
         """Rewrite the current session file with a single deduplicated snapshot."""
         if self._session_id is None or self._file is None:
@@ -212,10 +217,30 @@ class SessionManager:
                     "plan_state": plan_state,
                 }
             )
+        if runtime_state:
+            entries.append(
+                {
+                    "type": "runtime_state",
+                    "session_id": self._session_id,
+                    "runtime_state": runtime_state,
+                }
+            )
+        for event in state_events or []:
+            entries.append(
+                {
+                    "type": "runtime_state_event",
+                    "session_id": self._session_id,
+                    "event": event,
+                }
+            )
 
-        with open(self._file, "w", encoding="utf-8") as f:
+        temporary = self._file.with_name(f".{self._file.name}.tmp")
+        with open(temporary, "w", encoding="utf-8") as f:
             for entry in entries:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, self._file)
 
     def save_compression_marker(self, summary: str, message_count: int) -> None:
         """Write a compression boundary marker to the current session JSONL."""
@@ -309,11 +334,15 @@ class SessionManager:
         summary = markers[-1].summary if markers else None
         transcript_events = self._load_transcript_events(session_id)
         plan_state = self._load_plan_state(session_id)
+        runtime_state = self._load_runtime_state(session_id)
+        state_events = self._load_runtime_state_events(session_id)
         return LoadedSession(
             session_id=session_id,
             messages=messages,
             transcript_events=transcript_events,
             plan_state=plan_state,
+            runtime_state=runtime_state,
+            state_events=state_events,
             compression_summary=summary,
             compression_markers=markers,
         )
@@ -411,6 +440,42 @@ class SessionManager:
                 if entry.get("type") == "plan_state" and isinstance(entry.get("plan_state"), dict):
                     latest = dict(entry["plan_state"])
         return latest
+
+    def _load_runtime_state(self, session_id: str) -> dict[str, Any]:
+        """Load the latest schema-versioned runtime state snapshot."""
+        file = self._sessions_dir / f"{session_id}.jsonl"
+        if not file.exists():
+            return {}
+        latest: dict[str, Any] = {}
+        with open(file, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "runtime_state" and isinstance(
+                    entry.get("runtime_state"), dict
+                ):
+                    latest = dict(entry["runtime_state"])
+        return latest
+
+    def _load_runtime_state_events(self, session_id: str) -> list[dict[str, Any]]:
+        """Load persisted transition metadata following the runtime snapshot."""
+        file = self._sessions_dir / f"{session_id}.jsonl"
+        if not file.exists():
+            return []
+        events: list[dict[str, Any]] = []
+        with open(file, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "runtime_state_event" and isinstance(
+                    entry.get("event"), dict
+                ):
+                    events.append(dict(entry["event"]))
+        return events
 
     def _dedupe_legacy_messages(self, messages: list[Any]) -> list[Any]:
         """Collapse repeated appended snapshots from legacy session files."""
