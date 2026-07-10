@@ -32,6 +32,7 @@ class StepStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     SKIPPED = "skipped"
+    INTERRUPTED = "interrupted"
 
 
 class PlanStatus(StrEnum):
@@ -41,6 +42,7 @@ class PlanStatus(StrEnum):
     EXECUTING = "executing"
     DONE = "done"
     FAILED = "failed"
+    INTERRUPTED = "interrupted"
 
 
 class PlanApprovalStatus(StrEnum):
@@ -51,6 +53,7 @@ class PlanApprovalStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
     EXECUTING = "executing"
+    INTERRUPTED = "interrupted"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -132,9 +135,12 @@ class Plan:
             s.status in {StepStatus.DONE, StepStatus.SKIPPED} for s in self.steps
         )
         any_failed = any(s.status == StepStatus.FAILED for s in self.steps)
+        any_interrupted = any(s.status == StepStatus.INTERRUPTED for s in self.steps)
 
         if any_failed:
             self.status = PlanStatus.FAILED
+        elif any_interrupted:
+            self.status = PlanStatus.INTERRUPTED
         elif all_done:
             self.status = PlanStatus.DONE
         elif any(s.status == StepStatus.RUNNING for s in self.steps):
@@ -304,6 +310,16 @@ class AgentState:
         self.is_complete = success
         self.last_result = result
 
+    def cancel_run(self, run_id: str | None = None) -> None:
+        """Cancel the current run if its identity is still active."""
+        self._dispatch("run_cancelled", expected_run_id=run_id)
+
+    def begin_interaction(self, interaction_type: str) -> None:
+        self._dispatch("interaction_waiting", interaction_type=interaction_type)
+
+    def end_interaction(self) -> None:
+        self._dispatch("interaction_cleared")
+
     def set_mode(self, mode: Literal["plan", "act"]) -> None:
         """Set agent mode."""
         if self._dispatch("mode_changed", mode=mode):
@@ -420,7 +436,11 @@ class AgentState:
             return
         if self.current_plan:
             for step in self.current_plan.steps:
-                if step.status in {StepStatus.RUNNING, StepStatus.FAILED}:
+                if step.status in {
+                    StepStatus.RUNNING,
+                    StepStatus.FAILED,
+                    StepStatus.INTERRUPTED,
+                }:
                     step.status = StepStatus.PENDING
                     step.error = None
 

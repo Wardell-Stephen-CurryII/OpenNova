@@ -7,10 +7,27 @@ in ``~/.opennova/sessions/<sanitized-project-path>/``.
 import json
 import os
 import re
+import tempfile
+import threading
 import uuid
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
+
+SESSION_SCHEMA_VERSION = 2
+DEFAULT_PERSISTENCE_CONFIG = {
+    "debounce_ms": 250,
+    "snapshot_event_threshold": 100,
+    "snapshot_size_threshold": 1_048_576,
+    "fsync_critical": True,
+}
 
 
 def _sanitize_path(path: str) -> str:
@@ -58,6 +75,9 @@ class LoadedSession:
     plan_state: dict[str, Any] = field(default_factory=dict)
     runtime_state: dict[str, Any] = field(default_factory=dict)
     state_events: list[dict[str, Any]] = field(default_factory=list)
+    schema_version: int = 1
+    recovery_warnings: list[str] = field(default_factory=list)
+    last_valid_revision: int = 0
     compression_summary: str | None = None
     compression_markers: list[CompressionMarker] | None = None
 
@@ -73,8 +93,13 @@ def format_session_title_snippet(first_prompt: str, limit: int = 20) -> str:
 class SessionManager:
     """Manages conversation session persistence as JSONL files."""
 
-    def __init__(self, project_path: str) -> None:
+    def __init__(
+        self,
+        project_path: str,
+        persistence_config: dict[str, Any] | None = None,
+    ) -> None:
         resolved = str(Path(project_path).resolve())
+        self._project_root = Path(resolved)
         self._sessions_dir = Path.home() / ".opennova" / "sessions" / _sanitize_path(resolved)
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         self._session_id: str | None = None
@@ -82,25 +107,47 @@ class SessionManager:
         self._message_count: int = 0
         self._first_prompt: str | None = None
         self._title: str | None = None
+        self._lock = threading.RLock()
+        self._pending_runtime_events: list[dict[str, Any]] = []
+        self._flush_timer: threading.Timer | None = None
+        self._events_since_snapshot = 0
+        self._journal_bytes_since_snapshot = 0
+        self._last_snapshot_revision = 0
+        self._last_event_id: str | None = None
+        self._last_snapshot_args: dict[str, Any] | None = None
+        self._created_at: str | None = None
+        self._header_written = False
+        config = {**DEFAULT_PERSISTENCE_CONFIG, **(persistence_config or {})}
+        self._debounce_seconds = max(0, int(config["debounce_ms"])) / 1000
+        self._snapshot_event_threshold = max(1, int(config["snapshot_event_threshold"]))
+        self._snapshot_size_threshold = max(1, int(config["snapshot_size_threshold"]))
+        self._fsync_critical = bool(config["fsync_critical"])
 
     # ── session lifecycle ──────────────────────────────────────────
 
     def start_session(self) -> str:
         """Generate a new session ID and prepare the file (lazy creation)."""
+        self.flush_runtime_events()
         self._session_id = str(uuid.uuid4())
         self._file = self._sessions_dir / f"{self._session_id}.jsonl"
         self._message_count = 0
         self._first_prompt = None
         self._title = None
+        self._reset_runtime_journal_tracking()
+        self._created_at = datetime.now(UTC).isoformat()
+        self._header_written = False
         return self._session_id
 
     def resume_session(self, session_id: str) -> str:
         """Switch the active writer back to an existing session file."""
+        self.flush_runtime_events()
         self._session_id = session_id
         self._file = self._sessions_dir / f"{session_id}.jsonl"
         self._message_count = 0
         self._first_prompt = None
         self._title = None
+        self._reset_runtime_journal_tracking()
+        self._restore_header_metadata()
         return self._session_id
 
     @property
@@ -119,9 +166,8 @@ class SessionManager:
             "session_id": self._session_id,
             "message": data,
         }
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        with open(self._file, "a", encoding="utf-8") as f:
-            f.write(line)
+        with self._lock:
+            self._append_entries([entry], fsync=False)
         self._message_count += 1
         # Capture first user prompt
         if self._first_prompt is None and data.get("role") == "user":
@@ -136,9 +182,8 @@ class SessionManager:
             "session_id": self._session_id,
             "content": self._first_prompt,
         }
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        with open(self._file, "a", encoding="utf-8") as f:
-            f.write(line)
+        with self._lock:
+            self._append_entries([entry], fsync=False)
 
     def save_title(self, title: str) -> None:
         """Set a custom title for the current session."""
@@ -154,7 +199,27 @@ class SessionManager:
         runtime_state: dict[str, Any] | None = None,
         state_events: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Rewrite the current session file with a single deduplicated snapshot."""
+        """Compatibility wrapper for the Session v2 runtime snapshot writer."""
+        self.save_runtime_snapshot(
+            messages,
+            compression_summary=compression_summary,
+            transcript_events=transcript_events,
+            plan_state=plan_state,
+            runtime_state=runtime_state,
+            state_events=state_events,
+        )
+
+    def save_runtime_snapshot(
+        self,
+        messages: list[Any],
+        *,
+        compression_summary: str | None = None,
+        transcript_events: list[dict[str, Any]] | list[SessionTranscriptEvent] | None = None,
+        plan_state: dict[str, Any] | None = None,
+        runtime_state: dict[str, Any] | None = None,
+        state_events: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Atomically compact messages and runtime state into a v2 snapshot."""
         if self._session_id is None or self._file is None:
             return
 
@@ -166,7 +231,8 @@ class SessionManager:
                 self._first_prompt = data.get("content", "")
                 break
 
-        entries: list[dict[str, Any]] = []
+        snapshot_revision = int((runtime_state or {}).get("revision", 0))
+        entries: list[dict[str, Any]] = [self._session_header()]
         if self._first_prompt:
             entries.append(
                 {
@@ -220,27 +286,311 @@ class SessionManager:
         if runtime_state:
             entries.append(
                 {
-                    "type": "runtime_state",
+                    "type": "runtime_snapshot",
                     "session_id": self._session_id,
-                    "runtime_state": runtime_state,
+                    "revision": snapshot_revision,
+                    "last_event_id": self._last_event_id,
+                    "state": runtime_state,
                 }
             )
-        for event in state_events or []:
-            entries.append(
-                {
-                    "type": "runtime_state_event",
-                    "session_id": self._session_id,
-                    "event": event,
-                }
+        supplied_events = [
+            self._runtime_event_entry(event)
+            for event in state_events or []
+            if int(event.get("revision", 0)) > snapshot_revision and event.get("actions")
+        ]
+
+        with self._lock:
+            self._cancel_flush_timer()
+            pending = list(self._pending_runtime_events)
+            self._pending_runtime_events.clear()
+            with self._file_lock(exclusive=True):
+                retained = self._runtime_events_after_revision(
+                    self._read_entries_unlocked(self._file), snapshot_revision
+                )
+                retained.extend(
+                    entry
+                    for entry in pending
+                    if int(entry.get("event", {}).get("revision", 0)) > snapshot_revision
+                )
+                retained.extend(supplied_events)
+                retained = self._dedupe_runtime_event_entries(retained)
+                self._atomic_write_entries([*entries, *retained])
+                self._header_written = True
+            self._last_snapshot_revision = snapshot_revision
+            self._events_since_snapshot = len(retained)
+            self._journal_bytes_since_snapshot = sum(
+                len(json.dumps(entry, ensure_ascii=False).encode("utf-8")) + 1
+                for entry in retained
+            )
+            self._last_snapshot_args = {
+                "messages": list(messages),
+                "compression_summary": compression_summary,
+                "transcript_events": list(transcript_events or []),
+                "plan_state": plan_state,
+                "runtime_state": runtime_state,
+            }
+
+    def append_runtime_event(self, event: Any, durable: bool = False) -> None:
+        """Append or debounce one replayable runtime event."""
+        if self._session_id is None or self._file is None:
+            return
+        payload = event.to_dict() if hasattr(event, "to_dict") else dict(event)
+        if payload.get("session_id") and payload["session_id"] != self._session_id:
+            raise ValueError("Runtime event session id does not match active session")
+        payload["session_id"] = self._session_id
+        entry = self._runtime_event_entry(payload)
+        encoded_size = len(json.dumps(entry, ensure_ascii=False).encode("utf-8")) + 1
+        with self._lock:
+            self._last_event_id = str(payload.get("event_id") or self._last_event_id or "") or None
+            self._events_since_snapshot += 1
+            self._journal_bytes_since_snapshot += encoded_size
+            if durable:
+                pending = [*self._pending_runtime_events, entry]
+                self._pending_runtime_events.clear()
+                self._cancel_flush_timer()
+                self._append_entries(pending, fsync=self._fsync_critical)
+                return
+            self._pending_runtime_events.append(entry)
+            self._schedule_runtime_flush()
+
+    def flush_runtime_events(self) -> None:
+        """Flush queued non-critical runtime events to the session journal."""
+        with self._lock:
+            self._cancel_flush_timer()
+            if not self._pending_runtime_events:
+                return
+            entries = list(self._pending_runtime_events)
+            self._pending_runtime_events.clear()
+            self._append_entries(entries, fsync=False)
+
+    def compact_session(self) -> None:
+        """Rewrite the most recently supplied snapshot and absorb its journal."""
+        args = self._last_snapshot_args
+        if args is None:
+            self.flush_runtime_events()
+            return
+        self.save_runtime_snapshot(**args)
+
+    @property
+    def needs_runtime_snapshot(self) -> bool:
+        return (
+            self._events_since_snapshot >= self._snapshot_event_threshold
+            or self._journal_bytes_since_snapshot >= self._snapshot_size_threshold
+        )
+
+    def _schedule_runtime_flush(self) -> None:
+        if self._debounce_seconds <= 0:
+            self.flush_runtime_events()
+            return
+        if self._flush_timer is not None:
+            return
+        self._flush_timer = threading.Timer(self._debounce_seconds, self.flush_runtime_events)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
+
+    def _cancel_flush_timer(self) -> None:
+        timer = self._flush_timer
+        self._flush_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _reset_runtime_journal_tracking(self) -> None:
+        self._cancel_flush_timer()
+        self._pending_runtime_events.clear()
+        self._events_since_snapshot = 0
+        self._journal_bytes_since_snapshot = 0
+        self._last_snapshot_revision = 0
+        self._last_event_id = None
+        self._last_snapshot_args = None
+
+    def _append_entries(self, entries: list[dict[str, Any]], *, fsync: bool) -> None:
+        if not entries or self._file is None:
+            return
+        with self._file_lock(exclusive=True):
+            needs_header = not self._header_written
+            with open(self._file, "a", encoding="utf-8") as stream:
+                if needs_header:
+                    stream.write(
+                        json.dumps(self._session_header(), ensure_ascii=False) + "\n"
+                    )
+                    self._header_written = True
+                for entry in entries:
+                    stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                stream.flush()
+                if fsync:
+                    os.fsync(stream.fileno())
+
+    def _atomic_write_entries(self, entries: list[dict[str, Any]]) -> None:
+        if self._file is None:
+            return
+        temporary_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self._file.parent,
+                prefix=f".{self._file.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary_path = stream.name
+                for entry in entries:
+                    stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, self._file)
+        finally:
+            if temporary_path:
+                with suppress(FileNotFoundError):
+                    Path(temporary_path).unlink()
+
+    @contextmanager
+    def _file_lock(self, *, exclusive: bool):
+        if self._file is None:
+            yield
+            return
+        lock_path = self._file.with_suffix(self._file.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a+", encoding="utf-8") as lock_stream:
+            if fcntl is not None:
+                operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                fcntl.flock(lock_stream.fileno(), operation)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+
+    def _session_header(self) -> dict[str, Any]:
+        if self._created_at is None:
+            self._created_at = datetime.now(UTC).isoformat()
+        return {
+            "type": "session_header",
+            "schema_version": SESSION_SCHEMA_VERSION,
+            "session_id": self._session_id,
+            "project_root": str(self._project_root),
+            "created_at": self._created_at,
+        }
+
+    def _restore_header_metadata(self) -> None:
+        """Reuse the original v2 creation time when appending or compacting."""
+        self._header_written = False
+        self._created_at = None
+        if self._file is None or not self._file.exists():
+            return
+        for entry in self._read_entries_unlocked(self._file):
+            if entry.get("type") != "session_header":
+                continue
+            self._header_written = True
+            created_at = entry.get("created_at")
+            self._created_at = str(created_at) if created_at else None
+            return
+        self._created_at = datetime.fromtimestamp(self._file.stat().st_ctime, UTC).isoformat()
+
+    def _runtime_event_entry(self, event: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "type": "runtime_event",
+            "session_id": self._session_id,
+            "event": dict(event),
+        }
+
+    @staticmethod
+    def _runtime_events_after_revision(
+        entries: list[dict[str, Any]], revision: int
+    ) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in entries
+            if entry.get("type") == "runtime_event"
+            and int(entry.get("event", {}).get("revision", 0)) > revision
+        ]
+
+    @staticmethod
+    def _dedupe_runtime_event_entries(
+        entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        unique: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            event_id = str(entry.get("event", {}).get("event_id") or "")
+            if event_id:
+                unique[event_id] = entry
+        return sorted(unique.values(), key=lambda item: int(item["event"]["revision"]))
+
+    @staticmethod
+    def _read_entries_unlocked(file: Path) -> list[dict[str, Any]]:
+        if not file.exists():
+            return []
+        entries: list[dict[str, Any]] = []
+        with open(file, encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
+        return entries
+
+    def _read_v2_runtime(
+        self, session_id: str
+    ) -> tuple[int, dict[str, Any], list[dict[str, Any]], list[str], int]:
+        file = self._sessions_dir / f"{session_id}.jsonl"
+        if not file.exists():
+            return 1, {}, [], [], 0
+        warnings: list[str] = []
+        entries: list[dict[str, Any]] = []
+        lines = file.read_text(encoding="utf-8").splitlines()
+        nonempty_indexes = [index for index, line in enumerate(lines) if line.strip()]
+        last_nonempty = nonempty_indexes[-1] if nonempty_indexes else -1
+        runtime_corrupt = False
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                if index == last_nonempty:
+                    warnings.append(f"Ignored truncated session tail at line {index + 1}")
+                else:
+                    warnings.append(f"Corrupt session entry at line {index + 1}")
+                    runtime_corrupt = True
+                continue
+            if isinstance(entry, dict):
+                if runtime_corrupt and entry.get("type") == "runtime_event":
+                    continue
+                entries.append(entry)
+
+        header = next((entry for entry in entries if entry.get("type") == "session_header"), None)
+        schema_version = int((header or {}).get("schema_version", 1))
+        if schema_version > SESSION_SCHEMA_VERSION:
+            raise ValueError(
+                f"Session schema v{schema_version} is newer than supported v{SESSION_SCHEMA_VERSION}"
             )
 
-        temporary = self._file.with_name(f".{self._file.name}.tmp")
-        with open(temporary, "w", encoding="utf-8") as f:
-            for entry in entries:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary, self._file)
+        snapshots = [entry for entry in entries if entry.get("type") == "runtime_snapshot"]
+        snapshot_entry = max(snapshots, key=lambda item: int(item.get("revision", 0))) if snapshots else None
+        if snapshot_entry:
+            snapshot = dict(snapshot_entry.get("state") or {})
+            snapshot_revision = int(snapshot_entry.get("revision", snapshot.get("revision", 0)))
+            schema_version = SESSION_SCHEMA_VERSION
+        else:
+            legacy_snapshot = next(
+                (entry for entry in reversed(entries) if entry.get("type") == "runtime_state"),
+                None,
+            )
+            snapshot = dict((legacy_snapshot or {}).get("runtime_state") or {})
+            snapshot_revision = int(snapshot.get("revision", 0))
+            if snapshot:
+                schema_version = SESSION_SCHEMA_VERSION
+
+        events = [
+            dict(entry["event"])
+            for entry in entries
+            if entry.get("type") == "runtime_event"
+            and isinstance(entry.get("event"), dict)
+            and int(entry["event"].get("revision", 0)) > snapshot_revision
+        ]
+        return schema_version, snapshot, events, warnings, snapshot_revision
 
     def save_compression_marker(self, summary: str, message_count: int) -> None:
         """Write a compression boundary marker to the current session JSONL."""
@@ -252,9 +602,8 @@ class SessionManager:
             "summary": summary,
             "message_count": message_count,
         }
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        with open(self._file, "a", encoding="utf-8") as f:
-            f.write(line)
+        with self._lock:
+            self._append_entries([entry], fsync=False)
 
     def get_compression_markers(self, session_id: str) -> list[CompressionMarker]:
         """Read all compression markers from a session JSONL file."""
@@ -334,8 +683,13 @@ class SessionManager:
         summary = markers[-1].summary if markers else None
         transcript_events = self._load_transcript_events(session_id)
         plan_state = self._load_plan_state(session_id)
-        runtime_state = self._load_runtime_state(session_id)
-        state_events = self._load_runtime_state_events(session_id)
+        (
+            schema_version,
+            runtime_state,
+            state_events,
+            recovery_warnings,
+            last_valid_revision,
+        ) = self._read_v2_runtime(session_id)
         return LoadedSession(
             session_id=session_id,
             messages=messages,
@@ -343,6 +697,9 @@ class SessionManager:
             plan_state=plan_state,
             runtime_state=runtime_state,
             state_events=state_events,
+            schema_version=schema_version,
+            recovery_warnings=recovery_warnings,
+            last_valid_revision=last_valid_revision,
             compression_summary=summary,
             compression_markers=markers,
         )
@@ -443,39 +800,11 @@ class SessionManager:
 
     def _load_runtime_state(self, session_id: str) -> dict[str, Any]:
         """Load the latest schema-versioned runtime state snapshot."""
-        file = self._sessions_dir / f"{session_id}.jsonl"
-        if not file.exists():
-            return {}
-        latest: dict[str, Any] = {}
-        with open(file, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("type") == "runtime_state" and isinstance(
-                    entry.get("runtime_state"), dict
-                ):
-                    latest = dict(entry["runtime_state"])
-        return latest
+        return self._read_v2_runtime(session_id)[1]
 
     def _load_runtime_state_events(self, session_id: str) -> list[dict[str, Any]]:
         """Load persisted transition metadata following the runtime snapshot."""
-        file = self._sessions_dir / f"{session_id}.jsonl"
-        if not file.exists():
-            return []
-        events: list[dict[str, Any]] = []
-        with open(file, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("type") == "runtime_state_event" and isinstance(
-                    entry.get("event"), dict
-                ):
-                    events.append(dict(entry["event"]))
-        return events
+        return self._read_v2_runtime(session_id)[2]
 
     def _dedupe_legacy_messages(self, messages: list[Any]) -> list[Any]:
         """Collapse repeated appended snapshots from legacy session files."""
@@ -509,8 +838,12 @@ class SessionManager:
 
     def clear_session(self) -> None:
         """Start a fresh session (generate new UUID)."""
+        self.flush_runtime_events()
         self._session_id = None
         self._file = None
         self._message_count = 0
         self._first_prompt = None
         self._title = None
+        self._reset_runtime_journal_tracking()
+        self._created_at = None
+        self._header_written = False

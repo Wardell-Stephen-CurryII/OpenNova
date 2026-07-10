@@ -949,7 +949,9 @@ class ReActLoop:
         return ToolResult(success=True, output="User confirmed action")
     async def _resolve_interaction(self, result: ToolResult) -> ToolResult:
         """Resolve an interactive tool result through the registered runtime callback."""
+        self.state.begin_interaction("tool_confirmation")
         if not self.interaction_callback:
+            self.state.end_interaction()
             return ToolResult(
                 success=False,
                 output=result.output,
@@ -958,16 +960,19 @@ class ReActLoop:
             )
 
         try:
-            interaction_result = self.interaction_callback(result.metadata)
-            if asyncio.iscoroutine(interaction_result):
-                interaction_result = await interaction_result
-        except Exception as e:
-            return ToolResult(
-                success=False,
-                output=result.output,
-                error=f"Interaction failed: {e}",
-                metadata={**result.metadata, "interaction_unresolved": True},
-            )
+            try:
+                interaction_result = self.interaction_callback(result.metadata)
+                if asyncio.iscoroutine(interaction_result):
+                    interaction_result = await interaction_result
+            except Exception as e:
+                return ToolResult(
+                    success=False,
+                    output=result.output,
+                    error=f"Interaction failed: {e}",
+                    metadata={**result.metadata, "interaction_unresolved": True},
+                )
+        finally:
+            self.state.end_interaction()
 
         if not isinstance(interaction_result, dict):
             return ToolResult(

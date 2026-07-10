@@ -10,6 +10,8 @@ import copy
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
@@ -22,7 +24,15 @@ from opennova.runtime.state import (
     StepStatus,
 )
 
-RunPhase = Literal["idle", "running", "waiting_input", "completed", "failed", "cancelled"]
+RunPhase = Literal[
+    "idle",
+    "running",
+    "waiting_input",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+]
 SelectorValue = TypeVar("SelectorValue")
 
 
@@ -100,6 +110,31 @@ class RuntimeAction:
     expected_plan_revision: int | None = None
     expected_session_id: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "payload": _encode_runtime_value(self.payload),
+            "expected_run_id": self.expected_run_id,
+            "expected_plan_revision": self.expected_plan_revision,
+            "expected_session_id": self.expected_session_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuntimeAction:
+        action_type = str(data.get("type") or "")
+        if not action_type:
+            raise ValueError("Runtime action is missing type")
+        payload = _decode_runtime_value(data.get("payload") or {})
+        if not isinstance(payload, dict):
+            raise ValueError("Runtime action payload must be an object")
+        return cls(
+            type=action_type,
+            payload=payload,
+            expected_run_id=data.get("expected_run_id"),
+            expected_plan_revision=data.get("expected_plan_revision"),
+            expected_session_id=data.get("expected_session_id"),
+        )
+
 
 @dataclass(frozen=True)
 class StateChanged:
@@ -110,6 +145,112 @@ class StateChanged:
     plan_revision: int
     session_id: str = ""
     critical: bool = False
+    event_id: str = ""
+    actions: tuple[RuntimeAction, ...] = ()
+
+
+@dataclass(frozen=True)
+class RuntimeEvent:
+    event_id: str
+    revision: int
+    timestamp: str
+    session_id: str
+    run_id: str | None
+    plan_revision: int
+    actions: tuple[RuntimeAction, ...]
+    critical: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "revision": self.revision,
+            "timestamp": self.timestamp,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "plan_revision": self.plan_revision,
+            "actions": [action.to_dict() for action in self.actions],
+            "critical": self.critical,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuntimeEvent:
+        event_id = str(data.get("event_id") or "")
+        if not event_id:
+            raise ValueError("Runtime event is missing event_id")
+        actions_data = data.get("actions")
+        if not isinstance(actions_data, list) or not actions_data:
+            raise ValueError("Runtime event must contain actions")
+        return cls(
+            event_id=event_id,
+            revision=int(data["revision"]),
+            timestamp=str(data.get("timestamp") or ""),
+            session_id=str(data.get("session_id") or ""),
+            run_id=data.get("run_id"),
+            plan_revision=int(data.get("plan_revision", 0)),
+            actions=tuple(RuntimeAction.from_dict(item) for item in actions_data),
+            critical=bool(data.get("critical", False)),
+        )
+
+
+@dataclass(frozen=True)
+class ReplayResult:
+    snapshot: RuntimeSnapshot
+    warnings: tuple[str, ...]
+    last_valid_revision: int
+
+
+def _encode_runtime_value(value: Any) -> Any:
+    if isinstance(value, Plan):
+        return {"__type__": "Plan", "value": value.to_dict()}
+    if isinstance(value, TodoItem):
+        return {"__type__": "TodoItem", "value": value.to_dict(include_source=True)}
+    if isinstance(value, Path):
+        return {"__type__": "Path", "value": str(value)}
+    if isinstance(value, Enum):
+        return {
+            "__type__": "Enum",
+            "enum": value.__class__.__name__,
+            "value": value.value,
+        }
+    if isinstance(value, dict):
+        return {str(key): _encode_runtime_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode_runtime_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"Unsupported runtime action value: {type(value).__name__}")
+
+
+def _decode_runtime_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_decode_runtime_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    value_type = value.get("__type__")
+    if value_type == "Plan":
+        return Plan.from_dict(value["value"])
+    if value_type == "TodoItem":
+        item = value["value"]
+        return TodoItem(
+            id=str(item["id"]),
+            content=str(item["content"]),
+            status=str(item.get("status", "pending")),
+            source=str(item.get("source", "agent")),
+            plan_step_uid=item.get("plan_step_uid"),
+        )
+    if value_type == "Path":
+        return Path(value["value"])
+    if value_type == "Enum":
+        enum_types = {
+            "PlanApprovalStatus": PlanApprovalStatus,
+            "PlanStatus": PlanStatus,
+            "StepStatus": StepStatus,
+        }
+        enum_type = enum_types.get(str(value.get("enum")))
+        if enum_type is None:
+            raise ValueError(f"Unknown runtime enum: {value.get('enum')}")
+        return enum_type(value["value"])
+    return {key: _decode_runtime_value(item) for key, item in value.items()}
 
 
 @dataclass
@@ -138,7 +279,9 @@ _CRITICAL_ACTIONS = {
     "todos_replaced",
     "run_completed",
     "run_cancelled",
+    "mode_changed",
     "state_restored",
+    "session_interrupted_recovered",
 }
 
 
@@ -166,7 +309,7 @@ class RuntimeStateStore:
             ),
         )
         self._subscriptions: list[_Subscription[Any]] = []
-        self._events: list[StateChanged] = []
+        self._events: list[RuntimeEvent] = []
         facade.attach_store(self)
         self._sync_facade(self._snapshot)
 
@@ -201,6 +344,8 @@ class RuntimeStateStore:
                     run_id=self._snapshot.run.run_id,
                     plan_revision=self._snapshot.plan.revision,
                     session_id=self._snapshot.session_id,
+                    event_id="",
+                    actions=(),
                 ),
             )
 
@@ -251,8 +396,21 @@ class RuntimeStateStore:
                 plan_revision=next_state.plan.revision,
                 session_id=next_state.session_id,
                 critical=any(action.type in _CRITICAL_ACTIONS for action in applied),
+                event_id=uuid4().hex,
+                actions=tuple(applied),
             )
-            self._events.append(event)
+            self._events.append(
+                RuntimeEvent(
+                    event_id=event.event_id,
+                    revision=event.revision,
+                    timestamp=datetime.now(UTC).isoformat(),
+                    session_id=event.session_id,
+                    run_id=event.run_id,
+                    plan_revision=event.plan_revision,
+                    actions=event.actions,
+                    critical=event.critical,
+                )
+            )
             self._events = self._events[-500:]
             notifications: list[tuple[Callable[..., None], Any]] = []
             for subscription in list(self._subscriptions):
@@ -286,7 +444,7 @@ class RuntimeStateStore:
         merged = [*plan_items, *(item for item in agent_items if item.id not in plan_ids)]
         return [item.to_dict() for item in merged]
 
-    def recent_events(self) -> list[StateChanged]:
+    def recent_events(self) -> list[RuntimeEvent]:
         with self._lock:
             return list(self._events)
 
@@ -374,7 +532,6 @@ class RuntimeStateStore:
         )
         with self._lock:
             previous = self._snapshot
-            restored = replace(restored, revision=max(previous.revision, restored.revision) + 1)
             self._validate(restored)
             self._snapshot = restored
             self._sync_facade(restored)
@@ -387,7 +544,6 @@ class RuntimeStateStore:
                 restored.session_id,
                 True,
             )
-            self._events.append(event)
             notifications = []
             for subscription in list(self._subscriptions):
                 selected = subscription.selector(restored)
@@ -397,6 +553,76 @@ class RuntimeStateStore:
         for listener, selected in notifications:
             listener(selected, event)
         return restored
+
+    def replay(self, events: Iterable[RuntimeEvent | dict[str, Any]]) -> ReplayResult:
+        """Replay contiguous journal events after the current snapshot."""
+        parsed_events: list[RuntimeEvent] = []
+        warnings: list[str] = []
+        for index, raw_event in enumerate(events, start=1):
+            try:
+                parsed_events.append(
+                    raw_event
+                    if isinstance(raw_event, RuntimeEvent)
+                    else RuntimeEvent.from_dict(raw_event)
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                warnings.append(f"Invalid runtime event {index}: {exc}")
+                break
+
+        with self._lock:
+            previous = self._snapshot
+            next_state = previous
+            applied_events: list[RuntimeEvent] = []
+            for event in parsed_events:
+                if event.revision <= next_state.revision:
+                    continue
+                if event.session_id and event.session_id != next_state.session_id:
+                    warnings.append(
+                        f"Runtime event {event.event_id} belongs to another session"
+                    )
+                    break
+                expected_revision = next_state.revision + 1
+                if event.revision != expected_revision:
+                    warnings.append(
+                        f"Runtime event revision gap: expected {expected_revision}, got {event.revision}"
+                    )
+                    break
+                candidate = next_state
+                try:
+                    for action in event.actions:
+                        candidate = self._reduce(candidate, action)
+                    candidate = replace(candidate, revision=event.revision)
+                    self._validate(candidate)
+                except (KeyError, TypeError, ValueError) as exc:
+                    warnings.append(f"Failed to replay runtime event {event.event_id}: {exc}")
+                    break
+                next_state = candidate
+                applied_events.append(event)
+
+            if next_state is previous:
+                return ReplayResult(previous, tuple(warnings), previous.revision)
+            self._snapshot = next_state
+            self._sync_facade(next_state)
+            change = StateChanged(
+                action_type="state_replayed",
+                previous_revision=previous.revision,
+                revision=next_state.revision,
+                run_id=next_state.run.run_id,
+                plan_revision=next_state.plan.revision,
+                session_id=next_state.session_id,
+                critical=True,
+                event_id=applied_events[-1].event_id,
+                actions=(),
+            )
+            notifications = []
+            for subscription in list(self._subscriptions):
+                selected = subscription.selector(next_state)
+                if selected != subscription.selected:
+                    subscription.selected = selected
+                    notifications.append((subscription.listener, selected))
+        for listener, selected in notifications:
+            listener(selected, change)
+        return ReplayResult(next_state, tuple(warnings), next_state.revision)
 
     def _reduce(self, state: RuntimeSnapshot, action: RuntimeAction) -> RuntimeSnapshot:
         payload = action.payload
@@ -427,11 +653,39 @@ class RuntimeStateStore:
             phase: RunPhase = "completed" if payload.get("success", True) else "failed"
             return replace(state, run=replace(state.run, phase=phase, last_result=payload.get("result")))
         if action.type == "run_cancelled":
-            return replace(state, run=replace(state.run, phase="cancelled"))
+            return replace(
+                state,
+                run=replace(state.run, phase="cancelled"),
+                interaction=InteractionState(cancel_requested=True),
+            )
+        if action.type == "interaction_waiting":
+            return replace(
+                state,
+                run=replace(state.run, phase="waiting_input"),
+                interaction=InteractionState(
+                    waiting_for=str(payload.get("interaction_type") or "user_input"),
+                    confirmation_required=True,
+                ),
+            )
+        if action.type == "interaction_cleared":
+            phase: RunPhase = "running" if state.run.run_id else "idle"
+            return replace(
+                state,
+                run=replace(state.run, phase=phase),
+                interaction=InteractionState(),
+            )
         if action.type == "mode_changed":
             mode = payload.get("mode")
-            if mode == "plan" and state.plan.lifecycle == PlanApprovalStatus.NONE:
-                return replace(state, plan=replace(state.plan, lifecycle=PlanApprovalStatus.DRAFT))
+            if mode == "plan":
+                return replace(
+                    state,
+                    plan=replace(
+                        state.plan,
+                        lifecycle=PlanApprovalStatus.DRAFT,
+                        revision=state.plan.revision + 1,
+                    ),
+                    interaction=InteractionState(),
+                )
             if mode == "act" and state.plan.plan is None:
                 return replace(state, plan=replace(state.plan, lifecycle=PlanApprovalStatus.NONE))
             return state
@@ -544,7 +798,11 @@ class RuntimeStateStore:
                 raise InvalidStateTransitionError("plan_steps_requeued requires an active plan")
             plan = copy.deepcopy(state.plan.plan)
             for step in plan.steps:
-                if step.status in {StepStatus.RUNNING, StepStatus.FAILED}:
+                if step.status in {
+                    StepStatus.RUNNING,
+                    StepStatus.FAILED,
+                    StepStatus.INTERRUPTED,
+                }:
                     step.status = StepStatus.PENDING
                     step.error = None
             plan._update_plan_status()
@@ -555,6 +813,36 @@ class RuntimeStateStore:
                     plan=plan,
                     lifecycle=PlanApprovalStatus.APPROVED,
                     revision=state.plan.revision + 1,
+                ),
+            )
+        if action.type == "session_interrupted_recovered":
+            plan = copy.deepcopy(state.plan.plan)
+            plan_state = state.plan
+            if plan is not None and (
+                state.plan.lifecycle == PlanApprovalStatus.EXECUTING
+                or any(step.status == StepStatus.RUNNING for step in plan.steps)
+            ):
+                for step in plan.steps:
+                    if step.status == StepStatus.RUNNING:
+                        step.status = StepStatus.INTERRUPTED
+                plan.status = PlanStatus.INTERRUPTED
+                plan_state = replace(
+                    state.plan,
+                    plan=plan,
+                    lifecycle=PlanApprovalStatus.INTERRUPTED,
+                    revision=state.plan.revision + 1,
+                )
+            run = state.run
+            if run.phase == "running":
+                run = replace(run, phase="interrupted")
+            return replace(
+                state,
+                run=run,
+                plan=plan_state,
+                interaction=InteractionState(
+                    waiting_for="interrupted_plan" if plan is not None else None,
+                    confirmation_required=plan_state.lifecycle
+                    == PlanApprovalStatus.INTERRUPTED,
                 ),
             )
         if action.type == "plan_file_changed":
@@ -584,7 +872,12 @@ class RuntimeStateStore:
         current_by_id = {step.id: step for step in current.steps}
         for step in incoming.steps:
             existing = current_by_uid.get(step.uid) or current_by_id.get(step.id)
-            if existing and existing.status in {StepStatus.DONE, StepStatus.RUNNING, StepStatus.FAILED}:
+            if existing and existing.status in {
+                StepStatus.DONE,
+                StepStatus.RUNNING,
+                StepStatus.FAILED,
+                StepStatus.INTERRUPTED,
+            }:
                 step.uid = existing.uid
                 step.status = existing.status
                 step.result_summary = existing.result_summary
@@ -603,6 +896,7 @@ class RuntimeStateStore:
             StepStatus.DONE: "done",
             StepStatus.FAILED: "cancelled",
             StepStatus.SKIPPED: "cancelled",
+            StepStatus.INTERRUPTED: "pending",
         }
         return [
             TodoItem(
@@ -625,6 +919,7 @@ class RuntimeStateStore:
             PlanApprovalStatus.EXECUTING,
             PlanApprovalStatus.COMPLETED,
             PlanApprovalStatus.FAILED,
+            PlanApprovalStatus.INTERRUPTED,
         } and plan is None:
             raise InvalidStateTransitionError(
                 f"Plan lifecycle {lifecycle.value} requires an active plan"
@@ -646,6 +941,7 @@ class RuntimeStateStore:
         mode = "plan" if plan_lifecycle in {
             PlanApprovalStatus.DRAFT,
             PlanApprovalStatus.AWAITING_APPROVAL,
+            PlanApprovalStatus.INTERRUPTED,
         } else "act"
         object.__setattr__(self._facade, "current_task", snapshot.run.task)
         object.__setattr__(self._facade, "mode", mode)

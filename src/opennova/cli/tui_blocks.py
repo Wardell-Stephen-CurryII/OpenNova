@@ -275,7 +275,7 @@ def _status_style(status: str) -> str:
         return TUI_THEME.success
     if status in {"failed", "cancelled"}:
         return TUI_THEME.error
-    if status in {"running", "in_progress", "executing"}:
+    if status in {"running", "in_progress", "executing", "interrupted"}:
         return TUI_THEME.warning
     return TUI_THEME.muted
 

@@ -103,7 +103,21 @@ def _has_pending_plan_decision(state: Any) -> bool:
     if not getattr(state, "current_plan", None):
         return False
     approval_status = getattr(getattr(state, "plan_approval_status", None), "value", "")
-    return approval_status in {"awaiting_approval", "approved", "executing", "failed"}
+    return approval_status in {
+        "awaiting_approval",
+        "approved",
+        "executing",
+        "failed",
+        "interrupted",
+    }
+
+
+def _has_plan_revision_in_progress(state: Any) -> bool:
+    """Return whether the next user turn should revise the retained plan."""
+    if not getattr(state, "current_plan", None):
+        return False
+    approval_status = getattr(getattr(state, "plan_approval_status", None), "value", "")
+    return approval_status == "draft"
 
 
 def _format_tool_execution(tool_name: str, detail: str) -> str:
@@ -493,6 +507,8 @@ class OpenNovaTUI(App):
         self.call_after_refresh(self._after_mount)
 
     def on_unmount(self) -> None:
+        with suppress(Exception):
+            self.agent.flush_session()
         if callable(self._state_unsubscribe):
             self._state_unsubscribe()
         for unsubscribe in self._runtime_unsubscribers:
@@ -726,6 +742,30 @@ class OpenNovaTUI(App):
             return False
 
         self._restore_loaded_session(log, loaded)
+        for warning in getattr(loaded, "recovery_warnings", []):
+            log.write(f"[yellow]Session recovery warning: {warning}[/yellow]")
+        state = getattr(self.agent, "state", None)
+        approval = getattr(getattr(state, "plan_approval_status", None), "value", "")
+        if approval == "interrupted" and getattr(state, "current_plan", None):
+            decision = await self._ask_plan_decision_dialog("Recovered interrupted plan")
+            if decision == "execute":
+                await self._execute_pending_plan()
+            elif decision == "discard":
+                self._discard_pending_plan()
+            else:
+                state.set_mode("plan")
+                self._workbench_tab = "plan"
+                self._refresh_workbench_panel()
+                log.write(
+                    "[yellow]Interrupted plan kept for revision. "
+                    "Send your requested changes next.[/yellow]"
+                )
+        elif getattr(getattr(state, "store", None), "get_state", None):
+            if state.store.get_state().run.phase == "interrupted":
+                log.write(
+                    "[yellow]The previous task was interrupted and was not resumed "
+                    "automatically.[/yellow]"
+                )
         return True
 
     def _restore_loaded_session(self, log: _MessagesLog, loaded: LoadedSession) -> None:
@@ -789,6 +829,8 @@ class OpenNovaTUI(App):
     def action_cancel(self) -> None:
         """Cancel the running agent task, or double-press to exit."""
         if self._is_agent_running():
+            with suppress(Exception):
+                self.agent.state.cancel_run(self.agent.state.run_id)
             self._agent_task.cancel()
             self._set_status("[yellow]Cancelling...[/yellow]")
             return
@@ -1651,6 +1693,7 @@ class OpenNovaTUI(App):
                         "done": "✅",
                         "failed": "❌",
                         "skipped": "⏭️",
+                        "interrupted": "⏸",
                     }
                     for step in plan.steps:
                         icon = status_icons.get(step.status.value, "❓")
@@ -1772,6 +1815,14 @@ class OpenNovaTUI(App):
         turns within a session. The ReActLoop handles first-turn setup
         (system prompt injection) correctly even with preserve_context=True.
         """
+        if _has_plan_revision_in_progress(getattr(self.agent, "state", None)):
+            await OpenNovaTUI._continue_plan_conversation(
+                self,
+                task,
+                preserve_context=preserve_context,
+            )
+            return
+
         if _has_pending_plan_decision(getattr(self.agent, "state", None)):
             decision = await self._ask_plan_decision_dialog(task)
             if decision == "execute":

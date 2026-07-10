@@ -44,6 +44,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "max_tool_result_tokens": 8000,
         },
     },
+    "session": {
+        "persistence": {
+            "debounce_ms": 250,
+            "snapshot_event_threshold": 100,
+            "snapshot_size_threshold": 1048576,
+            "fsync_critical": True,
+        }
+    },
     "security": {
         "sandbox_mode": True,
         "command_timeout": 30,

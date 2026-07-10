@@ -117,7 +117,10 @@ class AgentRuntime:
         self.context_manager.set_compressor(ContextCompressor(llm_provider=self.llm))
 
         from opennova.session import SessionManager
-        self.session_manager = SessionManager(project_path=os.getcwd())
+        self.session_manager = SessionManager(
+            project_path=os.getcwd(),
+            persistence_config=self.config.get("session", {}).get("persistence", {}),
+        )
         self.session_manager.start_session()
         self.session_transcript: list[dict[str, Any]] = []
         self.state_store = RuntimeStateStore(
@@ -187,8 +190,28 @@ class AgentRuntime:
     def _on_runtime_state_changed(self, revision: int, event: StateChanged) -> None:
         """Fan out state changes and persist lifecycle boundaries."""
         self._emit("state_changed", self.state_store.get_state(), event)
-        if event.critical and getattr(self, "_state_persistence_ready", False):
-            self._save_session_messages()
+        if not getattr(self, "_state_persistence_ready", False):
+            return
+        try:
+            journal_event = next(
+                (
+                    item
+                    for item in reversed(self.state_store.recent_events())
+                    if item.event_id == event.event_id
+                ),
+                None,
+            )
+            if journal_event is not None:
+                self.session_manager.append_runtime_event(
+                    journal_event,
+                    durable=event.critical,
+                )
+            if self.session_manager.needs_runtime_snapshot:
+                self._save_session_messages()
+        except Exception as exc:
+            _LOGGER.warning("Failed to append runtime state event: %s", exc)
+            with suppress(Exception):
+                self._emit("diagnostic", "runtime_event_persistence_failed", str(exc))
 
     def _register_builtin_tools(self) -> None:
         """Register all built-in tools."""
@@ -598,6 +621,7 @@ class AgentRuntime:
             PlanApprovalStatus.APPROVED,
             PlanApprovalStatus.EXECUTING,
             PlanApprovalStatus.FAILED,
+            PlanApprovalStatus.INTERRUPTED,
         }:
             return "Plan approval required before execution"
 
@@ -704,7 +728,11 @@ class AgentRuntime:
             self.state.requeue_interrupted_plan_steps()
             return
         for step in plan.steps:
-            if step.status in {StepStatus.RUNNING, StepStatus.FAILED}:
+            if step.status in {
+                StepStatus.RUNNING,
+                StepStatus.FAILED,
+                StepStatus.INTERRUPTED,
+            }:
                 step.status = StepStatus.PENDING
                 step.error = None
 
@@ -1218,22 +1246,6 @@ class AgentRuntime:
                     if getattr(self, "state_store", None) is not None
                     else None
                 ),
-                state_events=(
-                    [
-                        {
-                            "action_type": event.action_type,
-                            "previous_revision": event.previous_revision,
-                            "revision": event.revision,
-                            "run_id": event.run_id,
-                            "plan_revision": event.plan_revision,
-                            "session_id": event.session_id,
-                            "critical": event.critical,
-                        }
-                        for event in self.state_store.recent_events()
-                    ]
-                    if getattr(self, "state_store", None) is not None
-                    else None
-                ),
             )
         except Exception as exc:
             _LOGGER.warning("Failed to persist OpenNova session state: %s", exc)
@@ -1243,6 +1255,12 @@ class AgentRuntime:
     def record_session_transcript_event(self, kind: str, **payload: Any) -> None:
         """Record a replayable TUI transcript event for the active session."""
         self.session_transcript.append({"kind": kind, **payload})
+
+    def flush_session(self) -> None:
+        """Persist the current turn and flush any debounced runtime events."""
+        self._save_session_messages()
+        with suppress(Exception):
+            self.session_manager.flush_runtime_events()
 
     def resume_session(self, session_id: str) -> Any:
         """Load a past session's messages into the context manager.
@@ -1259,13 +1277,48 @@ class AgentRuntime:
         self.session_manager.resume_session(session_id)
         self.session_transcript = [dict(event.payload) for event in loaded.transcript_events]
         state_store = getattr(self, "state_store", None)
-        if state_store is not None:
-            state_store.bind_session(session_id)
-        if state_store is not None and loaded.runtime_state:
-            state_store.restore(loaded.runtime_state)
-            self._refresh_plan_from_file()
-        else:
-            self._restore_plan_state(loaded.plan_state)
+        persistence_was_ready = getattr(self, "_state_persistence_ready", False)
+        self._state_persistence_ready = False
+        try:
+            if state_store is not None:
+                state_store.bind_session(session_id)
+                if loaded.runtime_state:
+                    state_store.restore(loaded.runtime_state)
+                else:
+                    state_store.restore(
+                        {
+                            "schema_version": 2,
+                            "revision": 0,
+                            "session_id": session_id,
+                            "run": {"phase": "idle"},
+                            "plan": {"lifecycle": "none", "revision": 0},
+                            "todos": {},
+                            "interaction": {},
+                        }
+                    )
+                replay_result = state_store.replay(loaded.state_events)
+                loaded.recovery_warnings.extend(replay_result.warnings)
+                loaded.last_valid_revision = replay_result.last_valid_revision
+                if not loaded.runtime_state and loaded.plan_state:
+                    self._restore_plan_state(loaded.plan_state)
+                self._refresh_plan_from_file()
+                snapshot = state_store.get_state()
+                if (
+                    snapshot.run.phase == "running"
+                    or snapshot.plan.lifecycle == PlanApprovalStatus.EXECUTING
+                    or (
+                        snapshot.plan.plan is not None
+                        and any(
+                            step.status == StepStatus.RUNNING
+                            for step in snapshot.plan.plan.steps
+                        )
+                    )
+                ):
+                    state_store.dispatch(RuntimeAction("session_interrupted_recovered"))
+            else:
+                self._restore_plan_state(loaded.plan_state)
+        finally:
+            self._state_persistence_ready = persistence_was_ready
         self._save_session_messages()
         return loaded
 
