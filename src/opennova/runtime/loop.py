@@ -663,7 +663,7 @@ class ReActLoop:
                 )
                 return blocked_result
 
-            if guard_result.requires_confirmation and guard_result.risk_level == RiskLevel.WARN:
+            if guard_result.requires_confirmation:
                 confirm_result = await self._confirm_warn_action(action, guard_result)
                 if not confirm_result.success:
                     if self.working_memory and action_record:

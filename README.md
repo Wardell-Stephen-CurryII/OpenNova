@@ -94,6 +94,7 @@ agent:
     max_tool_result_tokens: 8000
 
 security:
+  permission_mode: auto  # request | auto | full
   sandbox_mode: true
   command_timeout: 30
   allow_network: true
@@ -159,6 +160,10 @@ uv run opennova run --plan "Refactor the authentication module"
 
 # Use a specific model
 uv run opennova run -m gpt-4o "Create a new Python module"
+
+# Choose the approval mode for this run
+uv run opennova --permission-mode request
+uv run opennova --permission-mode full run "Run the trusted migration"
 ```
 
 ### TUI slash commands
@@ -176,7 +181,9 @@ Inside the Textual TUI:
 | `/model` | Show current model info |
 | `/init [--force]` | Let the model analyze the repo and generate `OPENNOVA.md` for long-term project memory |
 | `/config` | Show current configuration |
-| `/permissions [tool allow\|deny\|ask]` | Show or update persisted tool permission rules |
+| `/permissions` | Show the active approval mode and persisted tool rules |
+| `/permissions mode request\|auto\|full` | Switch approval mode for this run |
+| `/permissions <tool> allow\|deny\|ask` | Update a persisted tool permission rule |
 | `/plugins [trust\|untrust\|test name\|lock\|drift\|warnings\|audit [--policy strict]]` | Manage, lock, validate, warn, and audit local project plugins |
 | `/hooks` | Show loaded hook counts |
 | `/automations` | List local scheduled automations |
@@ -358,6 +365,8 @@ opennova/
 ## Security features
 
 OpenNova includes several safety mechanisms:
+- **Three approval modes**: `request` asks for every allowed tool call, `auto` asks only
+  for risky calls, and `full` skips approval prompts
 - **Dangerous command detection** for destructive shell commands
 - **Path sandboxing** for file access limits
 - **Protected paths** for system directories such as `/etc` and `/usr`
@@ -365,6 +374,9 @@ OpenNova includes several safety mechanisms:
 - **Sensitive file detection** for files like `.env` and `.pem`
 - **Optional network policy** (`security.allow_network`) to block tool/network access
 - **Strict shell parsing mode** (`security.strict_shell_parsing`) to reject shell syntax fallback
+
+`full` only bypasses approval prompts. Hard blocks, explicit deny rules, plan approval,
+network/path restrictions, and the OS process sandbox remain active.
 
 ## Development
 

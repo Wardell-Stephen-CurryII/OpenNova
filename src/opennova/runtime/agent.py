@@ -42,6 +42,7 @@ from opennova.runtime.state import (
     StepStatus,
 )
 from opennova.runtime.store import RuntimeAction, RuntimeStateStore, StateChanged
+from opennova.security.guardrails import PermissionMode
 from opennova.tasks import TaskManager
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 
@@ -166,6 +167,7 @@ class AgentRuntime:
             secrets_policy=self.security_config.get("secrets", {}),
             permission_store=self.permission_store,
         )
+        self.security_audit_logger.permission_mode = self.get_permission_mode().value
 
         # Set global task manager for task tools
         from opennova.tools.task_tools import set_global_task_manager
@@ -433,7 +435,39 @@ class AgentRuntime:
             enable_skills=self.enable_skills,
         )
         child.auto_confirm = self.auto_confirm
+        if child.get_permission_mode() != self.get_permission_mode():
+            child.set_permission_mode(self.get_permission_mode())
         return child
+
+    def get_permission_mode(self) -> PermissionMode:
+        """Return the canonical approval mode active for this runtime."""
+        guardrails = getattr(self, "guardrails", None)
+        if guardrails is None:
+            return PermissionMode.AUTO
+        return guardrails.effective_permission_mode
+
+    def set_permission_mode(self, mode: str | PermissionMode) -> PermissionMode:
+        """Switch approval mode for this runtime and its command tool."""
+        canonical = PermissionMode.normalize(mode)
+        self.guardrails.set_permission_mode(canonical)
+        self.security_config["permission_mode"] = canonical.value
+
+        config_setter = getattr(self.config, "set", None)
+        if callable(config_setter):
+            config_setter("security.permission_mode", canonical.value)
+        elif isinstance(self.config, dict):
+            self.config.setdefault("security", {})["permission_mode"] = canonical.value
+
+        if self.tool_registry.has_tool("execute_command"):
+            command_tool = self.tool_registry.get("execute_command")
+            command_guardrails = getattr(command_tool, "guardrails", None)
+            if command_guardrails is not None:
+                command_guardrails.set_permission_mode(canonical)
+            command_tool.config["permission_mode"] = canonical.value
+
+        self.security_audit_logger.permission_mode = canonical.value
+        self._emit("permission_mode_changed", canonical)
+        return canonical
 
     def register_tool(self, tool: BaseTool) -> None:
         """

@@ -8,6 +8,8 @@ Provides:
 - Risk level assessment
 """
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -33,11 +35,28 @@ class RiskLevel(StrEnum):
 class PermissionMode(StrEnum):
     """High-level permission mode for tool execution."""
 
+    REQUEST = "request"
+    AUTO = "auto"
+    FULL = "full"
+
+    # Legacy modes remain accepted for existing configuration files and API users.
     DEFAULT = "default"
     ASK = "ask"
     ALLOW_EDITS = "allowEdits"
     READ_ONLY = "readOnly"
     BYPASS = "bypass"
+
+    @classmethod
+    def normalize(cls, value: str | PermissionMode) -> PermissionMode:
+        """Return the canonical three-mode equivalent for a configured value."""
+        mode = value if isinstance(value, cls) else cls(value)
+        aliases = {
+            cls.DEFAULT: cls.AUTO,
+            cls.ASK: cls.REQUEST,
+            cls.ALLOW_EDITS: cls.AUTO,
+            cls.BYPASS: cls.FULL,
+        }
+        return aliases.get(mode, mode)
 
 
 @dataclass
@@ -132,6 +151,12 @@ SHELL_FEATURE_PATTERNS = [
     r"\?",
 ]
 
+APPROVAL_EXEMPT_TOOLS = {
+    "ask_user_question",
+    "enter_plan_mode",
+    "exit_plan_mode",
+}
+
 
 class Guardrails:
     """
@@ -225,60 +250,82 @@ class Guardrails:
             return "command"
         return "other"
 
+    @property
+    def effective_permission_mode(self) -> PermissionMode:
+        """Return the canonical mode used for approval decisions."""
+        return PermissionMode.normalize(self.permission_mode)
+
+    def set_permission_mode(self, mode: str | PermissionMode) -> PermissionMode:
+        """Switch approval mode without rebuilding the safety policy."""
+        self.permission_mode = PermissionMode(mode)
+        return self.effective_permission_mode
+
     def _check_permission_mode(self, tool_name: str) -> GuardResult | None:
+        """Apply authorization blocks that no approval mode may bypass."""
         if tool_name in self.always_deny_tools:
             return GuardResult(False, RiskLevel.BLOCK, f"Tool is denied by policy: {tool_name}")
         if self.permission_store:
             decision = self.permission_store.decision_for(tool_name)
             if decision == PermissionDecision.ALWAYS_DENY:
                 return GuardResult(False, RiskLevel.BLOCK, f"Tool is denied by policy: {tool_name}")
-            if decision == PermissionDecision.ALWAYS_ASK:
-                return GuardResult(True, RiskLevel.WARN, f"Tool requires confirmation by policy: {tool_name}", True)
-        if self.permission_mode == PermissionMode.BYPASS:
-            return GuardResult(True, RiskLevel.SAFE, f"Tool is allowed by policy: {tool_name}")
 
         category = self._tool_category(tool_name)
         if self.permission_mode == PermissionMode.READ_ONLY and category != "read":
             return GuardResult(False, RiskLevel.BLOCK, f"Read-only mode blocks tool: {tool_name}")
-        if tool_name in self.always_ask_tools:
-            return GuardResult(True, RiskLevel.WARN, f"Tool requires confirmation by policy: {tool_name}", True)
-        if self.permission_mode == PermissionMode.ASK and category != "read":
-            return GuardResult(True, RiskLevel.WARN, f"Permission required for tool: {tool_name}", True)
-        if self.permission_mode == PermissionMode.ALLOW_EDITS and category == "command":
-            return GuardResult(True, RiskLevel.WARN, f"Command requires confirmation by policy: {tool_name}", True)
         return None
 
-    def _apply_permission_overlay(
+    def _apply_approval_policy(
         self,
         tool_name: str,
         safety_result: GuardResult,
-        permission_result: GuardResult | None,
         rule_result: GuardResult | None = None,
     ) -> GuardResult:
-        """Apply permission policy without letting it bypass hard safety blocks."""
+        """Apply the active approval mode after all safety checks have completed."""
         if not safety_result.allowed:
             return safety_result
         if rule_result and not rule_result.allowed:
             return rule_result
-        if rule_result and rule_result.requires_confirmation:
-            safety_result.requires_confirmation = True
-            safety_result.risk_level = RiskLevel.WARN
-            safety_result.reason = rule_result.reason
+
+        if rule_result:
             safety_result.metadata.update(rule_result.metadata)
-            return safety_result
-        if rule_result and rule_result.allowed:
-            safety_result.requires_confirmation = False
-            if safety_result.risk_level == RiskLevel.WARN:
-                safety_result.risk_level = RiskLevel.SAFE
-            safety_result.metadata.update(rule_result.metadata)
-            return safety_result
-        if tool_name in self.always_allow_tools:
-            safety_result.requires_confirmation = False
-            if safety_result.risk_level == RiskLevel.WARN:
-                safety_result.risk_level = RiskLevel.SAFE
-            return safety_result
-        if permission_result and permission_result.requires_confirmation:
-            return permission_result
+
+        configured_decision = (
+            self.permission_store.decision_for(tool_name) if self.permission_store else None
+        )
+        explicitly_ask = (
+            tool_name in self.always_ask_tools
+            or configured_decision == PermissionDecision.ALWAYS_ASK
+            or bool(rule_result and rule_result.requires_confirmation)
+        )
+        explicitly_allow = (
+            tool_name in self.always_allow_tools
+            or configured_decision == PermissionDecision.ALWAYS_ALLOW
+            or bool(rule_result and rule_result.allowed and not rule_result.requires_confirmation)
+        )
+
+        mode = self.effective_permission_mode
+        prior_confirmation = safety_result.requires_confirmation or explicitly_ask
+        if tool_name in APPROVAL_EXEMPT_TOOLS:
+            requires_confirmation = False
+        elif mode == PermissionMode.REQUEST:
+            requires_confirmation = True
+        elif mode == PermissionMode.FULL:
+            requires_confirmation = False
+        else:
+            requires_confirmation = safety_result.risk_level == RiskLevel.WARN or explicitly_ask
+            if explicitly_allow and safety_result.risk_level == RiskLevel.SAFE:
+                requires_confirmation = False
+
+        safety_result.requires_confirmation = requires_confirmation
+        safety_result.metadata.update(
+            {
+                "permission_mode": mode.value,
+                "approval_required": requires_confirmation,
+                "approval_bypassed": bool(
+                    mode == PermissionMode.FULL and prior_confirmation
+                ),
+            }
+        )
         return safety_result
 
     @staticmethod
@@ -565,11 +612,19 @@ class Guardrails:
                         ],
                     )
 
+        if operation == "delete":
+            return GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.WARN,
+                reason="Deleting a file is a destructive operation",
+                requires_confirmation=True,
+                suggestions=["Verify the target path before deleting it"],
+            )
         return GuardResult(
             allowed=True,
             risk_level=RiskLevel.SAFE,
             reason="Path is safe to access",
-            requires_confirmation=operation in ("write", "delete"),
+            requires_confirmation=operation == "write",
         )
 
     def check_http_request(self, url: str, method: str = "GET") -> GuardResult:
@@ -677,9 +732,8 @@ class Guardrails:
             return rule_result
 
         permission_result = self._check_permission_mode(tool_name)
-        if permission_result is not None and (
-            not permission_result.allowed or self.permission_mode == PermissionMode.BYPASS
-        ):
+        if permission_result is not None and not permission_result.allowed:
+            permission_result.metadata["permission_mode"] = self.effective_permission_mode.value
             return permission_result
 
         if tool_name == "execute_command":
@@ -738,14 +792,13 @@ class Guardrails:
             result.requires_confirmation = True
             result.metadata.update(secret_result.metadata)
 
-        result = self._apply_permission_overlay(tool_name, result, permission_result, rule_result)
         if mcp_context_result and mcp_context_result.allowed:
             result.metadata.update(mcp_context_result.metadata)
             if mcp_context_result.requires_confirmation and result.allowed:
                 result.risk_level = RiskLevel.WARN
                 result.reason = mcp_context_result.reason
                 result.requires_confirmation = True
-        return result
+        return self._apply_approval_policy(tool_name, result, rule_result)
 
 
 def _extract_write_content(arguments: dict[str, Any]) -> str:

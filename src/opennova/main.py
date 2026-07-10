@@ -56,12 +56,18 @@ def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> No
     is_flag=True,
     help="Open the TUI and continue the most recent saved session.",
 )
+@click.option(
+    "--permission-mode",
+    type=click.Choice(["request", "auto", "full"], case_sensitive=False),
+    help="Approval mode for this run: request, auto, or full.",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
     config_path: str | None,
     resume_mode: bool,
     continue_mode: bool,
+    permission_mode: str | None,
 ) -> None:
     """
     OpenNova - A lightweight CLI AI Coding Agent.
@@ -72,6 +78,7 @@ def main(
     ctx.obj["config_path"] = config_path
     ctx.obj["resume_mode"] = resume_mode
     ctx.obj["continue_mode"] = continue_mode
+    ctx.obj["permission_mode"] = permission_mode
 
     if ctx.invoked_subcommand is None:
         ctx.invoke(run, task=None)
@@ -112,7 +119,12 @@ def run(
 
         opennova run -m deepseek-v4-pro "Create a new Python module"
     """
-    config = _load_and_validate_config(ctx.obj.get("config_path"), provider, model)
+    config = _load_and_validate_config(
+        ctx.obj.get("config_path"),
+        provider,
+        model,
+        ctx.obj.get("permission_mode"),
+    )
     resume_mode = bool(ctx.obj.get("resume_mode"))
     continue_mode = bool(ctx.obj.get("continue_mode"))
 
@@ -148,7 +160,10 @@ def plan(ctx: click.Context, task: str, edit: bool) -> None:
 
         opennova plan "Add unit tests for the authentication module"
     """
-    config = _load_and_validate_config(ctx.obj.get("config_path"))
+    config = _load_and_validate_config(
+        ctx.obj.get("config_path"),
+        permission_mode=ctx.obj.get("permission_mode"),
+    )
     asyncio.run(_run_single_task(config, task, plan_mode=True, stream=True))
 
 
@@ -158,7 +173,10 @@ def list_tools(ctx: click.Context) -> None:
     """
     List all available tools.
     """
-    config = _load_and_validate_config(ctx.obj.get("config_path"))
+    config = _load_and_validate_config(
+        ctx.obj.get("config_path"),
+        permission_mode=ctx.obj.get("permission_mode"),
+    )
     agent = AgentRuntime(config)
 
     click.echo("Available tools:\n")
@@ -295,6 +313,7 @@ def _load_and_validate_config(
     config_path: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    permission_mode: str | None = None,
 ) -> Config:
     """Load and validate configuration."""
     config = load_config(config_path)
@@ -308,6 +327,9 @@ def _load_and_validate_config(
         if current_provider in providers:
             providers[current_provider]["default_model"] = model
             config.data["providers"] = providers
+
+    if permission_mode:
+        config.set("security.permission_mode", permission_mode.lower())
 
     errors = validate_config(config)
     if errors:

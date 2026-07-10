@@ -237,5 +237,5 @@ def test_guardrails_permission_modes_and_tool_rules():
     assert ask_result.requires_confirmation is True
     assert ask_block_result.allowed is False
     assert allow_result.requires_confirmation is False
-    assert command_result.requires_confirmation is True
+    assert command_result.requires_confirmation is False
     assert deny_result.allowed is False

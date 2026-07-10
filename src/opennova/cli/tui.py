@@ -988,6 +988,14 @@ class OpenNovaTUI(App):
 
     def _slash_completions(self, text: str) -> list[str]:
         """Complete slash command names and skill names after /skill."""
+        if text.startswith("/permissions "):
+            candidates = [
+                "/permissions mode request",
+                "/permissions mode auto",
+                "/permissions mode full",
+            ]
+            return [candidate for candidate in candidates if candidate.startswith(text)]
+
         # If after "/skill ", complete skill names
         if text.startswith("/skill ") or text == "/skill":
             remainder = text[len("/skill") :].lstrip()
@@ -1217,7 +1225,9 @@ class OpenNovaTUI(App):
 - `/model` - Show current model info
 - `/init [--force]` - Initialize project guide `OPENNOVA.md`
 - `/config` - Show current configuration
-- `/permissions [tool allow|deny|ask]` - Show or update tool permission rules
+- `/permissions` - Show the active approval mode and tool rules
+- `/permissions mode request|auto|full` - Switch approval mode for this run
+- `/permissions <tool> allow|deny|ask` - Update a persisted tool permission rule
 - `/plugins [trust|untrust|test name|lock|drift|warnings|audit [--policy strict]]` - Manage and audit local plugins
 - `/hooks` - Show loaded hook counts
 - `/automations` - List local scheduled automations
@@ -1469,6 +1479,23 @@ class OpenNovaTUI(App):
             self.agent.guardrails.permission_store = store
 
         tokens = args.split()
+        if tokens and tokens[0].lower() == "mode":
+            if len(tokens) != 2 or tokens[1].lower() not in {"request", "auto", "full"}:
+                log.write("[red]Usage: /permissions mode request|auto|full[/red]")
+                return
+            mode = self.agent.set_permission_mode(tokens[1].lower())
+            descriptions = {
+                "request": "every allowed tool call requires approval",
+                "auto": "safe tool calls run automatically; risky calls require approval",
+                "full": "allowed tool calls skip approval; hard safety blocks remain active",
+            }
+            log.write(
+                f"[green]Permission mode: {mode.value}[/green]\n"
+                f"[dim]{descriptions[mode.value]}[/dim]"
+            )
+            self._set_status(f"[green]permissions:{mode.value}[/green]")
+            return
+
         if len(tokens) >= 2:
             aliases = {
                 "allow": PermissionDecision.ALWAYS_ALLOW,
@@ -1477,15 +1504,27 @@ class OpenNovaTUI(App):
             }
             decision = aliases.get(tokens[1])
             if decision is None:
-                log.write("[red]Usage: /permissions [tool allow|deny|ask][/red]")
+                log.write(
+                    "[red]Usage: /permissions [mode request|auto|full|"
+                    "<tool> allow|deny|ask][/red]"
+                )
                 return
             store.record(tokens[0], decision)
-            self.agent.guardrails.always_allow_tools.update(store.allowed_tools())
-            self.agent.guardrails.always_deny_tools.update(store.denied_tools())
-            self.agent.guardrails.always_ask_tools.update(store.ask_tools())
+            security_config = getattr(self.agent, "security_config", {})
+            self.agent.guardrails.always_allow_tools = set(
+                security_config.get("always_allow_tools", [])
+            ) | set(store.allowed_tools())
+            self.agent.guardrails.always_deny_tools = set(
+                security_config.get("always_deny_tools", [])
+            ) | set(store.denied_tools())
+            self.agent.guardrails.always_ask_tools = set(
+                security_config.get("always_ask_tools", [])
+            ) | set(store.ask_tools())
             log.write(f"[green]Permission rule saved: {tokens[0]} -> {decision.value}[/green]")
             return
 
+        mode = self.agent.get_permission_mode().value
+        log.write(f"[cyan]Permission mode:[/cyan] {mode}")
         if not store.rules:
             log.write("[yellow]No persisted permission rules.[/yellow]")
             return
@@ -1583,6 +1622,7 @@ class OpenNovaTUI(App):
             f"[cyan]Tools:[/cyan] {len(self.agent.get_tools())}  "
             f"[cyan]Plugins:[/cyan] {len(getattr(self.agent.plugin_manager, 'plugins', []))}"
         )
+        log.write(f"[cyan]Permission mode:[/cyan] {self.agent.get_permission_mode().value}")
 
     async def _cmd_todos(self, args: str) -> None:
         log = self.query_one("#messages")
@@ -2168,11 +2208,14 @@ class OpenNovaTUI(App):
         model_info = self.agent.get_model_info() if hasattr(self.agent, "get_model_info") else {}
         session_id = str(getattr(getattr(self.agent, "session_manager", None), "session_id", ""))
         model = str(model_info.get("model") or "unknown")
+        mode_getter = getattr(self.agent, "get_permission_mode", None)
+        permission_mode = mode_getter().value if callable(mode_getter) else "auto"
         return render_status_bar(
             session_id=session_id,
             model=model,
             message=message,
             tool_panel_visible=bool(getattr(self, "_tool_panel_visible", False)),
+            permission_mode=permission_mode,
         )
 
     def _set_status(self, text: str) -> None:

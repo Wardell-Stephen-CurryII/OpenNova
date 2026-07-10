@@ -267,7 +267,7 @@ store.record("execute_command", PermissionDecision.ALWAYS_ASK)
 guard = Guardrails(
     sandbox_mode=True,
     allow_network=True,
-    auto_confirm_safe=True,
+    permission_mode="auto",
     permission_store=store,
 )
 result = guard.check_command("rm -rf /")
@@ -280,7 +280,11 @@ print(result.risk_level)
 - 对 shell fallback、删除操作、敏感 URL 等返回 `WARN`
 - 在 `allow_network=False` 时阻断 `web_fetch` 和常见联网命令
 - 配合运行时交互机制，在需要时请求用户确认
+- 支持 `request`、`auto`、`full` 三档会话级审批模式
 - 支持项目级持久化权限规则，且 hard block 不会被 always allow 绕过
+
+`AgentRuntime.set_permission_mode()` 可在当前进程内切换模式；`full` 只跳过审批，
+不会绕过 hard block、显式 deny、Plan Mode 或进程沙箱。
 
 ### Runtime Tool Events
 

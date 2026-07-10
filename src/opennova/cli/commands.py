@@ -44,7 +44,12 @@ class SlashCommandRegistry:
             SlashCommand("/history", "_cmd_history", "Show history", "/history [n]"),
             SlashCommand("/resume", "_cmd_resume", "Resume a session", "/resume [id]", sync=False),
             SlashCommand("/sessions", "_cmd_sessions", "List sessions"),
-            SlashCommand("/permissions", "_cmd_permissions", "Show or update permission rules"),
+            SlashCommand(
+                "/permissions",
+                "_cmd_permissions",
+                "Show or update the approval mode and tool rules",
+                "/permissions [mode request|auto|full|<tool> allow|deny|ask]",
+            ),
             SlashCommand("/plugins", "_cmd_plugins", "List or trust local plugins"),
             SlashCommand("/hooks", "_cmd_hooks", "Show loaded hooks"),
             SlashCommand("/automations", "_cmd_automations", "List local automations"),

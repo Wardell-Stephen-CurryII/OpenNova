@@ -320,6 +320,7 @@ def render_status_bar(
     model: str,
     message: str = "",
     tool_panel_visible: bool = False,
+    permission_mode: str = "auto",
 ) -> str:
     """Render a stable one-line workspace status bar."""
     short_session = session_id[:12] if session_id else "no-session"
@@ -328,6 +329,7 @@ def render_status_bar(
     return (
         f"[dim]session[/dim] {short_session}  "
         f"[dim]model[/dim] {model or 'unknown'}  "
+        f"[dim]permissions[/dim] {permission_mode}  "
         f"[dim]{tools}[/dim]  {state}"
     )
 

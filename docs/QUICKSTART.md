@@ -111,10 +111,12 @@ opennova> /init
 | `uv run opennova` | 启动 Textual TUI |
 | `uv run opennova run "task"` | 执行单次任务 |
 | `uv run opennova run --tui` | 显式使用 Textual TUI |
+| `uv run opennova --permission-mode request\|auto\|full` | 选择本次运行的审批模式 |
 | `uv run opennova --version` | 查看版本 |
 | `uv run opennova init` | 初始化全局配置 |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
-| `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 |
+| `/permissions mode request\|auto\|full` | 查看或切换当前审批模式 |
+| `/permissions <tool> allow\|deny\|ask` | 查看或更新工具权限规则 |
 | `/plugins [trust\|untrust\|test name\|lock\|drift\|warnings\|audit [--policy strict]]` | 管理、锁定、校验、启动警告和审计本地项目插件 |
 | `/automations` | 查看本地自动化任务 |
 | `/automations once <name> <run_at> <prompt>` | 创建一次性自动化任务 |

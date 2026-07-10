@@ -60,7 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "allowed_paths": [],
         "blocked_commands": [],
         "strict_shell_parsing": False,
-        "permission_mode": "default",
+        "permission_mode": "auto",
         "always_allow_tools": [],
         "always_deny_tools": [],
         "always_ask_tools": [],
@@ -298,6 +298,23 @@ def validate_config(config: Config) -> list[str]:
         List of validation error messages (empty if valid)
     """
     errors = []
+
+    permission_mode = config.get("security.permission_mode", "auto")
+    valid_permission_modes = {
+        "request",
+        "auto",
+        "full",
+        "default",
+        "ask",
+        "allowEdits",
+        "readOnly",
+        "bypass",
+    }
+    if permission_mode not in valid_permission_modes:
+        errors.append(
+            "security.permission_mode must be one of: request, auto, full, "
+            "default, ask, allowEdits, readOnly, bypass"
+        )
 
     default_provider = config.get("default_provider")
     if not default_provider:

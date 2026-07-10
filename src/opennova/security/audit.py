@@ -27,6 +27,7 @@ class SecurityAuditLogger:
         self.enabled = enabled
         self.max_arg_chars = max_arg_chars
         self.session_id = session_id
+        self.permission_mode = "auto"
         self.secret_scanner = SecretScanner.from_config(secrets_policy)
 
     def log_tool_event(
@@ -51,6 +52,7 @@ class SecurityAuditLogger:
                 "confirmation_outcome": confirmation_outcome,
                 "checkpoint_id": checkpoint_id,
                 "duration_ms": duration_ms,
+                "permission_mode": self.permission_mode,
             }
             if guard_result is not None:
                 metadata = getattr(guard_result, "metadata", {}) or {}
@@ -66,6 +68,12 @@ class SecurityAuditLogger:
                     "mcp_server": metadata.get("mcp_server"),
                     "mcp_tool": metadata.get("mcp_tool"),
                     "mcp_trusted": metadata.get("mcp_trusted"),
+                    "permission_mode": metadata.get("permission_mode", self.permission_mode),
+                    "approval_required": metadata.get(
+                        "approval_required",
+                        getattr(guard_result, "requires_confirmation", None),
+                    ),
+                    "approval_bypassed": metadata.get("approval_bypassed", False),
                 }
             if result is not None:
                 result_metadata = getattr(result, "metadata", {}) or {}

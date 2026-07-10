@@ -271,7 +271,8 @@ uv run opennova run --provider deepseek "写一个测试用例"
 | `/model` | 显示当前模型 | `/model` |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` | `/init --force` |
 | `/config` | 显示配置 | `/config` |
-| `/permissions [tool allow\|deny\|ask]` | 查看或更新工具权限规则 | `/permissions execute_command ask` |
+| `/permissions mode request\|auto\|full` | 查看或切换当前审批模式 | `/permissions mode auto` |
+| `/permissions <tool> allow\|deny\|ask` | 查看或更新工具权限规则 | `/permissions execute_command ask` |
 | `/plugins [trust\|untrust\|test name\|lock\|drift\|warnings\|audit [--policy strict]]` | 管理、锁定、校验、启动警告和审计本地项目插件 | `/plugins warnings --policy strict` |
 | `/hooks` | 查看已加载 hooks | `/hooks` |
 | `/automations` | 查看本地自动化任务 | `/automations` |
@@ -433,6 +434,7 @@ OpenNova 当前支持：
 
 ```yaml
 security:
+  permission_mode: auto
   sandbox_mode: true
   command_timeout: 30
   allow_network: true
@@ -447,6 +449,8 @@ security:
 ```
 
 安全策略说明：
+- `request` 会审批每个允许的工具调用；`auto` 仅审批高风险调用；`full` 不弹工具审批。
+- `full` 不会关闭 hard block、显式 deny、Plan 审批、网络/路径限制或 OS 进程沙箱。
 - 文件工具会统一经过 Sandbox 检查，限制工作目录、保护路径和只读模式。
 - `execute_command` 默认优先使用 `shell=False` 执行普通命令。
 - 当命令包含管道、重定向等 shell 特性时，会进入兼容 fallback，并通过 Guardrails 走确认逻辑。
