@@ -22,6 +22,11 @@ RIGHT_ALT_PRESSED = 0x0001
 SHIFT_PRESSED = 0x0010
 LEFT_CTRL_PRESSED = 0x0008
 RIGHT_CTRL_PRESSED = 0x0004
+ENABLE_WINDOW_INPUT = 0x0008
+ENABLE_MOUSE_INPUT = 0x0010
+ENABLE_EXTENDED_FLAGS = 0x0080
+ENABLE_QUICK_EDIT_MODE = 0x0040
+ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
 
 SPECIAL_KEYS = {
     8: "backspace",
@@ -117,6 +122,22 @@ def write_console_key_debug_record(path: str | Path, record: dict[str, Any]) -> 
         file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def build_ime_console_input_mode(current_console_mode_in: int, mouse: bool) -> int:
+    """Return the Windows console input mode used by the IME-friendly TUI driver.
+
+    Textual's Windows mouse support relies on VT input sequences reaching the
+    XTerm parser. Keep VT input enabled while still preserving the custom IME
+    handling flags OpenNova needs.
+    """
+    input_mode = current_console_mode_in
+    input_mode &= ~(0x0004 | 0x0002 | 0x0001)
+    input_mode |= ENABLE_WINDOW_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT
+    if mouse:
+        input_mode |= ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS
+        input_mode &= ~ENABLE_QUICK_EDIT_MODE
+    return input_mode
+
+
 def get_ime_friendly_windows_driver_class() -> type[Any]:
     """Return the Windows-only Textual driver class used by OpenNova TUI."""
     if sys.platform != "win32":
@@ -156,15 +177,7 @@ def _build_ime_friendly_windows_driver_class() -> type[Any]:
             current_console_mode_out | win32.ENABLE_VIRTUAL_TERMINAL_PROCESSING,
         )
 
-        input_mode = current_console_mode_in
-        input_mode &= ~(
-            win32.ENABLE_ECHO_INPUT | win32.ENABLE_LINE_INPUT | win32.ENABLE_PROCESSED_INPUT
-        )
-        input_mode |= win32.ENABLE_WINDOW_INPUT
-        if mouse:
-            input_mode |= win32.ENABLE_MOUSE_INPUT | win32.ENABLE_EXTENDED_FLAGS
-            input_mode &= ~win32.ENABLE_QUICK_EDIT_MODE
-
+        input_mode = build_ime_console_input_mode(current_console_mode_in, mouse)
         win32.set_console_mode(terminal_in, input_mode)
         return restore
 
