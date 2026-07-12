@@ -1,7 +1,7 @@
 """
-OpenNova CLI Entry Point.
+OpenNova terminal application entry point.
 
-Main command-line interface for the OpenNova AI Coding Agent.
+Launches the Textual TUI and exposes setup and one-shot task commands.
 """
 
 import asyncio
@@ -70,7 +70,7 @@ def main(
     permission_mode: str | None,
 ) -> None:
     """
-    OpenNova - A lightweight CLI AI Coding Agent.
+    OpenNova - A terminal AI Coding Agent with a Textual TUI.
 
     Run without arguments to start the Textual TUI.
     """

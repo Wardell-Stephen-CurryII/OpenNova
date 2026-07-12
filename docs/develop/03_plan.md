@@ -1,5 +1,7 @@
 # OpenNova 03 计划：运行时协议、权限持久化与产品化补强
 
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.1 的当前命令或功能状态。
+
 ## Summary
 03 计划在 01/02 已完成的工具协议、权限模式、插件 manifest、TUI 进度、符号工具和自动化基础上继续产品化。目标是把“能力骨架”升级为更接近 Claude Code 的稳定体验：统一 runtime tool event、持久化权限决策、插件 trust model、自动化运行状态、Python qualified symbol、共享 slash command registry、TodoWrite、checkpoint 和 transcript export。
 

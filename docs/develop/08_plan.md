@@ -1,5 +1,7 @@
 # OpenNova 08 计划：Tool Card 面板、Edit Checkpoints、Diagnostics 执行、插件 Lock/Drift 与 Automation Run Loop
 
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.1 的当前命令或功能状态。
+
 ## Summary
 08 计划接续 `07_plan.md` 的后续建议，把 07 的 adapter 和命令基础继续推进为可操作的产品薄层。本轮仍保持本地优先和低风险增量，不重写完整 Textual 布局、不启动常驻 LSP server，而是实现可测试的面板状态、edit/multi-edit checkpoint 绑定、外部 diagnostics subprocess 执行、插件 lock/drift 命令、automation daemon run-loop。
 

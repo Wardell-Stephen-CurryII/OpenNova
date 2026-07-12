@@ -1,1 +1,1 @@
-"""CLI components."""
+"""Textual TUI and terminal application components."""

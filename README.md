@@ -1,70 +1,57 @@
 # OpenNova
 
-OpenNova v0.4.0 is a lightweight CLI AI coding agent built from scratch in Python.
+OpenNova v0.4.1 is a terminal AI coding agent built in Python around a Textual TUI.
 
 **English** | **[简体中文](README.zh-CN.md)**
 
-**[Quickstart (Chinese)](docs/QUICKSTART.md)** | **[Tutorial (Chinese)](docs/TUTORIAL.md)** | **[API Reference (Chinese)](docs/API.md)**
+**[Quickstart](docs/QUICKSTART.en.md)** | **[Tutorial](docs/TUTORIAL.en.md)** | **[API Reference (Chinese)](docs/API.md)**
 
 ## Overview
 
-OpenNova runs in your terminal and combines a small core with practical coding-agent workflows:
-- **Multi-provider runtime** for OpenAI, Anthropic, and DeepSeek
-- **Textual TUI** with split-pane chat, streaming output, session resume, and slash commands
-- **Session management**: save, resume, and list sessions (JSONL persistence)
-- **Context compression**: LLM-driven summarization for long conversations
-- **Plan + act workflows** for decomposing larger tasks before execution
-- **Tool + skill extensibility** for local tools and trusted project plugins
-- **MCP integration** for external tool servers
-- **Built-in safety guardrails** for risky commands and protected paths
+OpenNova combines a focused agent runtime with a full-screen terminal workbench:
 
-## What’s in v0.4.0
+- OpenAI, Anthropic, and DeepSeek providers
+- Streaming Textual TUI with chat, Tools, Plan, and Todos panels
+- Persistent sessions with a resume picker and complete transcript replay
+- Plan/Act workflows, TodoWrite, sub-agents, and worktrees
+- 39 built-in tools plus Skills, trusted project plugins, hooks, and MCP
+- Context compression and layered project memory
+- Three permission modes, parameter rules, secret redaction, audit logs, and sandboxes
+- A headless Python SDK for scripts and services
 
-The current release adds stronger plan/skill/security foundations, OS process sandboxing, and a more polished Textual workbench:
-- **Workbench TUI**: two-column chat plus a wider Tools / Plan / Todos side panel with keyboard tab switching
-- **Plan mode upgrades**: persisted plan markdown, per-step refresh, live status writeback, and todo mirroring
-- **Skills upgrades**: namespaced discovery, argument substitution, hooks, path activation, and ranking
-- **Security hardening**: parameter-level permission rules, command/network/MCP policies, secret redaction, audit logs, and process sandbox support
-- **Session management**: `/resume <id>`, `/sessions` — conversations persist to JSONL
-- **Context compression**: LLM summarizes old messages when context exceeds 55% token utilization, keeping long conversations within budget
-- **Textual TUI**: structured chat blocks, copy overlay, history navigation, real-time streaming, and side-panel details
-- **Expanded built-in tools**: file ops, shell execution, git, task tracking, TodoWrite, plan mode, sub-agents, skills, web, project guide init, code search, Python diagnostics/symbols, MCP resources, worktrees
-- ReAct runtime with streaming responses and tool execution
-- Plan mode with approval flow inside the TUI
-- Diff/patch editing pipeline
-- Context, working memory, and project memory components
-- MCP stdio and SSE transport support
-- Skill auto-discovery and bundled example skills
-- Interactive user-question prompts in TUI and task runs
-- Real HTTP-backed `web_fetch` behavior
+The legacy interactive command-line interface and standalone `opennova tui` command are not part of the current product. Run `opennova` with no subcommand to open the Textual TUI. Command options remain available for setup, automation, and one-shot tasks.
 
-Note: `web_search` is present as a tool surface, but in this runtime it reports that search is not configured instead of fabricating results.
+## What is new in v0.4.1
+
+Version 0.4.1 aligns the documentation and package metadata with the current application:
+
+- documents the Textual TUI as the only interactive interface
+- removes stale `opennova tui`, 17-tool, and copy-overlay references
+- documents in-place text selection and system clipboard shortcuts
+- documents the session picker, full transcript replay, and same-session resume behavior
+- refreshes the command, slash-command, security, SDK, and architecture references
 
 ## Installation
 
-### Prerequisites
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) package manager
-
-### Local development setup
+Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-# Clone the repository
 git clone https://github.com/Wardell-Stephen-CurryII/OpenNova.git
 cd OpenNova
-
-# Install dependencies into the project environment
 uv sync
-
-# Initialize configuration
 uv run opennova init
 ```
 
-If you want an installed CLI instead of the local development flow, you can also run `uv tool install .` and then use `opennova` directly. The examples below use `uv run opennova ...` so they always match the checked-out source tree.
+For a globally available command:
+
+```bash
+uv tool install .
+opennova
+```
 
 ## Configuration
 
-Edit `~/.opennova/config.yaml` or set environment variables:
+Configuration is merged in this order: defaults, `~/.opennova/config.yaml`, project `.opennova/config.yaml`, then environment variables.
 
 ```yaml
 default_provider: deepseek
@@ -74,19 +61,16 @@ providers:
   openai:
     api_key: ${OPENAI_API_KEY}
     default_model: gpt-4o
-
   anthropic:
     api_key: ${ANTHROPIC_API_KEY}
     default_model: claude-sonnet-4
-
   deepseek:
     api_key: ${DEEPSEEK_API_KEY}
+    base_url: https://api.deepseek.com/v1
     default_model: deepseek-v4-pro
 
 agent:
   max_iterations: 20
-  auto_confirm: false
-  show_thinking: true
   compression:
     enabled: true
     threshold: 0.55
@@ -96,22 +80,13 @@ agent:
 security:
   permission_mode: auto  # request | auto | full
   sandbox_mode: true
-  command_timeout: 30
   allow_network: true
-  auto_confirm_safe: true
-  allowed_paths: []
-  blocked_commands: []
   strict_shell_parsing: false
   read_only: false
-  max_file_size: 104857600
 
 mcp:
   enabled: true
-  servers:
-    - name: filesystem
-      transport: stdio
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "./src"]
+  servers: []
 
 skills:
   enabled: true
@@ -119,288 +94,136 @@ skills:
   exclude: []
 ```
 
-Or use environment variables:
-
-```bash
-export OPENAI_API_KEY=your_key_here
-export ANTHROPIC_API_KEY=your_key_here
-export DEEPSEEK_API_KEY=your_key_here
-```
+API keys may also be supplied through `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `DEEPSEEK_API_KEY`.
 
 ## Usage
 
-### Interactive mode
-
 ```bash
-# Textual TUI (default interactive interface, including Windows IME support)
+# Open the Textual TUI
 uv run opennova
 
-# Explicit Textual TUI mode
-uv run opennova run --tui
-```
-
-### Session management
-
-```bash
-# Open the TUI session picker
+# Open the session picker
 uv run opennova --resume
 
-# Continue the most recent saved session in the TUI
+# Continue the newest session
 uv run opennova --continue
-```
-
-### Single task mode
-
-```bash
-# Execute a task directly
-uv run opennova run "Read the README.md file"
-
-# Run in plan mode
-uv run opennova run --plan "Refactor the authentication module"
-
-# Use a specific model
-uv run opennova run -m gpt-4o "Create a new Python module"
 
 # Choose the approval mode for this run
 uv run opennova --permission-mode request
-uv run opennova --permission-mode full run "Run the trusted migration"
+
+# Execute a one-shot task without opening the TUI
+uv run opennova run "Read README.md"
+
+# Generate a plan for a one-shot task
+uv run opennova run --plan "Refactor the authentication module"
+
+# Select a provider or model for a one-shot task
+uv run opennova run --provider deepseek -m deepseek-v4-pro "Review src/"
 ```
 
-### TUI slash commands
+Other setup and inspection commands are `opennova init`, `opennova list-tools`, `opennova config`, and `opennova --version`.
 
-Inside the Textual TUI:
+## TUI controls
 
-| Command | Description |
-|---------|-------------|
-| `/plan <task>` | Generate a plan, show it, and ask whether to execute it now |
-| `/act <task>` | Execute directly (default mode) |
-| `/tools` | List available tools |
-| `/skills` | List loaded skills |
-| `/skill <name> [args]` | Invoke a loaded skill directly |
-| `/reload-skills` | Reload skills from disk |
-| `/model` | Show current model info |
-| `/init [--force]` | Let the model analyze the repo and generate `OPENNOVA.md` for long-term project memory |
-| `/config` | Show current configuration |
-| `/permissions` | Show the active approval mode and persisted tool rules |
-| `/permissions mode request\|auto\|full` | Switch approval mode for this run |
-| `/permissions <tool> allow\|deny\|ask` | Update a persisted tool permission rule |
-| `/plugins [trust\|untrust\|test name\|lock\|drift\|warnings\|audit [--policy strict]]` | Manage, lock, validate, warn, and audit local project plugins |
-| `/hooks` | Show loaded hook counts |
-| `/automations` | List local scheduled automations |
-| `/automations once <name> <run_at> <prompt>` | Schedule a one-shot local automation |
-| `/automations interval <name> <seconds> <prompt>` | Schedule a recurring local automation |
-| `/automations pause\|resume\|delete\|run-now <id>` | Manage local automations |
-| `/automations daemon start\|stop\|status\|tick\|run` | Control the local automation daemon |
-| `/diagnostics [path]` | Run Python syntax diagnostics |
-| `/status` | Show runtime/session status |
-| `/todos` | Show the current TodoWrite task board |
-| `/checkpoint` | Show checkpoint/rollback status |
-| `/checkpoint list\|diff\|restore [--preview] <id>` | List, preview, or restore checkpoint snapshots |
-| `/checkpoint diff --session <session> <id>` | Inspect checkpoint diff from `.opennova/exports/<session>.md` |
-| `/checkpoint diff --from-transcript <path> <id>` | Inspect checkpoint diff from an exported transcript |
-| `write_file` checkpoint metadata | Existing-file overwrites automatically create a checkpoint and return `checkpoint_id` |
-| `edit_file` checkpoint metadata | Edit and multi-edit operations also create restore checkpoints for existing files |
-| `/export [dir]` | Export the current transcript to Markdown, including tool checkpoint/diff details |
-| automation retry/archive | Local daemon retry events can be archived by an injected callback |
-| automation backoff/archive summary | Retry delay and archive summaries are available for daemon productization |
-| transcript checkpoint lookup | Exported transcripts can be indexed by `checkpoint_id` for later diff lookup |
-| transcript session lookup | `/checkpoint diff --session` resolves checkpoint diffs by session id |
-| plugin startup warnings | `/plugins warnings --policy strict` reports lockfile drift and policy risks |
-| diagnostics events | Diagnostics, hover, definition, and references can be wrapped in unified event payloads |
-| diagnostics server manager | A lightweight server lifecycle facade tracks pyright/ruff server argv and process metadata |
-| plugin startup warnings | Drift and strict policy warnings can be generated without blocking startup |
-| automation status archive | Daemon status can include archive summaries for productized status panels |
-| `/history [n]` | Show recent conversation history |
-| `/resume <id>` | Resume a previous session |
-| `/sessions` | List saved sessions |
-| `/clear` | Clear current conversation state |
-| `/help` | Show help message |
-| `/exit` | Exit OpenNova |
+| Control | Action |
+|---|---|
+| `Enter` | Submit the prompt |
+| `Shift+Enter` | Insert a newline |
+| `Ctrl+C` | Cancel the active run |
+| `Ctrl+Shift+C` | Copy the selected message text |
+| `Cmd+C` | Copy selected text on macOS terminals that deliver the binding |
+| mouse drag | Select text directly in the message log |
+| `Tab` / `Shift+Tab` | Move focus |
 
-## Built-in tools
+Clipboard copying first uses Textual/OSC 52 and then the native platform command (`pbcopy`, `clip`, `wl-copy`, or `xclip`) when available.
 
-OpenNova ships with a broader tool surface than the original README listed.
+## Slash commands
 
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents with optional line range |
-| `write_file` | Write content to a file |
-| `create_file` | Create a new file |
-| `delete_file` | Delete a file with confirmation |
-| `list_directory` | List directory contents |
-| `execute_command` | Execute shell commands through guardrails |
-| `git_commit` | Create a git commit with staged changes |
-| `git_status` | Show working tree status |
-| `git_diff` | Show changes between commits or working tree |
-| `git_log` | Show commit history |
-| `git_branch` | List or manage branches |
-| `task_create` | Create a new task in the task list |
-| `task_list` | List all tracked tasks |
-| `task_get` | Get task details by ID |
-| `task_update` | Update task status or properties |
-| `task_stop` | Stop a running background task |
-| `task_output` | Get output from a completed task |
-| `todo_write` | Replace the current structured task board for multi-step work |
-| `enter_plan_mode` | Enter plan mode for architectural design |
-| `exit_plan_mode` | Exit plan mode after plan approval |
-| `agent` | Delegate work to a sub-agent |
-| `send_message` | Send a message to a running sub-agent |
-| `skill` | Invoke a loaded skill by name |
-| `ask_user_question` | Ask the user to choose from 2-4 options during a run |
-| `web_fetch` | Fetch a real HTTP/HTTPS page and return extracted content |
-| `web_search` | Search interface placeholder; reports unconfigured when no backend is available |
-| `init_project_guide` | Create or regenerate `OPENNOVA.md` project guide |
-| `glob_files` | Find files using glob patterns while respecting project ignores |
-| `grep_code` | Search code content without relying on shell commands |
-| `python_diagnostics` | Run lightweight Python syntax diagnostics |
-| `python_symbols` | List Python symbols with qualified names |
-| `python_definition` | Find Python symbol definitions |
-| `python_references` | Find Python symbol references |
-| `list_mcp_resources` | List resources exposed by connected MCP servers |
-| `read_mcp_resource` | Read a resource from a connected MCP server |
-| `enter_worktree` | Create and enter an isolated git worktree |
-| `exit_worktree` | Remove a git worktree |
+The main commands available inside the TUI are:
 
-Tip: `OPENNOVA.md` is generated by the model during `/init` and remains manually maintainable. The agent automatically reads it as project context during task execution.
+| Command | Purpose |
+|---|---|
+| `/act <task>` | Execute directly |
+| `/plan <task>` | Generate a plan and request approval |
+| `/tools`, `/skills`, `/skill <name> [args]` | Inspect tools or invoke a Skill |
+| `/init [--force]` | Generate or rebuild `OPENNOVA.md` |
+| `/resume [id]`, `/sessions` | Pick or inspect persisted sessions |
+| `/permissions ...` | Inspect or update permission mode and rules |
+| `/plugins ...`, `/hooks` | Manage trusted project extensions |
+| `/automations ...` | Manage local scheduled tasks and the daemon |
+| `/diagnostics [path]` | Run Python diagnostics |
+| `/todos`, `/status` | Inspect runtime state |
+| `/checkpoint ...` | List, preview, diff, or restore checkpoints |
+| `/export [dir]` | Export the current transcript to Markdown |
+| `/history [n]`, `/clear`, `/help`, `/exit` | Manage the current TUI session |
 
-## Built-in skills
+Run `/help` for the registry generated by the installed version.
 
-OpenNova includes several example skills:
+## Built-in capabilities
 
-| Skill | Description |
-|-------|-------------|
-| `code_review` | Review code for quality and best practices |
-| `generate_docs` | Generate documentation/docstrings |
-| `git_helper` | Git command assistance |
-| `analyze_project` | Analyze project structure |
+OpenNova currently registers 39 built-in tools across these groups:
 
-## Creating custom skills
+- files: read, write, create, edit, multi-edit, delete, and directory listing
+- search and diagnostics: glob, grep, Python syntax, symbols, definitions, and references
+- shell and Git: guarded command execution, status, diff, log, branch, and commit
+- tasks: background tasks, TodoWrite, planning, sub-agents, and user questions
+- integrations: Skills, web fetch/search surface, project guide, MCP resources, and worktrees
 
-Custom skills now use the Claude Code-style markdown package format. Create a directory such as `~/.opennova/skills/my_skill/` and put a `SKILL.md` file inside it:
+`web_search` intentionally returns an unconfigured result unless a search backend is provided; it does not fabricate search results.
 
-```markdown
----
-name: my_skill
-description: Summarize a target file or feature area.
-when_to_use: Use when the user wants a reusable project-specific analysis prompt.
-allowed-tools: read_file, list_directory
-arguments: [target]
-argument-hint: <file-or-area>
----
-Analyze the requested target carefully.
+## Sessions and memory
 
-Target: $ARGUMENTS
+Sessions are persisted under `~/.opennova/sessions/`. `--resume` and `/resume` open a newest-first picker whose titles come from the first user message. Resuming restores both backend context and the visible TUI transcript, then continues writing to the original session instead of creating a duplicate.
 
-Summarize:
-- what it does
-- key risks
-- likely extension points
-```
+Context compression starts at 55% utilization by default. Older complete message pairs are summarized while recent messages, tool-call boundaries, and compression markers remain recoverable.
 
-Skills are markdown prompts loaded from these directory layouts:
-- `~/.opennova/skills/<skill-name>/SKILL.md`
-- `.opennova/skills/<skill-name>/SKILL.md`
-- configured skill directories with the same `<skill-name>/SKILL.md` structure
+## Extensions
 
-## MCP integration
-
-OpenNova supports Model Context Protocol (MCP) servers for extended capabilities:
-
-```yaml
-mcp:
-  enabled: true
-  servers:
-    - name: filesystem
-      transport: stdio
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
-```
-
-Supported transports:
-- **stdio**: launch a subprocess and communicate over stdin/stdout
-- **sse**: connect to an HTTP SSE endpoint
-
-## Context compression
-
-OpenNova automatically compresses conversation context when token usage exceeds 55% of the model's context window:
-
-- **LLM-driven summarization**: Old messages are summarized into a concise paragraph using the active LLM provider
-- **Safe cut points**: Compression never splits incomplete assistant+tool pairs
-- **Session persistence**: Compression markers are saved to JSONL, enabling compact session resume
-- **Tool result truncation**: Large tool outputs (>8000 tokens) are truncated (head 20% + tail 80%)
-- **Configurable**: Adjust threshold, keep-last-pairs count, and truncation limits in config
-
-When a session resumes, only messages after the last compression boundary are loaded — older context is replaced by the summary.
-
-## Session management
-
-Conversations are automatically persisted to `~/.opennova/sessions/` as JSONL files:
-
-```bash
-# Inside the TUI
-/resume <session_id>   # Resume a previous session
-/sessions              # List all saved sessions
-```
-
-Each session file records every message, tool call, and compression boundary. When resuming, compression markers allow the agent to restore context compactly.
-
-## Architecture
+Skills use a directory-based `SKILL.md` format:
 
 ```text
-opennova/
-├── providers/         # LLM provider implementations
-├── tools/             # Built-in tools and tool registry (17 tools)
-├── runtime/           # Agent runtime, loop, and state
-├── cli/               # Textual TUI and shared CLI helpers
-├── diff/              # Diff/patch system
-├── memory/            # Context management, compression, working/project memory
-├── planning/          # Plan data structures and planner
-├── security/          # Guardrails and sandboxing
-├── session/           # Session persistence (JSONL)
-├── mcp/               # MCP transports and connectors
-├── skills/            # Skill system and examples
-└── main.py            # CLI entry point
+~/.opennova/skills/<name>/SKILL.md
+.opennova/skills/<name>/SKILL.md
 ```
 
-## Security features
+MCP supports stdio and SSE transports. Project plugins can add trusted tools and slash commands; plugin lock, drift, warning, and audit operations are exposed through `/plugins`.
 
-OpenNova includes several safety mechanisms:
-- **Three approval modes**: `request` asks for every allowed tool call, `auto` asks only
-  for risky calls, and `full` skips approval prompts
-- **Dangerous command detection** for destructive shell commands
-- **Path sandboxing** for file access limits
-- **Protected paths** for system directories such as `/etc` and `/usr`
-- **Confirmation prompts** for risky operations
-- **Sensitive file detection** for files like `.env` and `.pem`
-- **Optional network policy** (`security.allow_network`) to block tool/network access
-- **Strict shell parsing mode** (`security.strict_shell_parsing`) to reject shell syntax fallback
+## Security model
 
-`full` only bypasses approval prompts. Hard blocks, explicit deny rules, plan approval,
-network/path restrictions, and the OS process sandbox remain active.
+- `request`: asks before every otherwise allowed tool call
+- `auto`: automatically runs safe calls and asks for risky calls
+- `full`: skips approval prompts but does not bypass hard blocks
+
+Hard blocks, explicit deny rules, plan approval, path/network policy, secret handling, and the optional OS process sandbox remain active in every mode.
+
+## Python SDK
+
+```python
+import asyncio
+
+from opennova import OpenNovaClient
+from opennova.config import load_config
+
+async def main() -> None:
+    client = OpenNovaClient(load_config())
+    session_id = client.create_session()
+    result = await client.submit_message(session_id, "Summarize this project")
+    print(result)
+
+asyncio.run(main())
+```
 
 ## Development
 
 ```bash
-# Run tests
+uv sync --dev
 LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1 uv run pytest
-
-# Run tests with coverage
-LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1 uv run pytest --cov=opennova
-
-# Type check
+uv run ruff check src/ tests/
 uv run mypy src/opennova
-
-# Format code
-uv run ruff format src/
-
-# Lint
-uv run ruff check src/
 ```
+
+See [AGENTS.md](AGENTS.md) for the current architecture and contributor workflow. Historical implementation plans under `docs/develop/` are retained as archived design records rather than user documentation.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for the full text.
-
-## Author
-
-Xingwang Lin ([@Wardell-Stephen-CurryII](https://github.com/Wardell-Stephen-CurryII))
+OpenNova is released under the [MIT License](LICENSE).

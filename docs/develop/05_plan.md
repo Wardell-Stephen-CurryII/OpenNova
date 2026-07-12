@@ -1,5 +1,7 @@
 # OpenNova 05 计划：Checkpoint Restore、TUI Tool Cards、插件校验与自动化 Monitor
 
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.1 的当前命令或功能状态。
+
 ## Summary
 05 计划接续 `04_plan.md` 的后续建议，把 checkpoint restore、TUI 工具展示、Python 代码理解、插件安全校验和本地自动化 monitor 继续推进。目标是让 04 已经可用的基础能力更接近 Claude Code 的“可审查、可恢复、可监控”的工程体验。
 

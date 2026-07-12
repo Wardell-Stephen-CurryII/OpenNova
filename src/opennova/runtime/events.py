@@ -1,4 +1,4 @@
-"""Canonical runtime event types shared by SDK, TUI, and CLI surfaces."""
+"""Canonical runtime event types shared by SDK and TUI surfaces."""
 
 from __future__ import annotations
 

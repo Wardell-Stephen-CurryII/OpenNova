@@ -194,7 +194,6 @@ README excerpt:
 ## 常用命令
 - `uv sync`
 - `uv run opennova`
-- `uv run opennova tui`
 - `uv run pytest`
 - `uv run ruff check src/`
 - `uv run ruff format src/`

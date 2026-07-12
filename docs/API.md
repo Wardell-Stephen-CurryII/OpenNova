@@ -1,373 +1,267 @@
-# OpenNova API 参考
+# OpenNova 0.4.1 API 文档
 
-本文档描述当前版本 OpenNova 的核心 API 和主要扩展点。
+本文记录当前源码中可复用的 Python 接口。OpenNova 的用户交互界面是 Textual TUI；这里的 API 面向脚本、服务、插件和二次开发，不是旧交互式 CLI 的说明。
 
-> 说明：OpenNova 仍处于 Alpha 阶段，部分 API 仍可能演进；本文更适合作为当前代码结构与扩展入口的实用参考。
+## 安装与导入
 
-## 核心 API
-
-### AgentRuntime
-
-主运行时类，负责组装 LLM、工具、技能、上下文、记忆和执行循环。
+```bash
+uv sync
+```
 
 ```python
-from opennova.runtime.agent import AgentRuntime
+from opennova import OpenNovaClient, SDKEvent, __version__
+from opennova.config import Config, load_config
+```
+
+包版本和 `pyproject.toml` 在 0.4.1 中保持一致。
+
+## 推荐入口：OpenNovaClient
+
+`OpenNovaClient` 是无界面、按 session 管理的高级接口。
+
+```python
+import asyncio
+
+from opennova import OpenNovaClient
 from opennova.config import load_config
 
-config = load_config()
-agent = AgentRuntime(config)
+async def main() -> None:
+    client = OpenNovaClient(load_config())
+    session_id = client.create_session()
+    result = await client.submit_message(
+        session_id,
+        "检查当前项目的测试结构",
+        mode="act",
+        stream=True,
+    )
+    print(result)
 
-result = await agent.run("读取 README.md", mode="act")
-tools = agent.get_tools()
-skills = agent.get_skills()
+asyncio.run(main())
 ```
 
-常见职责：
-- 注册内置工具和已加载技能
-- 管理回调（stream、plan、interaction 等）
-- 在 act / plan 模式下驱动运行时
-- 暴露当前工具、技能和模型信息
-
-### ReActLoop
-
-`opennova.runtime.loop.ReActLoop` 是实际执行推理-行动-观察循环的核心。它负责：
-- 构造发送给模型的消息
-- 执行工具调用
-- 处理流式输出
-- 在工具请求用户交互时走 interaction callback
-- 更新运行状态与消息历史
-
-### ToolRegistry
-
-工具注册表，管理所有可用工具。
+### 会话方法
 
 ```python
-from opennova.tools.base import ToolRegistry
-
-registry = ToolRegistry()
-registry.register(my_tool)
-tool = registry.get("read_file")
-tools = registry.list_tools()
+session_id = client.create_session()
+runtime = client.get_runtime(session_id)
+active = client.list_sessions()
+client.resume_session(persisted_session_id)
 ```
 
-### BaseTool / ToolResult
+- `create_session() -> str`：创建隔离的 `AgentRuntime`
+- `get_runtime(session_id) -> AgentRuntime`：取得当前进程中的运行时
+- `list_sessions() -> list[dict]`：列出当前 client 管理的运行时，不等同于磁盘会话列表
+- `resume_session(session_id) -> str`：加载磁盘会话，并继续使用原 session id
 
-自定义工具的基础抽象。
+### 消息方法
 
 ```python
-from opennova.tools.base import BaseTool, ToolResult
+result = await client.submit_message(session_id, "任务", mode="act", stream=True)
 
-class MyTool(BaseTool):
-    name = "my_tool"
-    description = "工具描述"
-
-    def execute(self, arg1: str, arg2: int = 10) -> ToolResult:
-        try:
-            result = do_something(arg1, arg2)
-            return ToolResult(success=True, output=result)
-        except Exception as e:
-            return ToolResult(success=False, output="", error=str(e))
+async for event in client.stream_message(session_id, "任务"):
+    print(event.type, event.data)
 ```
 
-`ToolResult` 通常包含：
-- `success`
-- `output`
-- `error`
-- `metadata`
+`stream_message()` 返回 `SDKEvent`，主要事件包括：
 
-其中 `metadata` 既可用于结构化结果，也可用于像 `ask_user_question` 这样的交互契约。
-
-## 内置工具概览
-
-当前内置工具主要分布在这些模块：
-- `opennova.tools.file_tools`
-- `opennova.tools.shell_tools`
-- `opennova.tools.web_tools`
-- `opennova.tools.ask_question_tool`
-
-典型工具面包括：
-- `read_file` / `write_file` / `create_file` / `delete_file`
-- `list_directory`
-- `execute_command`
-- `ask_user_question`
-- `web_fetch`
-- `web_search`
-- `init_project_guide`
-
-说明：
-- `web_fetch` 会发起真实 HTTP 请求。
-- `web_search` 如果没有配置后端，会明确返回未配置错误。
-- `ask_user_question` 在 TUI 环境下可通过 interaction callback 收集用户选择。
-- `init_project_guide` 会驱动模型分析仓库并生成 `OPENNOVA.md`，供后续任务作为项目长期记忆使用。
-
-## Provider API
-
-### BaseLLMProvider
-
-LLM 提供商抽象基类。
-
-```python
-from opennova.providers.base import BaseLLMProvider, Message
-
-class MyProvider(BaseLLMProvider):
-    async def chat(
-        self,
-        messages: list[Message],
-        tools: list[ToolSchema] | None = None,
-        **kwargs,
-    ) -> LLMResponse:
-        pass
-
-    async def stream_chat(
-        self,
-        messages: list[Message],
-        tools: list[ToolSchema] | None = None,
-        **kwargs,
-    ) -> AsyncIterator[StreamChunk]:
-        pass
-```
-
-### ProviderFactory
-
-提供商工厂类。
-
-```python
-from opennova.providers.factory import ProviderFactory
-
-provider = ProviderFactory.create_provider(config)
-ProviderFactory.register_provider("my_provider", MyProvider)
-```
-
-## Skills API
-
-### SkillLoader
-
-发现并解析目录形式的 markdown skills。
-
-```python
-from opennova.skills.base import SkillLoader
-
-skill_files = SkillLoader.discover_skills(["/path/to/skills"])
-loaded = SkillLoader.load_skill_file("/path/to/skills/my_skill/SKILL.md")
-all_skills = SkillLoader.load_all_skills(["/path/to/skills"])
-```
-
-Skills 目录结构为：
-- `~/.opennova/skills/<skill-name>/SKILL.md`
-- `.opennova/skills/<skill-name>/SKILL.md`
-- 其他配置目录下相同的 `<skill-name>/SKILL.md` 结构
-
-### SkillRegistry
-
-markdown skill 的加载、启停与提示词物化入口。
-
-```python
-from opennova.skills.registry import SkillRegistry
-
-registry = SkillRegistry()
-registry.load_all(directories=["/path/to/skills"], excluded=["disabled_skill"])
-registry.enable_skill("my_skill")
-registry.disable_skill("my_skill")
-prompt = registry.materialize_skill_prompt("my_skill", "src/main.py")
-info = registry.get_skill_info("my_skill")
-```
-
-## MCP API
-
-### MCPServerConfig
-
-MCP 服务器配置。
-
-```python
-from opennova.mcp.types import MCPServerConfig, TransportType
-
-config = MCPServerConfig(
-    name="my_server",
-    transport=TransportType.STDIO,
-    command="npx",
-    args=["-y", "@modelcontextprotocol/server-filesystem", "/path"],
-    env={"API_KEY": "xxx"},
-)
-```
-
-### MCPManager / MCPConnector
-
-MCP 连接管理和单连接封装。
-
-```python
-from opennova.mcp.connector import MCPManager
-
-manager = MCPManager(tool_registry)
-await manager.add_server(config)
-results = await manager.connect_all([config1, config2])
-await manager.disconnect_all()
-```
-
-MCP 相关模块负责：
-- 建立 stdio / SSE 连接
-- 初始化 MCP 会话
-- 发现服务器工具
-- 将 MCP 工具包装成 OpenNova 工具
-
-## Memory API
-
-### ContextManager
-
-上下文管理器。
-
-```python
-from opennova.memory.context import ContextManager
-
-ctx = ContextManager(model="deepseek-v4-pro")
-ctx.add_user_message("Hello")
-ctx.add_assistant_message("Hi there!")
-stats = ctx.get_stats()
-messages = ctx.get_messages_for_llm()
-```
-
-### WorkingMemory
-
-工作记忆，用于记录任务过程中的操作与观察。
-
-```python
-from opennova.memory.working import WorkingMemory
-
-memory = WorkingMemory(task="任务描述")
-action = memory.record_action("read_file", {"path": "test.py"})
-memory.update_action(action.id, ActionStatus.SUCCESS, "内容")
-memory.observe_file("test.py", "read", "预览内容")
-summary = memory.get_summary()
-```
-
-## Planning API
-
-计划相关结构主要位于：
-- `opennova.runtime.state`
-- `opennova.planning.models`
-- `opennova.planning.planner`
-
-运行时中的计划能力通常包括：
-- 生成结构化步骤
-- 跟踪步骤状态
-- 在 TUI 中展示计划
-- 等待用户确认后继续执行
-
-## Security API
-
-### Guardrails
-
-安全检查器。
-
-```python
-from opennova.security.guardrails import Guardrails
-from opennova.security.permissions import PermissionDecision, PermissionStore
-
-store = PermissionStore(".opennova/permissions.json")
-store.record("execute_command", PermissionDecision.ALWAYS_ASK)
-guard = Guardrails(
-    sandbox_mode=True,
-    allow_network=True,
-    permission_mode="auto",
-    permission_store=store,
-)
-result = guard.check_command("rm -rf /")
-print(result.allowed)
-print(result.risk_level)
-```
-
-`Guardrails` 当前主要负责：
-- 在工具执行前统一检查高风险命令和路径访问
-- 对 shell fallback、删除操作、敏感 URL 等返回 `WARN`
-- 在 `allow_network=False` 时阻断 `web_fetch` 和常见联网命令
-- 配合运行时交互机制，在需要时请求用户确认
-- 支持 `request`、`auto`、`full` 三档会话级审批模式
-- 支持项目级持久化权限规则，且 hard block 不会被 always allow 绕过
-
-`AgentRuntime.set_permission_mode()` 可在当前进程内切换模式；`full` 只跳过审批，
-不会绕过 hard block、显式 deny、Plan Mode 或进程沙箱。
-
-### Runtime Tool Events
-
-运行时会为工具调用发出统一事件，SDK 和 TUI 可以消费同一套元信息。
-
-```python
-from opennova.runtime.events import ToolEvent, ToolUseContext
-```
-
-事件类型包括：
+- `run_start`
+- `thought`
+- `text_delta`
+- `plan`
 - `tool_start`
 - `permission_request`
 - `tool_result`
 - `tool_error`
 - `tool_cancelled`
-
-### Sandbox
-
-执行沙盒。
+- `run_complete`
+- `run_error`
 
 ```python
-from opennova.security.sandbox import Sandbox, SandboxConfig
+payload = event.to_dict()
+# {"type": ..., "session_id": ..., "data": {...}}
+```
 
-config = SandboxConfig(
-    working_dir="/project",
-    read_only=False,
-    max_file_size=10 * 1024 * 1024,
+## AgentRuntime
+
+需要注册工具、回调或直接控制 Plan 时，可以使用底层运行时：
+
+```python
+from opennova.config import load_config
+from opennova.runtime.agent import AgentRuntime
+
+runtime = AgentRuntime(load_config())
+runtime.register_callback("stream", lambda chunk: print(chunk.content, end=""))
+result = await runtime.run("总结 README", mode="act", stream=True)
+runtime.flush_session()
+```
+
+常用公开方法：
+
+```python
+await runtime.run(task, mode="act", stream=True)
+await runtime.chat(message, stream=True)
+await runtime.execute_approved_plan(stream=True)
+runtime.clear_conversation()
+runtime.resume_session(session_id)
+runtime.get_sessions()
+runtime.get_tools()
+runtime.get_skills()
+runtime.get_model_info()
+runtime.get_state()
+runtime.set_permission_mode("auto")
+runtime.register_tool(tool)
+unsubscribe = runtime.register_callback("tool_event", callback)
+```
+
+`register_callback()` 返回取消订阅函数。MCP 可以通过 `connect_mcp_servers()` 和 `disconnect_mcp_servers()` 显式管理；Act 模式也会按需连接已配置 server。
+
+## 会话恢复数据
+
+`AgentRuntime.resume_session()` 返回 `LoadedSession`。它不仅包含 LLM 上下文，还包含用于 TUI 重放和运行状态恢复的数据：
+
+```python
+loaded = runtime.resume_session(session_id)
+loaded.messages
+loaded.compression_summary
+loaded.transcript_events
+loaded.plan_state
+loaded.runtime_state
+loaded.state_events
+loaded.recovery_warnings
+```
+
+恢复后 `SessionManager` 会绑定原 session 文件，后续保存不会创建重复 session。
+
+## 配置 API
+
+```python
+from opennova.config import Config, load_config, validate_config
+
+config = load_config()
+provider = config.get("default_provider")
+config.set("security.permission_mode", "request")
+errors = validate_config(config)
+```
+
+配置优先级：
+
+1. `DEFAULT_CONFIG`
+2. `~/.opennova/config.yaml`
+3. `.opennova/config.yaml` 或显式路径
+4. 环境变量展开
+
+重要配置组为 `providers`、`agent.compression`、`session.persistence`、`security`、`mcp` 和 `skills`。
+
+## Tool API
+
+所有工具继承 `BaseTool` 并返回 `ToolResult`。
+
+```python
+from opennova.tools.base import BaseTool, ToolResult
+
+class WordCountTool(BaseTool):
+    name = "word_count"
+    description = "Count whitespace-separated words."
+
+    def execute(self, text: str) -> ToolResult:
+        return ToolResult(success=True, output=str(len(text.split())))
+
+runtime.register_tool(WordCountTool())
+```
+
+参数 JSON Schema 默认从 `execute()` 的类型标注生成，也可以覆盖 `get_parameters_schema()` 或 `get_schema()`。工具可以覆盖以下能力提示：
+
+```python
+tool.is_read_only(**args)
+tool.is_destructive(**args)
+tool.requires_permission(**args)
+tool.is_concurrency_safe(**args)
+tool.interrupt_behavior()
+tool.is_open_world(**args)
+```
+
+`ToolRegistry` 提供 `register()`、`get()`、`list_tools()`、`list_names()`、`has_tool()` 和 `unregister()`。当前 `AgentRuntime` 默认注册 39 个内置工具，插件和 MCP 工具会在此基础上动态增加。
+
+## 运行时工具事件
+
+```python
+from opennova.runtime.events import ToolEvent, ToolUseContext
+```
+
+`ToolEvent` 是 SDK 与 TUI 共用的规范事件，包含 `tool_id`、`tool_name`、参数、风险等级、耗时、输出、错误、diff 和 metadata。调用 `to_dict()` 可获得可序列化数据。
+
+## SessionManager
+
+```python
+from opennova.session.manager import SessionManager
+
+manager = SessionManager(project_path="/path/to/project")
+session_id = manager.start_session()
+manager.save_runtime_snapshot(messages, transcript_events=events)
+sessions = manager.list_sessions()
+loaded = manager.load_session_with_summary(session_id)
+manager.resume_session(session_id)
+```
+
+会话格式是 JSONL v2 快照加运行时事件。loader 兼容旧格式，并对旧的重复消息做尽力去重。列表按 `modified` 倒序排列，会话标题默认来自第一条用户消息的 20 字符片段。
+
+## Skill API
+
+```python
+from opennova.skills.registry import SkillRegistry
+
+registry = SkillRegistry()
+registry.load_all(directories=["/path/to/skills"], excluded=[])
+registry.list_enabled_skills()
+registry.resolve_skill_name("review")
+materialized = registry.materialize_skill_prompt("review", "src/")
+registry.activate_for_paths(["src/app.py"], cwd="/project")
+```
+
+Skill 支持用户级、项目级和配置目录，具备命名空间解析、用户/模型调用控制、参数替换、路径激活和使用排序。
+
+## MCP API
+
+```python
+from opennova.mcp.connector import MCPManager
+from opennova.mcp.types import MCPServerConfig, TransportType
+from opennova.tools.base import ToolRegistry
+
+server = MCPServerConfig(
+    name="filesystem",
+    transport=TransportType.STDIO,
+    command="npx",
+    args=["-y", "@modelcontextprotocol/server-filesystem", "./src"],
 )
 
-sandbox = Sandbox(config)
-success, content = sandbox.safe_read("test.txt")
-success, msg = sandbox.safe_write("output.txt", b"data")
-sandbox.rollback()
+manager = MCPManager(ToolRegistry())
+await manager.add_server(server)
+resources = await manager.list_resources("filesystem")
+await manager.disconnect_all()
 ```
 
-`Sandbox` 当前用于文件工具统一接线，负责：
-- 把文件访问限制在工作目录与允许路径内
-- 拒绝受保护路径访问
-- 支持 `read_only`、`max_file_size` 等配置
-- 跟踪写入/删除并支持回滚
+当前连接实现支持 stdio 和 SSE。`TransportType.WEBSOCKET` 已定义，但配置校验会明确报告尚未支持。
 
-## Diff API
-
-### DiffEngine
-
-Diff 生成和应用。
+## Security API
 
 ```python
-from opennova.diff.engine import DiffEngine
+from opennova.security.guardrails import Guardrails
 
-engine = DiffEngine()
-diff = engine.generate_diff(original, modified, "file.py")
-result = engine.apply_patch("file.py", diff, backup=True)
-preview = engine.preview_diff(diff)
+guard = Guardrails(sandbox_mode=True, permission_mode="auto")
+command_result = guard.check_command("git status")
+path_result = guard.check_file_path("README.md", operation="read")
+http_result = guard.check_http_request("https://example.com", method="GET")
+tool_result = guard.check_tool_call("execute_command", {"command": "git status"})
 ```
 
-### ChangeSet
+`GuardResult` 包含是否允许、风险等级、原因和 metadata。`request`、`auto`、`full` 只控制审批策略，不能覆盖 hard block、显式 deny、网络/路径限制或 OS 进程沙箱。
 
-文件变更集合，用于跟踪一次任务中的修改。
+## 扩展入口
 
-```python
-from opennova.diff.changeset import ChangeSet
+- Provider：继承 `BaseLLMProvider`，实现普通与流式 completion，并在 `ProviderFactory` 注册
+- Tool：继承 `BaseTool`，通过 `AgentRuntime.register_tool()` 注册
+- Skill：新增 `<scope>/skills/<name>/SKILL.md`
+- MCP：通过 `MCPServerConfig` 和 `MCPManager` 接入
+- Plugin：在项目插件目录声明工具、slash command 和 hooks，并经过 trust/lock 检查
 
-changeset = ChangeSet(task="重构")
-```
-
-## 扩展建议
-
-如果你要为 OpenNova 增加新能力，通常路径如下：
-1. 新工具：继承 `BaseTool`，返回 `ToolResult`
-2. 新 Skill：新增 `~/.opennova/skills/<skill-name>/SKILL.md` 或项目级 `<skill-name>/SKILL.md`
-3. 新 Provider：实现 `BaseLLMProvider`，接入 `ProviderFactory`
-4. 新 MCP 集成：通过 `MCPServerConfig` 与 connector 接入
-5. 新项目初始化能力：优先复用 `ProjectGuideManager` / `init_project_guide` 这类统一入口，而不是把逻辑散在 CLI 或工具里
-
-## 参考源码入口
-
-- `src/opennova/runtime/agent.py`
-- `src/opennova/runtime/loop.py`
-- `src/opennova/tools/base.py`
-- `src/opennova/tools/file_tools.py`
-- `src/opennova/tools/shell_tools.py`
-- `src/opennova/tools/web_tools.py`
-- `src/opennova/tools/ask_question_tool.py`
-- `src/opennova/mcp/connector.py`
-- `src/opennova/skills/base.py`
+这些 Python API 仍处于 `0.x` 阶段。集成代码应优先使用 `OpenNovaClient`、`SDKEvent`、`BaseTool` 和配置类型等明确入口，避免依赖带下划线的内部方法。
