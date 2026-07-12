@@ -217,6 +217,67 @@ def test_grep_code_returns_error_for_invalid_regex(tmp_path: Path):
     assert "invalid regex" in (result.error or "").lower()
 
 
+def test_grep_code_can_include_context_lines(tmp_path: Path):
+    target = tmp_path / "snippet.py"
+    target.write_text("one\ntwo\nneedle\nfour\nfive\n", encoding="utf-8")
+
+    result = GrepCodeTool(config={"working_dir": str(tmp_path)}).execute(
+        "needle",
+        directory=str(tmp_path),
+        file_glob="*.py",
+        context_lines=1,
+    )
+
+    assert result.success is True
+    assert "snippet.py:3: needle" in result.output
+    assert "snippet.py:2: two" in result.output
+    assert "snippet.py:4: four" in result.output
+    assert result.metadata["count"] == 1
+
+
+def test_grep_code_context_lines_keep_source_order_without_duplicates(tmp_path: Path):
+    target = tmp_path / "snippet.py"
+    target.write_text("one\nneedle two\nneedle three\nfour\n", encoding="utf-8")
+
+    result = GrepCodeTool(config={"working_dir": str(tmp_path)}).execute(
+        "needle",
+        directory=str(tmp_path),
+        file_glob="*.py",
+        context_lines=1,
+    )
+
+    assert result.success is True
+    assert result.metadata["count"] == 2
+    assert result.output.splitlines() == [
+        "  snippet.py:1: one",
+        "snippet.py:2: needle two",
+        "snippet.py:3: needle three",
+        "  snippet.py:4: four",
+    ]
+
+
+def test_grep_code_preserves_existing_positional_arguments(tmp_path: Path):
+    visible = tmp_path / "visible.py"
+    hidden = tmp_path / ".hidden.py"
+    visible.write_text("needle\n", encoding="utf-8")
+    hidden.write_text("needle\n", encoding="utf-8")
+
+    result = GrepCodeTool(config={"working_dir": str(tmp_path)}).execute(
+        "needle",
+        str(tmp_path),
+        "*.py",
+        False,
+        False,
+        10,
+        True,
+        True,
+    )
+
+    assert result.success is True
+    assert "visible.py:1: needle" in result.output
+    assert ".hidden.py:1: needle" in result.output
+
+
 def test_guardrails_permission_modes_and_tool_rules():
     read_only = Guardrails(permission_mode=PermissionMode.READ_ONLY)
     ask = Guardrails(permission_mode=PermissionMode.ASK)
