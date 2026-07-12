@@ -592,6 +592,25 @@ def test_windows_tui_debug_writer_appends_jsonl(tmp_path: Path):
     assert json.loads(path.read_text(encoding="utf-8"))["key"] == "中"
 
 
+def test_windows_tui_input_mode_keeps_virtual_terminal_input_for_mouse():
+    from opennova.cli.windows_tui_driver import (
+        ENABLE_EXTENDED_FLAGS,
+        ENABLE_MOUSE_INPUT,
+        ENABLE_QUICK_EDIT_MODE,
+        ENABLE_VIRTUAL_TERMINAL_INPUT,
+        ENABLE_WINDOW_INPUT,
+        build_ime_console_input_mode,
+    )
+
+    mode = build_ime_console_input_mode(0, mouse=True)
+
+    assert mode & ENABLE_VIRTUAL_TERMINAL_INPUT
+    assert mode & ENABLE_WINDOW_INPUT
+    assert mode & ENABLE_MOUSE_INPUT
+    assert mode & ENABLE_EXTENDED_FLAGS
+    assert not (mode & ENABLE_QUICK_EDIT_MODE)
+
+
 def test_interactive_mode_always_uses_tui():
     from opennova.main import _use_tui_for_interactive
 
