@@ -988,10 +988,10 @@ def test_tui_build_status_text_uses_workspace_context():
 
     status = OpenNovaTUI._build_status_text(app, "Running grep_code")
 
-    assert "session-abcd" in status
-    assert "deepseek-v4-pro" in status
+    assert "phase" in status
+    assert "context" in status
     assert "Running grep_code" in status
-    assert "tools:on" in status
+    assert "workbench:on" in status
 
 
 def test_tui_reset_input_state_restores_workspace_placeholder():
@@ -1108,6 +1108,7 @@ def test_tui_stream_callback_does_not_duplicate_final_answer():
 
 def test_tui_canonical_tool_result_hides_read_file_output():
     from opennova.cli.tui import OpenNovaTUI
+    from opennova.cli.tui_activity import TurnActivityAccumulator
     from opennova.runtime.events import ToolEvent
 
     class Agent:
@@ -1144,6 +1145,7 @@ def test_tui_canonical_tool_result_hides_read_file_output():
             "agent": Agent(),
             "_tool_progress": Progress(),
             "_tool_cards": tool_cards,
+            "_turn_activity": TurnActivityAccumulator(),
             "query_one": lambda self, selector: Log(),
             "_write_tool_start": lambda self, log, tool_name, detail: writes.append(
                 ("start", tool_name, detail)
@@ -1170,7 +1172,10 @@ def test_tui_canonical_tool_result_hides_read_file_output():
         )
     )
 
-    assert ("result", "read_file", "") in writes
+    assert not [item for item in writes if item[0] in {"start", "result"}]
+    summary = app._turn_activity.snapshot()
+    assert summary.tool_count == 1
+    assert summary.failed_count == 0
 
 
 def test_tui_tool_panel_actions_update_selection_and_expansion():
@@ -1238,15 +1243,15 @@ def test_tui_workbench_tab_bindings_include_escape_sequence_aliases():
 
     bindings = {(binding.key, binding.action) for binding in OpenNovaTUI.BINDINGS}
 
-    assert ("alt+1", "workbench_tools") in bindings
-    assert ("alt+2", "workbench_plan") in bindings
-    assert ("alt+3", "workbench_todos") in bindings
-    assert ("escape,1", "workbench_tools") in bindings
-    assert ("escape,2", "workbench_plan") in bindings
-    assert ("escape,3", "workbench_todos") in bindings
-    assert ("¡", "workbench_tools") in bindings
-    assert ("™", "workbench_plan") in bindings
-    assert ("£", "workbench_todos") in bindings
+    assert ("alt+1", "workbench_context") in bindings
+    assert ("alt+2", "workbench_tasks") in bindings
+    assert ("alt+3", "workbench_activity") in bindings
+    assert ("escape,1", "workbench_context") in bindings
+    assert ("escape,2", "workbench_tasks") in bindings
+    assert ("escape,3", "workbench_activity") in bindings
+    assert ("¡", "workbench_context") in bindings
+    assert ("™", "workbench_tasks") in bindings
+    assert ("£", "workbench_activity") in bindings
 
 
 def test_tui_mac_option_digit_characters_switch_workbench_tabs_and_clear_input():
@@ -1274,7 +1279,7 @@ def test_tui_mac_option_digit_characters_switch_workbench_tabs_and_clear_input()
     handled = OpenNovaTUI._handle_option_digit_shortcut(app, input_widget.value)
 
     assert handled is True
-    assert app._workbench_tab == "tools"
+    assert app._workbench_tab == "context"
     assert input_widget.value == "hello "
     assert input_widget.cursor_position == len("hello ")
 
@@ -1282,16 +1287,16 @@ def test_tui_mac_option_digit_characters_switch_workbench_tabs_and_clear_input()
     handled = OpenNovaTUI._handle_option_digit_shortcut(app, input_widget.value)
 
     assert handled is True
-    assert app._workbench_tab == "plan"
+    assert app._workbench_tab == "tasks"
     assert input_widget.value == ""
 
     input_widget.value = "£"
     handled = OpenNovaTUI._handle_option_digit_shortcut(app, input_widget.value)
 
     assert handled is True
-    assert app._workbench_tab == "todos"
+    assert app._workbench_tab == "activity"
     assert input_widget.value == ""
-    assert refreshes == ["tools", "plan", "todos"]
+    assert refreshes == ["context", "tasks", "activity"]
 
 
 def test_tui_mac_option_digit_key_events_switch_workbench_tabs_outside_input():
@@ -1334,7 +1339,7 @@ def test_tui_mac_option_digit_key_events_switch_workbench_tabs_outside_input():
     for event in events:
         OpenNovaTUI.on_key(app, event)
 
-    assert refreshes == ["tools", "plan", "todos"]
+    assert refreshes == ["context", "tasks", "activity"]
     assert [event.prevented for event in events] == [True, True, True]
     assert [event.stopped for event in events] == [True, True, True]
 
@@ -1359,7 +1364,7 @@ def test_tui_workbench_tab_actions_switch_tabs_and_refresh():
     OpenNovaTUI.action_workbench_previous_tab(app)
     OpenNovaTUI.action_workbench_next_tab(app)
 
-    assert refreshes == ["plan", "todos", "plan", "todos"]
+    assert refreshes == ["tasks", "tasks", "context", "tasks"]
 
 
 def test_tui_canonical_tool_event_refreshes_tool_panel():
@@ -1461,7 +1466,7 @@ def test_tui_canonical_tool_event_does_not_steal_plan_tab():
         (),
         {
             "agent": Agent(),
-            "_workbench_tab": "plan",
+            "_workbench_tab": "tasks",
             "_workbench_visible": True,
             "_tool_progress": Progress(),
             "_tool_cards": ToolCardStore(),
@@ -1477,7 +1482,7 @@ def test_tui_canonical_tool_event_does_not_steal_plan_tab():
         ToolEvent(type="tool_start", tool_id="tool_1", tool_name="read_file")
     )
 
-    assert app._workbench_tab == "plan"
+    assert app._workbench_tab == "tasks"
 
 
 def test_tui_plan_callback_switches_workbench_to_plan_tab():
@@ -1512,8 +1517,8 @@ def test_tui_plan_callback_switches_workbench_to_plan_tab():
     OpenNovaTUI._register_plan_workbench_callback(app)
     app.agent.callbacks["plan"](Plan(task="Build workbench", steps=[PlanStep("1", "Render")]))
 
-    assert app._workbench_tab == "plan"
-    assert refreshes == ["plan"]
+    assert app._workbench_tab == "tasks"
+    assert refreshes == ["tasks"]
     assert writes
 
 
@@ -1666,8 +1671,8 @@ def test_tui_todos_command_switches_workbench_to_todos_tab():
 
     asyncio.run(OpenNovaTUI._cmd_todos(app, ""))
 
-    assert app._workbench_tab == "todos"
-    assert refreshes == ["todos"]
+    assert app._workbench_tab == "tasks"
+    assert refreshes == ["tasks"]
     assert writes
 
 
@@ -1728,7 +1733,7 @@ def test_tui_execute_task_pending_plan_dialog_execute_runs_plan():
     assert result == "executed plan"
     assert agent.executed == 1
     assert agent.state.plan_approval_status.value == "approved"
-    assert app._workbench_tab == "plan"
+    assert app._workbench_tab == "tasks"
 
 
 def test_tui_execute_task_failed_plan_dialog_executes_plan_instead_of_act_mode():
@@ -1782,7 +1787,7 @@ def test_tui_execute_task_failed_plan_dialog_executes_plan_instead_of_act_mode()
     assert result == "resumed plan"
     assert agent.executed == 1
     assert agent.act_calls == 0
-    assert app._workbench_tab == "plan"
+    assert app._workbench_tab == "tasks"
 
 
 def test_tui_execute_task_pending_plan_dialog_discard_clears_plan_and_todos():
@@ -1828,8 +1833,8 @@ def test_tui_execute_task_pending_plan_dialog_discard_clears_plan_and_todos():
     assert agent.state.current_plan is None
     assert TodoWriteTool.current_todos() == []
     assert app._last_plan_snapshot is None
-    assert app._workbench_tab == "plan"
-    assert refreshes == ["plan"]
+    assert app._workbench_tab == "tasks"
+    assert refreshes == ["tasks"]
     assert writes == ["Plan discarded. We can continue without it."]
 
 
@@ -1881,7 +1886,7 @@ def test_tui_execute_task_pending_plan_dialog_revise_preserves_plan_state():
     assert agent.calls[0]["preserve_plan_state"] is True
     assert agent.calls[0]["preserve_context"] is True
     assert "把第二步拆细一点" in agent.calls[0]["task"]
-    assert app._workbench_tab == "plan"
+    assert app._workbench_tab == "tasks"
 
 
 def test_tui_resume_without_args_uses_picker():
@@ -2119,6 +2124,8 @@ def test_tui_startup_continue_restores_newest_session():
 
 
 def test_tui_restore_loaded_session_replays_transcript_events():
+    from rich.console import Console
+
     from opennova.cli.tui import OpenNovaTUI
     from opennova.session import LoadedSession, SessionTranscriptEvent
 
@@ -2145,12 +2152,6 @@ def test_tui_restore_loaded_session_replays_transcript_events():
             "_replaying_transcript": False,
             "_write_user_message": lambda self, log, text, record=False: log.write(("user", text)),
             "_write_assistant_message": lambda self, log, text, record=False: log.write(("assistant", text)),
-            "_write_tool_start": lambda self, log, tool_name, detail, record=False: log.write(
-                ("tool_start", tool_name, detail)
-            ),
-            "_write_tool_result": lambda self, log, **kwargs: log.write(
-                ("tool_result", kwargs["tool_name"], kwargs["summary_markup"])
-            ),
             "_replay_transcript_event": lambda self, log, event: OpenNovaTUI._replay_transcript_event(
                 self, log, event
             ),
@@ -2181,11 +2182,12 @@ def test_tui_restore_loaded_session_replays_transcript_events():
     OpenNovaTUI._restore_loaded_session(app, log, loaded)
 
     assert log.cleared is True
-    assert log.writes == [
-        ("user", "hello"),
-        ("assistant", "world"),
-        ("tool_start", "read_file", "(path='README.md')"),
-    ]
+    assert log.writes[:2] == [("user", "hello"), ("assistant", "world")]
+    console = Console(no_color=True, force_terminal=False, width=100, record=True)
+    console.print(log.writes[2])
+    rendered = console.export_text()
+    assert "Activity" in rendered
+    assert "1 tool" in rendered
 
 
 def test_ask_question_dialog_options_always_include_custom_answer():

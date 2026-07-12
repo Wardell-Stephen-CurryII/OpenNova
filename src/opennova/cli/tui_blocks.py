@@ -10,7 +10,14 @@ from rich.panel import Panel
 from rich.text import Text
 
 from opennova.cli.tool_cards import ToolCardPanelState
-from opennova.cli.tui_workbench import WorkbenchPanelState
+from opennova.cli.tui_activity import TurnActivitySummary
+from opennova.cli.tui_workbench import (
+    ContextWorkbenchSnapshot,
+    TaskWorkbenchSnapshot,
+    WorkbenchPanelState,
+    normalize_workbench_tab,
+    snapshot_tasks,
+)
 
 SUPPRESSED_RESULT_TOOLS = {"list_directory", "read_file"}
 DEFAULT_MAX_OUTPUT_LINES = 20
@@ -116,6 +123,28 @@ def render_tool_result_block(
     return renderables
 
 
+def render_turn_activity_summary(summary: TurnActivitySummary) -> Panel:
+    """Render one compact activity line for an entire conversational turn."""
+    status_style = {
+        "done": TUI_THEME.success,
+        "waiting": TUI_THEME.warning,
+        "failed": TUI_THEME.error,
+    }[summary.status]
+    body = Text()
+    body.append("Activity", style=f"bold {TUI_THEME.accent}")
+    body.append(f"  ·  {summary.tool_count} tool(s)")
+    if summary.file_count:
+        body.append(f"  ·  {summary.file_count} file(s)")
+    if summary.change_count:
+        body.append(f"  ·  {summary.change_count} change(s)", style=TUI_THEME.warning)
+    if summary.failed_count:
+        body.append(f"  ·  {summary.failed_count} failed", style=TUI_THEME.error)
+    if summary.waiting_count:
+        body.append(f"  ·  {summary.waiting_count} waiting", style=TUI_THEME.warning)
+    body.append(f"  ·  {_format_duration(summary.duration_ms)}", style="dim")
+    return Panel(body, border_style=status_style, padding=(0, 1))
+
+
 def render_tool_detail_panel(panel_state: ToolCardPanelState) -> list[Any]:
     """Render the session-scoped tool detail side panel."""
     if not panel_state.cards:
@@ -174,14 +203,17 @@ def render_tool_detail_panel(panel_state: ToolCardPanelState) -> list[Any]:
 
 
 def render_workbench_panel(state: WorkbenchPanelState) -> list[Any]:
-    """Render the right-side Tools / Plan / Todos workbench panel."""
+    """Render the right-side Context / Tasks / Activity workbench panel."""
+    active_tab = normalize_workbench_tab(state.active_tab)
     renderables: list[Any] = [_render_workbench_tabs(state)]
-    if state.active_tab == "tools":
-        renderables.extend(render_tool_detail_panel(state.tools))
-    elif state.active_tab == "plan":
-        renderables.extend(_render_workbench_plan(state))
+    if active_tab == "context":
+        renderables.extend(_render_workbench_context(state.context))
+    elif active_tab == "tasks":
+        renderables.extend(
+            _render_workbench_tasks(state.tasks or snapshot_tasks(state.plan, state.todos))
+        )
     else:
-        renderables.extend(_render_workbench_todos(state))
+        renderables.extend(render_tool_detail_panel(state.tools))
     renderables.append(
         Panel(
             Text(state.key_hint, style="dim"),
@@ -194,16 +226,155 @@ def render_workbench_panel(state: WorkbenchPanelState) -> list[Any]:
 
 
 def _render_workbench_tabs(state: WorkbenchPanelState) -> Panel:
-    labels = [("tools", "Tools"), ("plan", "Plan"), ("todos", "Todos")]
+    context_usage = int((state.context or ContextWorkbenchSnapshot()).utilization_percent)
+    tasks = state.tasks
+    task_progress = f" {tasks.completed}/{tasks.total}" if tasks and tasks.total else ""
+    activity_count = len(state.tools.cards)
+    activity_alert = any(
+        card.status in {"failed", "waiting_for_permission"} for card in state.tools.cards
+    )
+    labels = [
+        ("context", f"Context {context_usage}%"),
+        ("tasks", f"Tasks{task_progress}"),
+        ("activity", f"Activity {activity_count}{' !' if activity_alert else ''}"),
+    ]
+    active_tab = normalize_workbench_tab(state.active_tab)
     text = Text()
     for index, (tab, label) in enumerate(labels):
         if index:
             text.append("  ")
-        if state.active_tab == tab:
+        if active_tab == tab:
             text.append(f"[ {label} ]", style=f"bold {TUI_THEME.accent}")
         else:
             text.append(label, style="dim")
     return Panel(text, title="Workbench", border_style=TUI_THEME.accent_soft, padding=(0, 1))
+
+
+def _render_workbench_context(
+    context: ContextWorkbenchSnapshot | None,
+) -> list[Any]:
+    context = context or ContextWorkbenchSnapshot()
+    now = Text()
+    now.append(context.task or "No active task.", style=f"bold {TUI_THEME.accent}")
+    now.append("\n")
+    now.append(f"phase: {context.run_phase or 'idle'}", style="dim")
+    if context.current_step:
+        now.append(f"\nstep: {context.current_step}", style=TUI_THEME.warning)
+
+    usage_style = _context_usage_style(
+        context.utilization_percent,
+        context.compression_threshold_percent,
+    )
+    budget = Text()
+    budget.append(
+        _progress_bar(context.utilization_percent),
+        style=usage_style,
+    )
+    budget.append(f"  {context.utilization_percent:.1f}%\n", style=usage_style)
+    budget.append(
+        f"{_compact_number(context.total_tokens)} / "
+        f"{_compact_number(context.context_window)} tokens  "
+        f"· {context.total_messages} messages",
+        style="dim",
+    )
+    if context.compression_count:
+        budget.append(
+            f"\n{context.compression_count} compression(s) · earlier context summarized",
+            style=TUI_THEME.warning,
+        )
+
+    files = Text()
+    if context.active_files:
+        for index, item in enumerate(context.active_files):
+            if index:
+                files.append("\n")
+            files.append(f"{item.activity:<9} ", style=_file_activity_style(item.activity))
+            files.append(item.path)
+    else:
+        files.append("No files observed in this task.", style="dim")
+
+    decisions = Text()
+    if context.recent_decisions:
+        for index, decision in enumerate(context.recent_decisions):
+            if index:
+                decisions.append("\n")
+            decisions.append("· ", style=TUI_THEME.accent)
+            decisions.append(decision)
+    else:
+        decisions.append("No explicit decisions recorded.", style="dim")
+
+    sources = Text()
+    if context.sources:
+        for index, source in enumerate(context.sources):
+            if index:
+                sources.append("\n")
+            sources.append(source, style="dim")
+    else:
+        sources.append("No context sources recorded.", style="dim")
+
+    return [
+        Panel(now, title="Now", border_style=TUI_THEME.accent_soft, padding=(0, 1)),
+        Panel(budget, title="Context Budget", border_style=usage_style, padding=(0, 1)),
+        Panel(files, title="Active Files", border_style=TUI_THEME.panel_border, padding=(0, 1)),
+        Panel(
+            decisions,
+            title="Recent Decisions",
+            border_style=TUI_THEME.panel_border,
+            padding=(0, 1),
+        ),
+        Panel(sources, title="Sources", border_style=TUI_THEME.panel_border, padding=(0, 1)),
+    ]
+
+
+def _render_workbench_tasks(tasks: TaskWorkbenchSnapshot | None) -> list[Any]:
+    if tasks is None or not tasks.total:
+        return [
+            Panel(
+                Text("No active tasks.", style="dim"),
+                title="Tasks",
+                border_style=TUI_THEME.panel_border,
+                padding=(0, 1),
+            )
+        ]
+
+    progress = Text()
+    percent = (tasks.completed / tasks.total) * 100 if tasks.total else 0.0
+    progress.append(_progress_bar(percent), style=TUI_THEME.success)
+    progress.append(f"  {tasks.completed}/{tasks.total} complete\n")
+    counts = " · ".join(f"{status} {count}" for status, count in tasks.status_counts)
+    progress.append(counts, style="dim")
+    if tasks.current_item:
+        progress.append(f"\ncurrent: {tasks.current_item}", style=TUI_THEME.warning)
+
+    renderables: list[Any] = [
+        Panel(progress, title="Progress", border_style=TUI_THEME.accent_soft, padding=(0, 1))
+    ]
+    if tasks.plan is not None:
+        state = WorkbenchPanelState(
+            active_tab="tasks",
+            tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
+            plan=tasks.plan,
+            todos=list(tasks.todos),
+        )
+        renderables.extend(_render_workbench_plan(state))
+        plan_ids = {step.id for step in tasks.plan.steps}
+        agent_todos = [
+            todo
+            for todo in tasks.todos
+            if todo.get("source") != "plan" and str(todo.get("id", "")) not in plan_ids
+        ]
+        if agent_todos:
+            state.todos = agent_todos
+            renderables.extend(_render_workbench_todos(state))
+    elif tasks.todos:
+        state = WorkbenchPanelState(
+            active_tab="tasks",
+            tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
+            plan=None,
+            todos=list(tasks.todos),
+        )
+        renderables.extend(_render_workbench_todos(state))
+    return renderables
 
 
 def _render_workbench_plan(state: WorkbenchPanelState) -> list[Any]:
@@ -280,6 +451,40 @@ def _status_style(status: str) -> str:
     return TUI_THEME.muted
 
 
+def _context_usage_style(utilization: float, threshold: float) -> str:
+    if utilization >= max(85.0, threshold + 20.0):
+        return TUI_THEME.error
+    if utilization >= threshold:
+        return TUI_THEME.warning
+    return TUI_THEME.success
+
+
+def _progress_bar(percent: float, width: int = 18) -> str:
+    bounded = min(100.0, max(0.0, percent))
+    filled = round((bounded / 100.0) * width)
+    return f"[{'=' * filled}{'-' * (width - filled)}]"
+
+
+def _compact_number(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
+
+
+def _file_activity_style(activity: str) -> str:
+    if activity in {"modified", "created", "deleted"}:
+        return TUI_THEME.warning
+    return TUI_THEME.muted
+
+
+def _format_duration(duration_ms: float) -> str:
+    if duration_ms >= 1000:
+        return f"{duration_ms / 1000:.1f}s"
+    return f"{duration_ms:.0f}ms"
+
+
 def render_welcome_block(
     *,
     version: str,
@@ -305,7 +510,7 @@ def render_welcome_block(
     body.append("/resume", style=TUI_THEME.accent)
     body.append(" sessions   ")
     body.append("alt+t", style=TUI_THEME.accent)
-    body.append(" tools")
+    body.append(" workbench")
     return Panel(
         body,
         title="Workspace",
@@ -321,17 +526,33 @@ def render_status_bar(
     message: str = "",
     tool_panel_visible: bool = False,
     permission_mode: str = "auto",
+    phase: str = "idle",
+    current_step: str = "",
+    context_utilization: float = 0.0,
+    elapsed_seconds: float = 0.0,
 ) -> str:
     """Render a stable one-line workspace status bar."""
-    short_session = session_id[:12] if session_id else "no-session"
-    tools = "tools:on" if tool_panel_visible else "tools:off"
-    state = message or "idle"
-    return (
-        f"[dim]session[/dim] {short_session}  "
-        f"[dim]model[/dim] {model or 'unknown'}  "
-        f"[dim]permissions[/dim] {permission_mode}  "
-        f"[dim]{tools}[/dim]  {state}"
+    del session_id, model
+    workbench = "workbench:on" if tool_panel_visible else "workbench:off"
+    context_style = _context_usage_style(context_utilization, 55.0)
+    parts = [
+        f"[dim]phase[/dim] {phase or 'idle'}",
+    ]
+    if current_step:
+        parts.append(f"[dim]step[/dim] {current_step}")
+    parts.extend(
+        [
+            f"[dim]context[/dim] [{context_style}]{context_utilization:.0f}%[/{context_style}]",
+            f"[dim]permissions[/dim] {permission_mode}",
+            f"[dim]{workbench}[/dim]",
+        ]
     )
+    if elapsed_seconds > 0:
+        minutes, seconds = divmod(int(elapsed_seconds), 60)
+        parts.append(f"[dim]{minutes:02d}:{seconds:02d}[/dim]")
+    if message:
+        parts.append(message)
+    return "  ".join(parts)
 
 
 def _status_from_summary(summary_markup: str, error: str) -> str:

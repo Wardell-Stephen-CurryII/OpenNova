@@ -11,7 +11,7 @@ OpenNova v0.4.1 是一个基于 Python 和 Textual TUI 构建的终端 AI 编码
 OpenNova 将 Agent 运行时和全屏终端工作台组合在一起：
 
 - 支持 OpenAI、Anthropic 和 DeepSeek
-- 流式 Textual TUI，包含 Chat、Tools、Plan 和 Todos 面板
+- 流式 Textual TUI，包含 Chat、Context、Tasks 和 Activity 面板
 - 会话持久化、选择器恢复和完整对话记录重放
 - Plan/Act、TodoWrite、子 Agent 和 Git Worktree 工作流
 - 39 个内置工具，以及 Skills、可信项目插件、Hooks 和 MCP 扩展

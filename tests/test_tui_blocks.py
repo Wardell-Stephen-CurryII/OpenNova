@@ -104,6 +104,30 @@ def test_error_result_contains_error_and_failed_state():
     assert "Permission denied" in text
 
 
+def test_turn_activity_summary_renders_one_compact_line():
+    from opennova.cli.tui_activity import TurnActivitySummary
+    from opennova.cli.tui_blocks import render_turn_activity_summary
+
+    text = _plain(
+        render_turn_activity_summary(
+            TurnActivitySummary(
+                tool_count=4,
+                file_count=3,
+                change_count=1,
+                failed_count=1,
+                duration_ms=2800,
+            )
+        )
+    )
+
+    assert "Activity" in text
+    assert "4 tool" in text
+    assert "3 file" in text
+    assert "1 change" in text
+    assert "1 failed" in text
+    assert "2.8s" in text
+
+
 def test_tool_detail_panel_renders_empty_state():
     from opennova.cli.tool_cards import ToolCardPanelState
     from opennova.cli.tui_blocks import render_tool_detail_panel
@@ -192,7 +216,7 @@ def test_welcome_block_contains_workspace_context():
     assert "alt+t" in text
 
 
-def test_status_bar_renderer_includes_session_model_and_message():
+def test_status_bar_renderer_includes_runtime_context_and_message():
     from opennova.cli.tui_blocks import render_status_bar
 
     status = render_status_bar(
@@ -200,12 +224,18 @@ def test_status_bar_renderer_includes_session_model_and_message():
         model="deepseek-v4-pro",
         message="Working on grep_code",
         tool_panel_visible=True,
+        phase="running",
+        current_step="step_2",
+        context_utilization=42.0,
+        elapsed_seconds=65,
     )
 
-    assert "session-abcd" in status
-    assert "deepseek-v4-pro" in status
+    assert "running" in status
+    assert "step_2" in status
+    assert "42%" in status
+    assert "01:05" in status
     assert "Working on grep_code" in status
-    assert "tools:on" in status
+    assert "workbench:on" in status
 
 
 def test_blocks_share_calm_workspace_theme():
@@ -217,13 +247,13 @@ def test_blocks_share_calm_workspace_theme():
     assert TUI_THEME.error.startswith("#")
 
 
-def test_workbench_panel_renders_tab_header_and_tools_tab():
+def test_workbench_panel_renders_tab_header_and_activity_tab():
     from opennova.cli.tool_cards import ToolCardPanelState, ToolCardViewState
     from opennova.cli.tui_blocks import render_workbench_panel
     from opennova.cli.tui_workbench import WorkbenchPanelState
 
     state = WorkbenchPanelState(
-        active_tab="tools",
+        active_tab="activity",
         tools=ToolCardPanelState(
             cards=[
                 ToolCardViewState(
@@ -243,14 +273,14 @@ def test_workbench_panel_renders_tab_header_and_tools_tab():
 
     text = _plain_many(render_workbench_panel(state))
 
-    assert "Tools" in text
-    assert "Plan" in text
-    assert "Todos" in text
+    assert "Context" in text
+    assert "Tasks" in text
+    assert "Activity" in text
     assert "execute_command" in text
     assert "full output" in text
 
 
-def test_workbench_panel_renders_plan_tab_snapshot():
+def test_workbench_panel_renders_tasks_tab_plan_snapshot():
     from opennova.cli.tool_cards import ToolCardPanelState
     from opennova.cli.tui_blocks import render_workbench_panel
     from opennova.cli.tui_workbench import (
@@ -260,7 +290,7 @@ def test_workbench_panel_renders_plan_tab_snapshot():
     )
 
     state = WorkbenchPanelState(
-        active_tab="plan",
+        active_tab="tasks",
         tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
         plan=PlanWorkbenchSnapshot(
             task="Refine UI",
@@ -290,13 +320,13 @@ def test_workbench_panel_renders_plan_tab_snapshot():
     assert "started" in text
 
 
-def test_workbench_panel_renders_todos_tab_and_empty_state():
+def test_workbench_panel_renders_tasks_tab_todos_and_empty_state():
     from opennova.cli.tool_cards import ToolCardPanelState
     from opennova.cli.tui_blocks import render_workbench_panel
     from opennova.cli.tui_workbench import WorkbenchPanelState
 
     populated = WorkbenchPanelState(
-        active_tab="todos",
+        active_tab="tasks",
         tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
         plan=None,
         todos=[
@@ -305,7 +335,7 @@ def test_workbench_panel_renders_todos_tab_and_empty_state():
         ],
     )
     empty = WorkbenchPanelState(
-        active_tab="todos",
+        active_tab="tasks",
         tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
         plan=None,
         todos=[],
@@ -314,7 +344,47 @@ def test_workbench_panel_renders_todos_tab_and_empty_state():
     populated_text = _plain_many(render_workbench_panel(populated))
     empty_text = _plain_many(render_workbench_panel(empty))
 
-    assert "2 todo" in populated_text
+    assert "1/2 complete" in populated_text
     assert "Inspect TUI" in populated_text
     assert "in_progress" in populated_text
-    assert "No todos" in empty_text
+    assert "No active tasks" in empty_text
+
+
+def test_workbench_panel_renders_context_snapshot():
+    from opennova.cli.tool_cards import ToolCardPanelState
+    from opennova.cli.tui_blocks import render_workbench_panel
+    from opennova.cli.tui_workbench import (
+        ActiveFileSnapshot,
+        ContextWorkbenchSnapshot,
+        WorkbenchPanelState,
+    )
+
+    state = WorkbenchPanelState(
+        active_tab="context",
+        tools=ToolCardPanelState(cards=[], selected_tool_id=None, actions={}),
+        plan=None,
+        todos=[],
+        context=ContextWorkbenchSnapshot(
+            task="Refine context UI",
+            run_phase="running",
+            current_step="step_2 · Render context",
+            total_messages=12,
+            total_tokens=32000,
+            context_window=128000,
+            utilization_percent=25.0,
+            compression_count=1,
+            has_compressed_summary=True,
+            active_files=(ActiveFileSnapshot("src/opennova/cli/tui.py", "modified"),),
+            recent_decisions=("Keep transcript compatible",),
+            sources=("conversation · 12 messages", "plan · 3 steps"),
+        ),
+    )
+
+    text = _plain_many(render_workbench_panel(state))
+
+    assert "Refine context UI" in text
+    assert "32.0k / 128.0k" in text
+    assert "Earlier context summarized" not in text
+    assert "1 compression" in text
+    assert "src/opennova/cli/tui.py" in text
+    assert "Keep transcript compatible" in text

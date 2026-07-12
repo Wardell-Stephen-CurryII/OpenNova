@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
@@ -38,12 +37,14 @@ from opennova.cli.plan_decision_dialog import PlanDecision, PlanDecisionDialog
 from opennova.cli.session_picker_dialog import SessionPickerDialog
 from opennova.cli.tool_cards import ToolCardStore
 from opennova.cli.tool_progress import ToolProgressTracker
+from opennova.cli.tui_activity import TurnActivityAccumulator, TurnActivitySummary
 from opennova.cli.tui_blocks import (
     TUI_THEME,
     render_assistant_block,
     render_status_bar,
     render_tool_result_block,
     render_tool_start_block,
+    render_turn_activity_summary,
     render_user_block,
     render_welcome_block,
     render_workbench_panel,
@@ -53,6 +54,7 @@ from opennova.cli.tui_workbench import (
     WorkbenchTab,
     build_workbench_panel_state,
     next_workbench_tab,
+    normalize_workbench_tab,
     previous_workbench_tab,
     snapshot_plan,
 )
@@ -80,9 +82,9 @@ _MAX_DIFF_LINES: dict[str, int] = {}
 _INPUT_PLACEHOLDER = "Ask OpenNova, or type / for commands..."
 _WORKING_PLACEHOLDER = "OpenNova is working... Ctrl+C to cancel"
 _MAC_OPTION_DIGIT_TABS = {
-    "¡": "tools",
-    "™": "plan",
-    "£": "todos",
+    "¡": "context",
+    "™": "tasks",
+    "£": "activity",
 }
 
 # 2a2a2a 001a1a
@@ -416,15 +418,15 @@ class OpenNovaTUI(App):
         Binding("alt+up", "tool_previous", "Previous tool", show=False),
         Binding("alt+enter", "tool_toggle_expanded", "Expand tool", show=False),
         Binding("alt+t", "toggle_tool_panel", "Tools", show=True),
-        Binding("alt+1", "workbench_tools", "Tools tab", show=False),
-        Binding("alt+2", "workbench_plan", "Plan tab", show=False),
-        Binding("alt+3", "workbench_todos", "Todos tab", show=False),
-        Binding("escape,1", "workbench_tools", "Tools tab", show=False),
-        Binding("escape,2", "workbench_plan", "Plan tab", show=False),
-        Binding("escape,3", "workbench_todos", "Todos tab", show=False),
-        Binding("¡", "workbench_tools", "Tools tab", show=False),
-        Binding("™", "workbench_plan", "Plan tab", show=False),
-        Binding("£", "workbench_todos", "Todos tab", show=False),
+        Binding("alt+1", "workbench_context", "Context tab", show=False),
+        Binding("alt+2", "workbench_tasks", "Tasks tab", show=False),
+        Binding("alt+3", "workbench_activity", "Activity tab", show=False),
+        Binding("escape,1", "workbench_context", "Context tab", show=False),
+        Binding("escape,2", "workbench_tasks", "Tasks tab", show=False),
+        Binding("escape,3", "workbench_activity", "Activity tab", show=False),
+        Binding("¡", "workbench_context", "Context tab", show=False),
+        Binding("™", "workbench_tasks", "Tasks tab", show=False),
+        Binding("£", "workbench_activity", "Activity tab", show=False),
         Binding("alt+[", "workbench_previous_tab", "Previous tab", show=False),
         Binding("alt+]", "workbench_next_tab", "Next tab", show=False),
         Binding("escape,[", "workbench_previous_tab", "Previous tab", show=False),
@@ -456,9 +458,12 @@ class OpenNovaTUI(App):
         self._start_time: float = 0.0
         self._tool_progress = ToolProgressTracker()
         self._tool_cards = ToolCardStore()
+        self._turn_activity = TurnActivityAccumulator()
+        self._last_compression_count = 0
+        self._context_status_cache: tuple[float, float] = (0.0, 0.0)
         self._tool_panel_visible = False
         self._workbench_visible = False
-        self._workbench_tab: WorkbenchTab = "tools"
+        self._workbench_tab: WorkbenchTab = "context"
         self._last_plan_snapshot: PlanWorkbenchSnapshot | None = None
         self._last_plan_chat_signature: tuple[Any, ...] | None = None
         self._state_unsubscribe = None
@@ -668,6 +673,44 @@ class OpenNovaTUI(App):
                 diff_max_lines=diff_max_lines,
             )
 
+    def _write_turn_activity_summary(
+        self,
+        log: _MessagesLog,
+        summary: TurnActivitySummary,
+    ) -> None:
+        if summary.has_activity:
+            log.write(render_turn_activity_summary(summary))
+
+    def _turn_activity_store(self) -> TurnActivityAccumulator:
+        activity = getattr(self, "_turn_activity", None)
+        if activity is None:
+            activity = TurnActivityAccumulator()
+            self._turn_activity = activity
+        return activity
+
+    def _flush_turn_activity(self, log: _MessagesLog) -> TurnActivitySummary:
+        summary = OpenNovaTUI._turn_activity_store(self).consume()
+        self._write_compression_notice(log)
+        self._write_turn_activity_summary(log, summary)
+        return summary
+
+    def _write_compression_notice(self, log: _MessagesLog) -> None:
+        context_manager = getattr(getattr(self, "agent", None), "context_manager", None)
+        getter = getattr(context_manager, "get_presentation_snapshot", None)
+        if not callable(getter):
+            return
+        snapshot = getter()
+        count = int(getattr(snapshot, "compression_count", 0))
+        if count <= self._last_compression_count:
+            return
+        self._last_compression_count = count
+        log.write(
+            Text(
+                f"Earlier context summarized · {count} compression(s)",
+                style=TUI_THEME.muted,
+            )
+        )
+
     def _set_tool_panel_visible(self, visible: bool) -> None:
         """Show or hide the session-scoped workbench side panel."""
         self._tool_panel_visible = visible
@@ -690,7 +733,13 @@ class OpenNovaTUI(App):
             active_tab=self._workbench_tab,
             last_plan=getattr(self, "_last_plan_snapshot", None),
         )
-        has_workbench_content = bool(self._tool_cards.cards or state.plan or state.todos)
+        has_context = bool(
+            state.context
+            and (state.context.task or state.context.total_messages or state.context.active_files)
+        )
+        has_workbench_content = bool(
+            self._tool_cards.cards or state.plan or state.todos or has_context
+        )
         if not self._workbench_visible and not has_workbench_content:
             panel.clear()
             return
@@ -754,7 +803,7 @@ class OpenNovaTUI(App):
                 self._discard_pending_plan()
             else:
                 state.set_mode("plan")
-                self._workbench_tab = "plan"
+                self._workbench_tab = "tasks"
                 self._refresh_workbench_panel()
                 log.write(
                     "[yellow]Interrupted plan kept for revision. "
@@ -773,14 +822,40 @@ class OpenNovaTUI(App):
         try:
             log.clear_messages()
             if loaded.transcript_events:
-                for event in loaded.transcript_events:
-                    self._replay_transcript_event(log, event.payload)
+                OpenNovaTUI._replay_transcript_events(
+                    self,
+                    log,
+                    [event.payload for event in loaded.transcript_events],
+                )
             else:
                 for message in loaded.messages:
                     self._replay_legacy_message(log, message)
         finally:
             self._replaying_transcript = False
+        context_manager = getattr(getattr(self, "agent", None), "context_manager", None)
+        getter = getattr(context_manager, "get_presentation_snapshot", None)
+        if callable(getter):
+            self._last_compression_count = int(getter().compression_count)
         log.scroll_end(animate=False)
+
+    def _replay_transcript_events(
+        self,
+        log: _MessagesLog,
+        events: list[dict[str, Any]],
+    ) -> None:
+        activity = TurnActivityAccumulator()
+        for event in events:
+            kind = str(event.get("kind") or "")
+            if kind in {"tool_start", "tool_result"}:
+                activity.apply_transcript_event(event)
+                continue
+            summary = activity.consume()
+            if summary.has_activity:
+                OpenNovaTUI._write_turn_activity_summary(self, log, summary)
+            OpenNovaTUI._replay_transcript_event(self, log, event)
+        summary = activity.consume()
+        if summary.has_activity:
+            OpenNovaTUI._write_turn_activity_summary(self, log, summary)
 
     def _replay_transcript_event(self, log: _MessagesLog, event: dict[str, Any]) -> None:
         kind = event.get("kind")
@@ -853,19 +928,19 @@ class OpenNovaTUI(App):
         self.exit()
 
     def action_tool_next(self) -> None:
-        if getattr(self, "_workbench_tab", "tools") != "tools":
+        if normalize_workbench_tab(getattr(self, "_workbench_tab", "activity")) != "activity":
             return
         self._tool_cards.select_next()
         self._refresh_tool_panel()
 
     def action_tool_previous(self) -> None:
-        if getattr(self, "_workbench_tab", "tools") != "tools":
+        if normalize_workbench_tab(getattr(self, "_workbench_tab", "activity")) != "activity":
             return
         self._tool_cards.select_previous()
         self._refresh_tool_panel()
 
     def action_tool_toggle_expanded(self) -> None:
-        if getattr(self, "_workbench_tab", "tools") != "tools":
+        if normalize_workbench_tab(getattr(self, "_workbench_tab", "activity")) != "activity":
             return
         self._tool_cards.toggle_expanded()
         self._refresh_tool_panel()
@@ -876,29 +951,41 @@ class OpenNovaTUI(App):
             with suppress(Exception):
                 self._refresh_workbench_panel()
 
+    def action_workbench_context(self) -> None:
+        OpenNovaTUI._set_workbench_tab(self, "context")
+
+    def action_workbench_tasks(self) -> None:
+        OpenNovaTUI._set_workbench_tab(self, "tasks")
+
+    def action_workbench_activity(self) -> None:
+        OpenNovaTUI._set_workbench_tab(self, "activity")
+
     def action_workbench_tools(self) -> None:
-        OpenNovaTUI._set_workbench_tab(self, "tools")
+        """Compatibility alias for the former Tools tab."""
+        OpenNovaTUI.action_workbench_activity(self)
 
     def action_workbench_plan(self) -> None:
-        OpenNovaTUI._set_workbench_tab(self, "plan")
+        """Compatibility alias for the former Plan tab."""
+        OpenNovaTUI.action_workbench_tasks(self)
 
     def action_workbench_todos(self) -> None:
-        OpenNovaTUI._set_workbench_tab(self, "todos")
+        """Compatibility alias for the former Todos tab."""
+        OpenNovaTUI.action_workbench_tasks(self)
 
     def action_workbench_next_tab(self) -> None:
         OpenNovaTUI._set_workbench_tab(
             self,
-            next_workbench_tab(getattr(self, "_workbench_tab", "tools")),
+            next_workbench_tab(getattr(self, "_workbench_tab", "context")),
         )
 
     def action_workbench_previous_tab(self) -> None:
         OpenNovaTUI._set_workbench_tab(
             self,
-            previous_workbench_tab(getattr(self, "_workbench_tab", "tools")),
+            previous_workbench_tab(getattr(self, "_workbench_tab", "context")),
         )
 
-    def _set_workbench_tab(self, tab: WorkbenchTab) -> None:
-        self._workbench_tab = tab
+    def _set_workbench_tab(self, tab: WorkbenchTab | str) -> None:
+        self._workbench_tab = normalize_workbench_tab(tab)
         if hasattr(self, "_set_tool_panel_visible"):
             self._set_tool_panel_visible(True)
         else:
@@ -1623,12 +1710,21 @@ class OpenNovaTUI(App):
             f"[cyan]Plugins:[/cyan] {len(getattr(self.agent.plugin_manager, 'plugins', []))}"
         )
         log.write(f"[cyan]Permission mode:[/cyan] {self.agent.get_permission_mode().value}")
+        context_manager = getattr(self.agent, "context_manager", None)
+        getter = getattr(context_manager, "get_presentation_snapshot", None)
+        if callable(getter):
+            context = getter()
+            log.write(
+                f"[cyan]Context:[/cyan] {context.total_tokens}/{context.context_window} "
+                f"tokens ({context.utilization_percent:.1f}%)  "
+                f"[cyan]Compressions:[/cyan] {context.compression_count}"
+            )
 
     async def _cmd_todos(self, args: str) -> None:
         log = self.query_one("#messages")
         from opennova.tools.todo_tools import TodoWriteTool
 
-        self._workbench_tab = "todos"
+        self._workbench_tab = "tasks"
         with suppress(Exception):
             self._refresh_workbench_panel()
 
@@ -1706,7 +1802,7 @@ class OpenNovaTUI(App):
 
         def on_plan(plan, plan_file_path=None):
             try:
-                self._workbench_tab = "plan"
+                self._workbench_tab = "tasks"
                 state = getattr(self.agent, "state", None)
                 approval = getattr(getattr(state, "plan_approval_status", None), "value", None)
                 plan_path = plan_file_path or getattr(state, "plan_file_path", None)
@@ -1808,6 +1904,7 @@ class OpenNovaTUI(App):
         """
         self._task_active = True
         self._start_time = time.time()
+        OpenNovaTUI._turn_activity_store(self).reset()
 
         try:
             input_widget = self.query_one("#input", Input)
@@ -1834,15 +1931,22 @@ class OpenNovaTUI(App):
             result = self._agent_task.result()
             self._set_status("")
             if isinstance(result, str) and result:
+                self._flush_turn_activity(log)
                 self._write_assistant_message(log, result)
+            else:
+                self._flush_turn_activity(log)
+            with suppress(Exception):
+                self._refresh_workbench_panel()
             return result
 
         except asyncio.CancelledError:
             self._set_status("")
+            self._flush_turn_activity(log)
             log.write("[yellow]Task cancelled[/yellow]")
             return None
         except Exception as e:
             self._set_status("")
+            self._flush_turn_activity(log)
             log.write(f"[red]Error: {type(e).__name__}: {e}[/red]")
             return None
         finally:
@@ -1907,7 +2011,7 @@ class OpenNovaTUI(App):
     async def _execute_pending_plan(self) -> None:
         """Approve and execute the current pending plan."""
         self.agent.state.mark_plan_approved()
-        self._workbench_tab = "plan"
+        self._workbench_tab = "tasks"
         with suppress(Exception):
             self._refresh_workbench_panel()
         await self._run_agent_task(self.agent.execute_approved_plan())
@@ -1922,7 +2026,7 @@ class OpenNovaTUI(App):
         TodoWriteTool.replace_todos([], getattr(self.agent, "state_store", None))
         self._last_plan_snapshot = None
         self._last_plan_chat_signature = None
-        self._workbench_tab = "plan"
+        self._workbench_tab = "tasks"
         with suppress(Exception):
             self._refresh_workbench_panel()
         with suppress(Exception):
@@ -1931,7 +2035,7 @@ class OpenNovaTUI(App):
 
     async def _continue_plan_conversation(self, task: str, preserve_context: bool = True) -> None:
         """Continue discussing or revising the pending plan without executing it."""
-        self._workbench_tab = "plan"
+        self._workbench_tab = "tasks"
         with suppress(Exception):
             self.agent.state.set_mode("plan")
             self._refresh_workbench_panel()
@@ -1956,106 +2060,94 @@ class OpenNovaTUI(App):
         OpenNovaTUI._register_plan_workbench_callback(self, write_chat=None)
 
         def on_thought(thought: str) -> None:
-            try:
-                log = self.query_one("#messages")
-                log.write(Panel(thought, title="Thinking", border_style="yellow"))
-            except Exception:
-                pass
+            return None
 
         def on_action(tool_name: str, args: dict) -> None:
             if _canonical_tools["seen"]:
                 return
             _current_tool["name"] = tool_name
             self._tool_progress.start_tool(tool_name, args)
-            try:
-                log = self.query_one("#messages")
-                parts = []
-                for k, v in args.items():
-                    if k in _REDACTED_ACTION_PARAMS:
-                        if isinstance(v, str):
-                            parts.append(f"{k}=<{len(v)} chars>")
-                        else:
-                            parts.append(f"{k}=<redacted>")
-                    else:
-                        parts.append(f"{k}={repr(v)}")
-                args_str = ", ".join(parts)
-                self._write_tool_start(log, tool_name, f"({args_str})")
-            except Exception:
-                pass
 
         def on_result(result: ToolResult) -> None:
             if _canonical_tools["seen"]:
                 return
             event = self._tool_progress.finish_tool(result)
-            summary = event["summary"]
-            try:
-                log = self.query_one("#messages")
-                summary_markup = (
-                    f"[green]Result:[/green] [dim]{summary}[/dim]"
-                    if result.success
-                    else f"[red]Result:[/red] [dim]{summary}[/dim]"
+            tool_name = _current_tool["name"] or "tool"
+            activity = OpenNovaTUI._turn_activity_store(self)
+            fallback_id = f"fallback_{len(activity.snapshot().tool_names) + 1}"
+            start_event = {
+                "type": "tool_start",
+                "tool_id": fallback_id,
+                "tool_name": tool_name,
+                "arguments": dict(getattr(self._tool_progress, "current_args", {}) or {}),
+            }
+            result_event = {
+                "type": "tool_result" if result.success else "tool_error",
+                "tool_id": fallback_id,
+                "tool_name": tool_name,
+                "success": result.success,
+                "duration_ms": event.get("duration_ms", 0),
+            }
+            activity.apply_event(start_event)
+            activity.apply_event(result_event)
+            with suppress(Exception):
+                self._record_transcript_event(
+                    "tool_start",
+                    tool_name=tool_name,
+                    detail=f"[dim]{fallback_id}[/dim]",
                 )
-                output = ""
-                if _current_tool["name"] not in _SUPPRESSED_RESULT_OUTPUT:
-                    output = _truncate_tool_output(
-                        _current_tool["name"],
-                        str(event.get("output_preview") or ""),
-                    )
-                diff = result.metadata.get("diff") if result.success else None
-                self._write_tool_result(
-                    log,
-                    tool_name=_current_tool["name"],
-                    summary_markup=summary_markup,
-                    output=output,
+            color = "green" if result.success else "red"
+            with suppress(Exception):
+                self._record_transcript_event(
+                    "tool_result",
+                    tool_name=tool_name,
+                    summary_markup=(
+                        f"[{color}]Result:[/{color}] "
+                        f"[dim]{tool_name} in {event.get('duration_ms', 0)}ms[/dim]"
+                    ),
+                    output=str(event.get("output_preview") or ""),
                     error=result.error or "",
-                    diff=diff or "",
-                    diff_max_lines=_MAX_DIFF_LINES.get(_current_tool["name"], _MAX_OUTPUT_LINES),
+                    diff=str(result.metadata.get("diff") or ""),
+                    diff_max_lines=_MAX_DIFF_LINES.get(tool_name, _MAX_OUTPUT_LINES),
                 )
-            except Exception:
-                pass
 
         def on_tool_event(event: Any) -> None:
             _canonical_tools["seen"] = True
             if hasattr(event, "type"):
                 self._tool_cards.apply_event(event)
-                if not getattr(self, "_workbench_visible", False) or self._workbench_tab == "tools":
-                    self._workbench_tab = "tools"
                 with suppress(Exception):
                     self._refresh_tool_panel()
             data = event.to_dict() if hasattr(event, "to_dict") else dict(event)
             event_type = data.get("type")
             tool_name = data.get("tool_name", "tool")
+            OpenNovaTUI._turn_activity_store(self).apply_event(data)
             if event_type == "tool_start":
                 self._tool_progress.current_tool_id = str(data.get("tool_id", ""))
                 self._tool_progress.current_tool_name = tool_name
                 self._tool_progress.current_args = dict(data.get("arguments") or {})
                 self._tool_progress.started_at = float(data.get("started_at") or time.time())
-                try:
-                    log = self.query_one("#messages")
-                    self._write_tool_start(
-                        log,
-                        tool_name,
-                        f"[dim]{data.get('tool_id')}[/dim]",
+                with suppress(Exception):
+                    self._record_transcript_event(
+                        "tool_start",
+                        tool_name=tool_name,
+                        detail=f"[dim]{data.get('tool_id')}[/dim]",
                     )
-                except Exception:
-                    pass
             elif event_type == "permission_request":
                 self._tool_progress.waiting_for_interaction = True
                 self._tool_progress.interaction_label = "Confirm"
             elif event_type in {"tool_result", "tool_error", "tool_cancelled"}:
-                try:
-                    log = self.query_one("#messages")
-                    success = data.get("success") is True
-                    color = "green" if success else "red"
-                    duration = data.get("duration_ms")
-                    summary_markup = (
-                        f"[{color}]Result:[/{color}] [dim]{tool_name} in {duration or 0}ms[/dim]"
-                    )
-                    output = ""
-                    if tool_name not in _SUPPRESSED_RESULT_OUTPUT:
-                        output = _truncate_tool_output(tool_name, str(data.get("output") or ""))
-                    self._write_tool_result(
-                        log,
+                success = data.get("success") is True
+                color = "green" if success else "red"
+                duration = data.get("duration_ms")
+                summary_markup = (
+                    f"[{color}]Result:[/{color}] [dim]{tool_name} in {duration or 0}ms[/dim]"
+                )
+                output = ""
+                if tool_name not in _SUPPRESSED_RESULT_OUTPUT:
+                    output = _truncate_tool_output(tool_name, str(data.get("output") or ""))
+                with suppress(Exception):
+                    self._record_transcript_event(
+                        "tool_result",
                         tool_name=tool_name,
                         summary_markup=summary_markup,
                         output=output,
@@ -2063,8 +2155,6 @@ class OpenNovaTUI(App):
                         diff=str(data.get("diff") or ""),
                         diff_max_lines=_MAX_DIFF_LINES.get(tool_name, _MAX_OUTPUT_LINES),
                     )
-                except Exception:
-                    pass
                 self._tool_progress.clear_interaction()
                 self._tool_progress.current_tool_name = ""
 
@@ -2210,13 +2300,46 @@ class OpenNovaTUI(App):
         model = str(model_info.get("model") or "unknown")
         mode_getter = getattr(self.agent, "get_permission_mode", None)
         permission_mode = mode_getter().value if callable(mode_getter) else "auto"
+        context_utilization = OpenNovaTUI._cached_context_utilization(self)
+        phase = "running" if getattr(self, "_task_active", False) else "idle"
+        state_store = getattr(self.agent, "state_store", None)
+        with suppress(Exception):
+            run_phase = state_store.get_state().run.phase
+            phase = str(getattr(run_phase, "value", run_phase))
+        current_step = ""
+        plan = getattr(getattr(self.agent, "state", None), "current_plan", None)
+        for step in getattr(plan, "steps", []) or []:
+            status = str(getattr(getattr(step, "status", None), "value", step.status))
+            if status in {"running", "in_progress", "executing", "interrupted"}:
+                current_step = str(getattr(step, "id", ""))
+                break
+        elapsed = 0.0
+        if getattr(self, "_task_active", False) and getattr(self, "_start_time", 0.0):
+            elapsed = max(0.0, time.time() - self._start_time)
         return render_status_bar(
             session_id=session_id,
             model=model,
             message=message,
             tool_panel_visible=bool(getattr(self, "_tool_panel_visible", False)),
             permission_mode=permission_mode,
+            phase=phase,
+            current_step=current_step,
+            context_utilization=context_utilization,
+            elapsed_seconds=elapsed,
         )
+
+    def _cached_context_utilization(self) -> float:
+        now = time.monotonic()
+        cached_at, cached_value = getattr(self, "_context_status_cache", (0.0, 0.0))
+        if now - cached_at < 0.5:
+            return cached_value
+        context_manager = getattr(self.agent, "context_manager", None)
+        context_getter = getattr(context_manager, "get_presentation_snapshot", None)
+        utilization = (
+            float(context_getter().utilization_percent) if callable(context_getter) else 0.0
+        )
+        self._context_status_cache = (now, utilization)
+        return utilization
 
     def _set_status(self, text: str) -> None:
         try:

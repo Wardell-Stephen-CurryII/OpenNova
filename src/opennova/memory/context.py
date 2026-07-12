@@ -8,8 +8,8 @@ Handles:
 - Context optimization for different models
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
 from opennova.providers.base import Message
@@ -55,6 +55,20 @@ class ContextStats:
     context_window: int
     available_tokens: int
     utilization_percent: float
+
+
+@dataclass(frozen=True)
+class ContextPresentationSnapshot:
+    """Read-only context statistics intended for user-facing presentation."""
+
+    total_messages: int
+    total_tokens: int
+    context_window: int
+    available_tokens: int
+    utilization_percent: float
+    compression_count: int
+    has_compressed_summary: bool
+    compression_threshold_percent: float
 
 
 class ContextManager:
@@ -105,10 +119,8 @@ class ContextManager:
 
         self._encoding = None
         if TIKTOKEN_AVAILABLE:
-            try:
+            with suppress(Exception):
                 self._encoding = tiktoken.get_encoding(encoding_name)
-            except Exception:
-                pass
 
     def _get_context_window(self, model: str) -> int:
         """Get context window for a model."""
@@ -219,6 +231,20 @@ class ContextManager:
             utilization_percent=(total_tokens / self.context_window) * 100,
         )
 
+    def get_presentation_snapshot(self) -> ContextPresentationSnapshot:
+        """Return stable context and compression statistics for UI surfaces."""
+        stats = self.get_stats()
+        return ContextPresentationSnapshot(
+            total_messages=stats.total_messages,
+            total_tokens=stats.total_tokens,
+            context_window=stats.context_window,
+            available_tokens=stats.available_tokens,
+            utilization_percent=stats.utilization_percent,
+            compression_count=self._compression_count,
+            has_compressed_summary=bool(self._compressed_summary),
+            compression_threshold_percent=self.compression_threshold * 100,
+        )
+
     def add_message(self, message: Message) -> bool:
         """
         Add a message to context.
@@ -297,6 +323,10 @@ class ContextManager:
     def set_compressed_summary(self, summary: str | None) -> None:
         """Restore compression state (used when resuming sessions)."""
         self._compressed_summary = summary
+        if summary and self._compression_count == 0:
+            self._compression_count = 1
+        elif not summary:
+            self._compression_count = 0
 
     def get_compressed_summary(self) -> str | None:
         """Expose current summary for session persistence."""

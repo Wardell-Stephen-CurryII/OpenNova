@@ -11,7 +11,7 @@ OpenNova v0.4.1 is a terminal AI coding agent built in Python around a Textual T
 OpenNova combines a focused agent runtime with a full-screen terminal workbench:
 
 - OpenAI, Anthropic, and DeepSeek providers
-- Streaming Textual TUI with chat, Tools, Plan, and Todos panels
+- Streaming Textual TUI with chat and Context, Tasks, and Activity panels
 - Persistent sessions with a resume picker and complete transcript replay
 - Plan/Act workflows, TodoWrite, sub-agents, and worktrees
 - 39 built-in tools plus Skills, trusted project plugins, hooks, and MCP

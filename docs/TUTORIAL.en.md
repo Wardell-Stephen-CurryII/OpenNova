@@ -22,7 +22,7 @@ Native providers are `openai`, `anthropic`, and `deepseek`. One-shot tasks can o
 
 ## TUI workbench
 
-The main screen contains the message log, prompt input, and Tools, Plan, and Todos panels. Model output and tool execution stream into the interface, while tool status is mirrored in the Tools panel.
+The main screen contains the message log, prompt input, and Context, Tasks, and Activity panels. Context shows token usage, compression, active files, and decisions; Tasks combines plans and todos; Activity keeps full tool details. Tool calls from one turn are folded into a single chat summary.
 
 | Key | Action |
 |---|---|
@@ -32,6 +32,8 @@ The main screen contains the message log, prompt input, and Tools, Plan, and Tod
 | `Ctrl+Shift+C` | Copy selected message text |
 | `Cmd+C` | Copy on macOS terminals that forward the binding |
 | `Tab` / `Shift+Tab` | Move focus |
+| `Alt+1` / `Alt+2` / `Alt+3` | Switch Context / Tasks / Activity |
+| `Alt+T` | Show or hide the workbench |
 
 Copying no longer opens an overlay. Drag over the message text and use the copy binding; OpenNova combines OSC 52 with a native clipboard fallback.
 

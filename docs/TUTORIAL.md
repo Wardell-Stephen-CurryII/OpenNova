@@ -22,7 +22,7 @@ uv run opennova
 
 ## TUI 工作台
 
-主界面由消息区、输入框以及 Tools、Plan、Todos 侧栏组成。模型输出和工具执行会流式更新，工具调用在消息区显示状态，同时同步到 Tools 面板。
+主界面由消息区、输入框以及 Context、Tasks、Activity 侧栏组成。Context 展示 token、压缩、活跃文件和决策，Tasks 合并计划与 todos，Activity 保留完整工具输出。同一回合的工具调用会在消息区折叠为一条摘要。
 
 常用按键：
 
@@ -34,6 +34,8 @@ uv run opennova
 | `Ctrl+Shift+C` | 复制消息区选中的文字 |
 | `Cmd+C` | macOS 终端能传递快捷键时复制选区 |
 | `Tab` / `Shift+Tab` | 切换焦点 |
+| `Alt+1` / `Alt+2` / `Alt+3` | 切换 Context / Tasks / Activity |
+| `Alt+T` | 显示或隐藏右侧工作台 |
 
 复制无需弹出文本窗口：在消息区用鼠标拖选，再按复制快捷键即可。系统会组合使用 OSC 52 与平台剪贴板命令。
 
