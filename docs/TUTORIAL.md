@@ -132,7 +132,9 @@ uv run opennova --permission-mode full
 /permissions execute_command ask
 ```
 
-`request` 每次询问，`auto` 只询问风险操作，`full` 跳过普通审批。`full` 仍不能绕过 hard block、deny 规则、Plan 确认、路径/网络限制和进程沙箱。
+`request` 每次询问；`auto` 自动执行日常开发操作，只对删除、强制 Git 操作、内网访问、
+敏感信息写入和不受信任 MCP 等高风险动作询问；`full` 跳过普通审批。`full` 仍不能绕过
+hard block、deny 规则、Plan 确认、路径/网络限制和进程沙箱。
 
 ## MCP、插件与 Hooks
 

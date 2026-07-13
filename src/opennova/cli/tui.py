@@ -1577,7 +1577,7 @@ class OpenNovaTUI(App):
             mode = self.agent.set_permission_mode(tokens[1].lower())
             descriptions = {
                 "request": "every allowed tool call requires approval",
-                "auto": "safe tool calls run automatically; risky calls require approval",
+                "auto": "routine development calls run automatically; only high-risk calls require approval",
                 "full": "allowed tool calls skip approval; hard safety blocks remain active",
             }
             log.write(

@@ -118,7 +118,10 @@ uv run opennova --permission-mode full
 /permissions execute_command ask
 ```
 
-`request` asks for every call, `auto` asks for risky calls, and `full` skips ordinary approval prompts. Hard blocks, deny rules, Plan approval, path/network restrictions, and process sandboxing still apply in `full` mode.
+`request` asks for every call. `auto` runs routine development operations automatically and asks
+only for high-risk actions such as deletion, force operations, private-network access, secret
+writes, or untrusted MCP tools. `full` skips ordinary approval prompts. Hard blocks, deny rules,
+Plan approval, path/network restrictions, and process sandboxing still apply in `full` mode.
 
 ## MCP, plugins, and hooks
 

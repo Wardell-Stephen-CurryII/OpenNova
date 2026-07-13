@@ -73,6 +73,8 @@ class SecurityAuditLogger:
                         "approval_required",
                         getattr(guard_result, "requires_confirmation", None),
                     ),
+                    "approval_source": metadata.get("approval_source"),
+                    "auto_approved": metadata.get("auto_approved", False),
                     "approval_bypassed": metadata.get("approval_bypassed", False),
                 }
             if result is not None:

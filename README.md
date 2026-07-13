@@ -191,7 +191,9 @@ MCP supports stdio and SSE transports. Project plugins can add trusted tools and
 ## Security model
 
 - `request`: asks before every otherwise allowed tool call
-- `auto`: automatically runs safe calls and asks for risky calls
+- `auto`: automatically runs routine development calls, including elevated-risk commands, and
+  asks only for high-risk actions such as deletion, force operations, private-network access,
+  secret writes, or untrusted MCP tools
 - `full`: skips approval prompts but does not bypass hard blocks
 
 Hard blocks, explicit deny rules, plan approval, path/network policy, secret handling, and the optional OS process sandbox remain active in every mode.
