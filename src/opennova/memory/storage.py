@@ -2,14 +2,22 @@
 
 import json
 import os
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from opennova.memory.types.user_memory import UserMemory
+from opennova.memory.types.base import MEMORY_CATEGORIES
 from opennova.memory.types.feedback_memory import FeedbackMemory
 from opennova.memory.types.project_memory import ProjectMemory
 from opennova.memory.types.reference_memory import ReferenceMemory
+from opennova.memory.types.user_memory import UserMemory
+
+MEMORY_TYPES: dict[str, type[UserMemory]] = {
+    "user": UserMemory,
+    "feedback": FeedbackMemory,
+    "project": ProjectMemory,
+    "reference": ReferenceMemory,
+}
 
 
 class MemoryStorage:
@@ -52,12 +60,21 @@ class MemoryStorage:
     def _get_category_dir(self, category: str) -> Path:
         """Get directory for a memory category."""
         mapping = {
-            MemoryCategory.USER: self.user_dir,
-            MemoryCategory.FEEDBACK: self.feedback_dir,
-            MemoryCategory.PROJECT: self.project_dir,
-            MemoryCategory.REFERENCE: self.reference_dir,
+            "user": self.user_dir,
+            "feedback": self.feedback_dir,
+            "project": self.project_dir,
+            "reference": self.reference_dir,
         }
         return mapping.get(category, self.memory_dir)
+
+    @staticmethod
+    def _deserialize(data: dict[str, Any], fallback_category: str) -> UserMemory | None:
+        """Deserialize an entry using its canonical string category."""
+        category = data.get("category", fallback_category)
+        memory_type = MEMORY_TYPES.get(category) if isinstance(category, str) else None
+        if memory_type is None:
+            return None
+        return memory_type.from_dict(data)
 
     def _get_memory_file(self, memory: UserMemory) -> Path:
         """Get file path for a memory entry."""
@@ -65,15 +82,6 @@ class MemoryStorage:
         return category_dir / f"{memory.id}.json"
 
     def save(self, memory: UserMemory) -> None:
-        """
-        Save a memory entry to storage.
-
-        Args:
-            memory: Memory entry to save
-        """
-        category = memory.category
-        memory.updated_at = datetime.now()
-        memory_file = self._get_memory_file(memory)
         """
         Save a memory entry to storage.
 
@@ -106,9 +114,9 @@ class MemoryStorage:
             return None
 
         try:
-            with open(memory_file, "r", encoding="utf-8") as f:
+            with open(memory_file, encoding="utf-8") as f:
                 data = json.load(f)
-            return UserMemory.from_dict(data)
+            return self._deserialize(data, category)
         except Exception:
             return None
 
@@ -127,16 +135,11 @@ class MemoryStorage:
 
         for memory_file in category_dir.glob("*.json"):
             try:
-                with open(memory_file, "r", encoding="utf-8") as f:
+                with open(memory_file, encoding="utf-8") as f:
                     data = json.load(f)
-                    if category == MemoryCategory.USER:
-                        memories.append(UserMemory.from_dict(data))
-                    elif category == MemoryCategory.FEEDBACK:
-                        memories.append(FeedbackMemory.from_dict(data))
-                    elif category == MemoryCategory.PROJECT:
-                        memories.append(ProjectMemory.from_dict(data))
-                    elif category == MemoryCategory.REFERENCE:
-                        memories.append(ReferenceMemory.from_dict(data))
+                    memory = self._deserialize(data, category)
+                    if memory is not None:
+                        memories.append(memory)
             except Exception:
                 pass
 
@@ -163,17 +166,15 @@ class MemoryStorage:
         else:
             # Search all categories
             memories = []
-            for cat in [MemoryCategory.USER, MemoryCategory.FEEDBACK, MemoryCategory.PROJECT, MemoryCategory.REFERENCE]:
+            for cat in MEMORY_CATEGORIES:
                 memories.extend(self.list_by_category(cat))
 
         # Filter by query
         matches = []
         for memory in memories:
-            # Check content
-            if query_lower in memory.content.lower():
-                matches.append(memory)
-            # Check tags
-            elif any(query_lower in tag.lower() for tag in memory.tags):
+            if query_lower in memory.content.lower() or any(
+                query_lower in tag.lower() for tag in memory.tags
+            ):
                 matches.append(memory)
 
         return matches[:limit] if limit else matches
@@ -210,11 +211,11 @@ class MemoryStorage:
         cutoff = datetime.now().timestamp() - (days * 86400)
         deleted = 0
 
-        for category in ["user", "feedback", "project", "reference"]:
+        for category in MEMORY_CATEGORIES:
             category_dir = self._get_category_dir(category)
             for memory_file in category_dir.glob("*.json"):
                 try:
-                    with open(memory_file, "r", encoding="utf-8") as f:
+                    with open(memory_file, encoding="utf-8") as f:
                         data = json.load(f)
                     created_at = datetime.fromisoformat(data["created_at"]).timestamp()
 

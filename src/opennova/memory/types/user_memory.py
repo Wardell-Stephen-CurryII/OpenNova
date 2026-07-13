@@ -1,12 +1,11 @@
 """User Memory - Stores user-related information."""
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
+from dataclasses import dataclass
 
 from opennova.memory.types.base import BaseMemory
 
 
+@dataclass
 class UserMemory(BaseMemory):
     """User-related memory entry."""
 

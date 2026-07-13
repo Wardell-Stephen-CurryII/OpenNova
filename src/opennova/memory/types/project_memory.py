@@ -1,11 +1,12 @@
 """Project Memory - Stores project-specific information."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from opennova.memory.types.user_memory import UserMemory
 
 
+@dataclass
 class ProjectMemory(UserMemory):
     """Project-specific memory entry."""
 
