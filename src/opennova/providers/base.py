@@ -6,15 +6,18 @@ and the standard data structures used throughout the system.
 """
 
 import json
-
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, AsyncIterator, Literal
+from enum import StrEnum
+from typing import Any, Literal
+
+ToolChoice = Literal["auto", "required", "none"]
 
 
-class FinishReason(str, Enum):
+class FinishReason(StrEnum):
     """Finish reason for LLM response."""
 
     STOP = "stop"
@@ -191,10 +194,8 @@ class Message:
             ]
         timestamp = datetime.now()
         if "timestamp" in data:
-            try:
+            with suppress(ValueError, TypeError):
                 timestamp = datetime.fromisoformat(data["timestamp"])
-            except (ValueError, TypeError):
-                pass
         return Message(
             role=data["role"],
             content=data.get("content", ""),
@@ -325,11 +326,9 @@ class BaseLLMProvider(ABC):
         pass
 
     def _build_system_prompt(self, messages: list[Message]) -> str | None:
-        """Extract system prompt from messages (for Anthropic compatibility)."""
-        for msg in messages:
-            if msg.role == "system":
-                return msg.content
-        return None
+        """Combine system messages in order for providers with a system field."""
+        parts = [msg.content.strip() for msg in messages if msg.role == "system" and msg.content.strip()]
+        return "\n\n".join(parts) or None
 
     def _filter_messages_for_anthropic(self, messages: list[Message]) -> list[Message]:
         """Filter out system messages for Anthropic API."""

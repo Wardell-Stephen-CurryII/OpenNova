@@ -634,6 +634,7 @@ class AgentRuntime:
                 role="system",
                 content="Use this project memory when it is relevant to the current task:\n\n"
                 + memory_text,
+                name="opennova_project_memory",
             )
         ]
 
@@ -1122,6 +1123,7 @@ class AgentRuntime:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         preserve_plan_state: bool = False,
         preserve_context: bool = False,
+        route_workflow: bool = True,
     ) -> str:
         """
         Run in act mode: execute directly without planning.
@@ -1197,6 +1199,7 @@ class AgentRuntime:
                 on_tool_event=on_tool_event,
                 preserve_plan_state=preserve_plan_state,
                 preserve_context=preserve_context,
+                route_workflow=route_workflow and not preserve_plan_state,
             )
         except Exception:
             self.working_memory.complete_task(success=False, error="Act mode execution failed")

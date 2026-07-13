@@ -265,7 +265,6 @@ class AgentState:
         if self._dispatch("run_started", task=task, preserve_plan=True):
             return
         self.current_task = task
-        self.mode = "act"
         self.iteration = 0
         self.is_complete = False
         self.requires_confirmation = False

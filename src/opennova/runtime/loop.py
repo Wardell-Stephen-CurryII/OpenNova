@@ -29,6 +29,7 @@ from opennova.providers.base import (
 )
 from opennova.runtime.events import ToolEvent, ToolUseContext
 from opennova.runtime.state import AgentState
+from opennova.runtime.workflow import WorkflowDecision, WorkflowRouter, WorkflowRoutingResult
 from opennova.security.guardrails import Guardrails, GuardResult, RiskLevel
 from opennova.skills.hook_adapter import register_skill_hooks
 from opennova.skills.registry import SkillRegistry
@@ -48,6 +49,10 @@ PLAN_MODE_IMPLEMENTATION_TOOLS = {
     "exit_worktree",
     "init_project_guide",
 }
+RUNTIME_SYSTEM_MESSAGE_NAME = "opennova_runtime"
+LEGACY_RUNTIME_SYSTEM_PROMPT_PREFIX = (
+    "You are an AI coding assistant that helps users with software engineering tasks."
+)
 
 
 @dataclass
@@ -143,6 +148,9 @@ class ReActLoop:
         self._active_skill_allowed_tools: set[str] | None = None
         self._active_skill_model: str | None = None
         self._base_model: str = getattr(llm, "model", "")
+        self._workflow_resolved: bool = True
+        self._workflow_decision: WorkflowDecision | None = None
+        self._workflow_routing_error: str | None = None
 
     @property
     def messages(self) -> list[Message]:
@@ -173,6 +181,7 @@ class ReActLoop:
         on_tool_event: Callable[[ToolEvent], None] | None = None,
         preserve_plan_state: bool = False,
         preserve_context: bool = False,
+        route_workflow: bool = False,
     ) -> str:
         """
         Run the ReAct loop for a task.
@@ -199,31 +208,42 @@ class ReActLoop:
         self.on_stream = on_stream
         self.on_tool_event = on_tool_event
         self._errors = []
+        self._workflow_resolved = not route_workflow
+        self._workflow_decision = WorkflowDecision.ACT if not route_workflow else None
+        self._workflow_routing_error = None
 
-        if preserve_context:
-            # Messages already exist (e.g., skill prompt from /skill command).
-            # Ensure system prompt is at position 0 if not already present.
-            has_system = any(msg.role == "system" for msg in self.messages)
-            if not has_system:
-                self.context_manager.messages.insert(
-                    0,
-                    Message(role="system", content=self._build_system_prompt()),
-                )
-        elif not self.messages:
-            self.add_message(
-                Message(
-                    role="system",
-                    content=self._build_system_prompt(),
-                )
-            )
+        self._upsert_runtime_system_prompt()
 
         self._inject_skill_listing()
 
         self.add_message(Message(role="user", content=f"Task: {task}"))
         self._report_progress(activity=f"Started task: {task}")
-        pending_routed_action: ParsedAction | None = self._route_task_to_project_init(task)
-        if pending_routed_action is None:
-            pending_routed_action = self._route_task_to_skill(task)
+        pending_routed_action: ParsedAction | None = None
+        if route_workflow:
+            workflow = await self._resolve_workflow(task)
+            if workflow.decision == WorkflowDecision.PLAN:
+                pending_routed_action = ParsedAction(
+                    tool_name="enter_plan_mode",
+                    arguments={},
+                    thought=workflow.reason or "The user wants a reviewable plan before implementation.",
+                )
+            elif not workflow.resolved:
+                self.add_message(
+                    Message(
+                        role="user",
+                        content=(
+                            "OpenNova could not resolve the execution workflow for this turn. "
+                            "You may answer, inspect, search, or ask for clarification, but project "
+                            "modifications are blocked until the workflow is resolved. You may call "
+                            "enter_plan_mode if planning is the safe choice."
+                        ),
+                    )
+                )
+
+        if pending_routed_action is None and self._workflow_resolved:
+            pending_routed_action = self._route_task_to_project_init(task)
+            if pending_routed_action is None:
+                pending_routed_action = self._route_task_to_skill(task)
 
         try:
             while (
@@ -243,6 +263,27 @@ class ReActLoop:
                     else:
                         response = await self._think()
                         action = self._parse_response(response, task)
+
+                    if action.is_final and self._plan_submission_required():
+                        if response.content:
+                            self.add_message(
+                                Message(
+                                    role="assistant",
+                                    content=response.content,
+                                    reasoning_content=response.reasoning_content,
+                                )
+                            )
+                        self.add_message(
+                            Message(
+                                role="user",
+                                content=(
+                                    "Plan mode is active. Do not finish with plan text alone. "
+                                    "Continue research or call exit_plan_mode with a complete "
+                                    "structured plan so the user can review it."
+                                ),
+                            )
+                        )
+                        continue
 
                     if action.is_final:
                         self.state.mark_complete(
@@ -403,6 +444,7 @@ class ReActLoop:
         Returns:
             LLM response with potential tool calls
         """
+        self._upsert_runtime_system_prompt()
         tools = self._available_tools()
 
         if self.stream and self.on_stream:
@@ -449,9 +491,41 @@ class ReActLoop:
     def _available_tools(self) -> list[Any]:
         """Return the currently allowed tool schemas."""
         schemas = self.tool_registry.list_tools()
+        mode = getattr(getattr(self.state, "mode", None), "value", getattr(self.state, "mode", ""))
+        if not self._workflow_resolved or mode == "plan":
+            schemas = [
+                schema for schema in schemas if schema.name not in PLAN_MODE_IMPLEMENTATION_TOOLS
+            ]
         if not self._active_skill_allowed_tools:
             return schemas
         return [schema for schema in schemas if schema.name in self._active_skill_allowed_tools]
+
+    async def _resolve_workflow(self, task: str) -> WorkflowRoutingResult:
+        """Resolve and retain the model-selected workflow for this turn."""
+        result = await WorkflowRouter(self.llm).route(
+            self.context_manager.get_messages_for_llm(),
+            task,
+        )
+        self._workflow_resolved = result.resolved
+        self._workflow_decision = result.decision
+        self._workflow_routing_error = result.error
+        self._upsert_runtime_system_prompt()
+        return result
+
+    def _plan_submission_required(self) -> bool:
+        """Return whether plan mode still requires a structured exit tool call."""
+        mode = getattr(getattr(self.state, "mode", None), "value", getattr(self.state, "mode", ""))
+        approval = getattr(
+            getattr(self.state, "plan_approval_status", None),
+            "value",
+            getattr(self.state, "plan_approval_status", ""),
+        )
+        return mode == "plan" and approval not in {
+            "awaiting_approval",
+            "approved",
+            "executing",
+            "completed",
+        }
 
     def _available_tool_names(self) -> list[str]:
         return [schema.name for schema in self._available_tools()]
@@ -823,6 +897,43 @@ class ReActLoop:
                     f"Allowed tools: {', '.join(sorted(self._active_skill_allowed_tools))}"
                 ),
             )
+        if not self._workflow_resolved and action.tool_name in PLAN_MODE_IMPLEMENTATION_TOOLS:
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason=(
+                    f"Tool '{action.tool_name}' is blocked because the execution workflow "
+                    "has not been resolved for this turn."
+                ),
+                requires_confirmation=False,
+                suggestions=[
+                    "Answer without modifying files, continue inspecting, or call enter_plan_mode."
+                ],
+                metadata={"workflow_unresolved": True},
+            )
+        if (
+            self._workflow_resolved
+            and self._workflow_decision == WorkflowDecision.ACT
+            and action.tool_name == "enter_plan_mode"
+        ):
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason="Plan mode is disabled for this explicitly direct execution turn.",
+                requires_confirmation=False,
+                metadata={"workflow_decision": WorkflowDecision.ACT.value},
+            )
+        if (
+            self._workflow_decision == WorkflowDecision.PLAN
+            and action.tool_name in PLAN_MODE_IMPLEMENTATION_TOOLS
+        ):
+            return GuardResult(
+                allowed=False,
+                risk_level=RiskLevel.BLOCK,
+                reason=f"Tool '{action.tool_name}' is blocked until the plan is approved.",
+                requires_confirmation=False,
+                metadata={"workflow_decision": WorkflowDecision.PLAN.value},
+            )
         plan_mode = getattr(getattr(self.state, "mode", None), "value", getattr(self.state, "mode", ""))
         if plan_mode == "plan" and action.tool_name in PLAN_MODE_IMPLEMENTATION_TOOLS:
             return GuardResult(
@@ -1145,6 +1256,11 @@ class ReActLoop:
                 result.output or "Plan ready for approval",
                 run_id=getattr(self, "active_run_id", None),
             )
+        elif action.tool_name == "enter_plan_mode" and result.success:
+            self._workflow_resolved = True
+            self._workflow_decision = WorkflowDecision.PLAN
+            self._workflow_routing_error = None
+            self._upsert_runtime_system_prompt()
 
     def _apply_skill_execution_context(self, metadata: dict[str, Any]) -> None:
         """Apply temporary tool/model constraints for the active skill."""
@@ -1168,7 +1284,7 @@ class ReActLoop:
     def _build_system_prompt(self) -> str:
         """Build system prompt for the agent."""
         tools_description = []
-        for schema in self.tool_registry.list_tools():
+        for schema in self._available_tools():
             params_desc = []
             props = schema.parameters.get("properties", {})
             required = schema.parameters.get("required", [])
@@ -1239,6 +1355,29 @@ Rules:
 """
         return prompt
 
+    def _upsert_runtime_system_prompt(self) -> None:
+        """Keep exactly one current OpenNova runtime prompt at context position zero."""
+        runtime_message = Message(
+            role="system",
+            content=self._build_system_prompt(),
+            name=RUNTIME_SYSTEM_MESSAGE_NAME,
+        )
+        retained = [
+            message
+            for message in self.context_manager.messages
+            if not (
+                message.role == "system"
+                and (
+                    message.name == RUNTIME_SYSTEM_MESSAGE_NAME
+                    or (
+                        message.name is None
+                        and message.content.startswith(LEGACY_RUNTIME_SYSTEM_PROMPT_PREFIX)
+                    )
+                )
+            )
+        ]
+        self.context_manager.messages[:] = [runtime_message, *retained]
+
     def _is_dangerous_action(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Check if an action is potentially dangerous."""
         dangerous_tools = {"delete_file", "execute_command", "write_file"}
@@ -1283,4 +1422,4 @@ async def run_simple_task(
         max_iterations=max_iterations,
         stream=stream,
     )
-    return await loop.run(task, on_stream=on_stream)
+    return await loop.run(task, on_stream=on_stream, route_workflow=True)

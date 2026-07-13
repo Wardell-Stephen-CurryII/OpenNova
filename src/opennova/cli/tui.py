@@ -1354,7 +1354,7 @@ class OpenNovaTUI(App):
             log = self.query_one("#messages")
             log.write("[red]Usage: /act <task>[/red]")
             return
-        await self._execute_task(args)
+        await self._execute_task(args, route_workflow=False)
 
     async def _cmd_tools(self, args: str) -> None:
         log = self.query_one("#messages")
@@ -1787,6 +1787,7 @@ class OpenNovaTUI(App):
             OpenNovaTUI._discard_pending_plan(self)
             return
         if decision == "revise":
+            OpenNovaTUI._keep_plan_for_revision(self)
             log.write("[yellow]Plan kept for revision. Send your requested changes next.[/yellow]")
             return
 
@@ -1952,7 +1953,12 @@ class OpenNovaTUI(App):
         finally:
             self._reset_input_state()
 
-    async def _execute_task(self, task: str, preserve_context: bool = True) -> None:
+    async def _execute_task(
+        self,
+        task: str,
+        preserve_context: bool = True,
+        route_workflow: bool = True,
+    ) -> None:
         """Execute a user task through the agent.
 
         By default preserves context so the conversation accumulates across
@@ -1987,8 +1993,22 @@ class OpenNovaTUI(App):
                 task=task,
                 stream=True,
                 preserve_context=preserve_context,
+                route_workflow=route_workflow,
             )
         )
+
+        if not _has_pending_plan_decision(getattr(self.agent, "state", None)):
+            return
+
+        decision = await self._ask_plan_decision_dialog(task)
+        if decision == "execute":
+            await OpenNovaTUI._execute_pending_plan(self)
+        elif decision == "discard":
+            OpenNovaTUI._discard_pending_plan(self)
+        else:
+            OpenNovaTUI._keep_plan_for_revision(self)
+            log = self.query_one("#messages")
+            log.write("[yellow]Plan kept for revision. Send your requested changes next.[/yellow]")
 
     async def _ask_plan_decision_dialog(self, user_message: str) -> PlanDecision:
         """Show the pending-plan decision modal and wait for the selected action."""
@@ -2032,6 +2052,17 @@ class OpenNovaTUI(App):
         with suppress(Exception):
             log = self.query_one("#messages")
             self._write_assistant_message(log, "Plan discarded. We can continue without it.")
+
+    def _keep_plan_for_revision(self) -> None:
+        """Move an approval-pending plan back to draft for the next user turn."""
+        state = getattr(self.agent, "state", None)
+        plan = getattr(state, "current_plan", None)
+        if state is None or plan is None:
+            return
+        state.set_plan(plan)
+        self._workbench_tab = "tasks"
+        with suppress(Exception):
+            self._refresh_workbench_panel()
 
     async def _continue_plan_conversation(self, task: str, preserve_context: bool = True) -> None:
         """Continue discussing or revising the pending plan without executing it."""

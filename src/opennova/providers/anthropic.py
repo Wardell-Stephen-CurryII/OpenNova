@@ -92,6 +92,18 @@ class AnthropicProvider(BaseLLMProvider):
             for tool in tools
         ]
 
+    @staticmethod
+    def _anthropic_tool_choice(value: str) -> dict[str, str] | None:
+        """Map OpenNova's provider-neutral tool choice to Anthropic semantics."""
+        choices = {
+            "auto": {"type": "auto"},
+            "required": {"type": "any"},
+            "none": None,
+        }
+        if value not in choices:
+            raise ValueError(f"Unsupported tool_choice: {value}")
+        return choices[value]
+
     async def chat(
         self,
         messages: list[Message],
@@ -123,8 +135,10 @@ class AnthropicProvider(BaseLLMProvider):
         if system_prompt:
             request_params["system"] = system_prompt
 
-        if tools:
+        tool_choice = str(kwargs.get("tool_choice", "auto"))
+        if tools and tool_choice != "none":
             request_params["tools"] = self._convert_tools_to_anthropic(tools)
+            request_params["tool_choice"] = self._anthropic_tool_choice(tool_choice)
 
         if "temperature" in kwargs:
             request_params["temperature"] = kwargs["temperature"]
@@ -203,8 +217,10 @@ class AnthropicProvider(BaseLLMProvider):
         if system_prompt:
             request_params["system"] = system_prompt
 
-        if tools:
+        tool_choice = str(kwargs.get("tool_choice", "auto"))
+        if tools and tool_choice != "none":
             request_params["tools"] = self._convert_tools_to_anthropic(tools)
+            request_params["tool_choice"] = self._anthropic_tool_choice(tool_choice)
 
         if "temperature" in kwargs:
             request_params["temperature"] = kwargs["temperature"]
@@ -239,7 +255,7 @@ class AnthropicProvider(BaseLLMProvider):
                         }
 
                 elif event.type == "message_stop":
-                    for tool_id, tc_data in tool_call_accumulator.items():
+                    for _tool_id, tc_data in tool_call_accumulator.items():
                         try:
                             args = json.loads(tc_data["arguments"])
                         except json.JSONDecodeError:
