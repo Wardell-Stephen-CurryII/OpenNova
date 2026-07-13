@@ -2241,6 +2241,7 @@ class OpenNovaTUI(App):
                 question = q.get("question", "")
                 options = q.get("options", [])
                 free_text = q.get("free_text", False)
+                allow_custom_answer = q.get("allow_custom_answer", True)
                 header = q.get("header")
                 multi_select = q.get("multiSelect", False)
                 total = len(questions)
@@ -2252,6 +2253,7 @@ class OpenNovaTUI(App):
                     options=options,
                     free_text=free_text,
                     multi_select=multi_select,
+                    allow_custom_answer=allow_custom_answer,
                     progress_label=progress_label,
                 )
                 all_answers.append(answer_payload)
@@ -2285,6 +2287,7 @@ class OpenNovaTUI(App):
         free_text: bool,
         multi_select: bool,
         progress_label: str | None,
+        allow_custom_answer: bool = True,
     ) -> dict[str, Any]:
         """Show the ask_user_question modal and wait for its result."""
         loop = asyncio.get_running_loop()
@@ -2301,6 +2304,7 @@ class OpenNovaTUI(App):
                 options=options,
                 free_text=free_text,
                 multi_select=multi_select,
+                allow_custom_answer=allow_custom_answer,
                 progress_label=progress_label,
             ),
             callback=_on_answer,

@@ -164,6 +164,8 @@ async def test_react_loop_requests_approval_for_safe_action_in_request_mode():
 
     async def approve(metadata):
         approvals.append(metadata)
+        assert metadata["questions"][0]["allow_custom_answer"] is False
+        assert metadata["prompt_payload"]["allow_custom_answer"] is False
         question = metadata["questions"][0]["question"]
         return {
             "answers": {question: "Proceed"},

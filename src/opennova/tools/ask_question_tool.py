@@ -212,6 +212,7 @@ class AskUserQuestionTool(BaseTool):
                     "options": normalized_options,
                     "multiSelect": multi_select,
                     "free_text": is_free_text,
+                    "allow_custom_answer": True,
                 })
 
             # Build prompt_payload for the interaction handler
@@ -226,6 +227,9 @@ class AskUserQuestionTool(BaseTool):
                 prompt_payload["options"] = first.get("options", [])
                 prompt_payload["multi_select"] = first.get("multiSelect", False)
                 prompt_payload["free_text"] = first.get("free_text", False)
+                prompt_payload["allow_custom_answer"] = first.get(
+                    "allow_custom_answer", True
+                )
 
             return ToolResult(
                 success=True,

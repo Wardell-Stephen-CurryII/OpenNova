@@ -132,12 +132,17 @@ class AskQuestionDialog(ModalScreen[dict[str, Any]]):
         options: list[dict[str, Any]],
         free_text: bool = False,
         multi_select: bool = False,
+        allow_custom_answer: bool = True,
         progress_label: str | None = None,
     ) -> None:
         super().__init__()
         self.question = question
         self.header = header
-        self.options = options_with_custom_answer([] if free_text else options)
+        self.allow_custom_answer = allow_custom_answer or free_text
+        if self.allow_custom_answer:
+            self.options = options_with_custom_answer([] if free_text else options)
+        else:
+            self.options = [dict(option) for option in options]
         self.free_text = free_text
         self.multi_select = multi_select
         self.progress_label = progress_label

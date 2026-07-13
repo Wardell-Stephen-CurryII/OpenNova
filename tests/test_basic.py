@@ -2115,6 +2115,8 @@ def test_ask_user_question_exposes_interaction_metadata_contract():
     assert result.metadata['prompt_payload']['question'] == 'Which approach should we use?'
     assert result.metadata['prompt_payload']['options'][0]['index'] == 1
     assert result.metadata['questions'][0]['multiSelect'] is False
+    assert result.metadata['questions'][0]['allow_custom_answer'] is True
+    assert result.metadata['prompt_payload']['allow_custom_answer'] is True
 
 
 def test_react_loop_marks_unresolved_interaction_without_callback():

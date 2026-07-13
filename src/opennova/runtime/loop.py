@@ -1090,6 +1090,7 @@ class ReActLoop:
                         ],
                         "multiSelect": False,
                         "free_text": False,
+                        "allow_custom_answer": False,
                     }
                 ],
                 "prompt_payload": {
@@ -1105,6 +1106,7 @@ class ReActLoop:
                     ],
                     "multi_select": False,
                     "free_text": False,
+                    "allow_custom_answer": False,
                 },
             },
         )

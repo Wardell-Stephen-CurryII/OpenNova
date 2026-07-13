@@ -2251,6 +2251,23 @@ def test_ask_question_dialog_options_always_include_custom_answer():
     assert options[-1]["index"] == 3
 
 
+def test_permission_dialog_can_disable_custom_answer():
+    from opennova.cli.ask_question_dialog import AskQuestionDialog
+
+    dialog = AskQuestionDialog(
+        question="Do you want to proceed?",
+        header="Confirm",
+        options=[
+            {"index": 1, "label": "Proceed", "description": "Run now"},
+            {"index": 2, "label": "Cancel", "description": "Skip safely"},
+        ],
+        allow_custom_answer=False,
+    )
+
+    assert [option["label"] for option in dialog.options] == ["Proceed", "Cancel"]
+    assert all(not option.get("custom") for option in dialog.options)
+
+
 def test_ask_question_dialog_builds_selected_option_answer():
     from opennova.cli.ask_question_dialog import answer_from_selected_option
 
