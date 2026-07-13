@@ -1,14 +1,13 @@
 """Feedback Memory - Stores user feedback and behavioral patterns."""
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from opennova.memory.types.user_memory import UserMemory
 
 
-class FeedbackType(str, Enum):
+class FeedbackType(StrEnum):
     """Types of user feedback."""
 
     PREFERENCE = "preference"

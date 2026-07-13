@@ -7,6 +7,7 @@ Provides:
 - Execution environment isolation
 """
 
+import contextlib
 import os
 import shutil
 import tempfile
@@ -171,10 +172,8 @@ class Sandbox:
             return False, f"Content too large: {len(content)} bytes"
 
         if backup and path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 self._original_files[str(path)] = path.read_text(encoding="utf-8")
-            except Exception:
-                pass
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,10 +220,8 @@ class Sandbox:
             return False, f"File not found: {file_path}"
 
         if backup and path.is_file():
-            try:
+            with contextlib.suppress(Exception):
                 self._original_files[str(path)] = path.read_text(encoding="utf-8")
-            except Exception:
-                pass
 
         try:
             if path.is_file():
@@ -293,20 +290,20 @@ class Sandbox:
         """
         results = []
 
-        for path, content in self._original_files.items():
+        for original_path, content in self._original_files.items():
             try:
-                Path(path).write_text(content, encoding="utf-8")
-                results.append(f"Restored: {path}")
+                Path(original_path).write_text(content, encoding="utf-8")
+                results.append(f"Restored: {original_path}")
             except Exception as e:
-                results.append(f"Failed to restore {path}: {e}")
+                results.append(f"Failed to restore {original_path}: {e}")
 
         for mod in reversed(self.modifications):
             if mod["type"] == "write":
-                path = Path(mod["path"])
-                if not str(path) in self._original_files and path.exists():
+                modified_path = Path(mod["path"])
+                if str(modified_path) not in self._original_files and modified_path.exists():
                     try:
-                        path.unlink()
-                        results.append(f"Removed new file: {path}")
+                        modified_path.unlink()
+                        results.append(f"Removed new file: {modified_path}")
                     except Exception:
                         pass
 

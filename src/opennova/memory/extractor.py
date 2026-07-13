@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from opennova.memory.types.user_memory import UserMemory
 from opennova.memory.types.feedback_memory import FeedbackMemory, FeedbackType
 from opennova.memory.types.project_memory import ProjectMemory
 from opennova.memory.types.reference_memory import ReferenceMemory
+from opennova.memory.types.user_memory import UserMemory
 from opennova.providers.base import Message
 
 

@@ -5,7 +5,6 @@ Supports GPT-4o, GPT-4-turbo, o1, o1-mini, and other OpenAI models.
 Fully supports streaming and tool/function calling.
 """
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any

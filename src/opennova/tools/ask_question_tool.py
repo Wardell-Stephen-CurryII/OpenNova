@@ -173,12 +173,12 @@ class AskUserQuestionTool(BaseTool):
 
                 normalized_options = []
                 if is_free_text:
-                    output_lines.append(f"     (Free-text answer, Enter to skip)")
+                    output_lines.append("     (Free-text answer, Enter to skip)")
                 else:
                     if multi_select:
-                        output_lines.append(f"     (Select multiple options, comma-separated)")
+                        output_lines.append("     (Select multiple options, comma-separated)")
                     else:
-                        output_lines.append(f"     (Select one option)")
+                        output_lines.append("     (Select one option)")
                     for i, option in enumerate(raw_options, 1):
                         if isinstance(option, str):
                             label = option

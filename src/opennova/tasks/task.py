@@ -8,18 +8,20 @@ Implements Claude Code-style task management:
 - Progress tracking and notifications
 """
 
+import contextlib
 import hashlib
 import os
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, Callable
+from enum import StrEnum
+from typing import Any
 
 from opennova.utils.task_output import get_task_output_path
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     """Types of tasks that can be executed."""
 
     LOCAL_BASH = "local_bash"
@@ -28,7 +30,7 @@ class TaskType(str, Enum):
     MONITOR_MCP = "monitor_mcp"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Status of a task."""
 
     PENDING = "pending"
@@ -65,7 +67,7 @@ def generate_task_id(task_type: TaskType) -> str:
 
 def generate_message_id(content: str, timestamp: str) -> str:
     """Generate a stable message identifier from content and timestamp."""
-    digest = hashlib.sha1(f"{timestamp}:{content}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(f"{timestamp}:{content}".encode()).hexdigest()
     return f"msg_{digest[:12]}"
 
 
@@ -124,7 +126,7 @@ class Task:
     retain: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Initialize output file path."""
         self.output_file = get_task_output_path(self.id)
 
@@ -241,7 +243,7 @@ class Task:
             return ""
 
         try:
-            with open(self.output_file, "r", encoding="utf-8") as f:
+            with open(self.output_file, encoding="utf-8") as f:
                 f.seek(self.output_offset)
                 content = f.read(max_length)
             return content
@@ -302,7 +304,7 @@ class TaskManager:
     - Task lifecycle management
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize task manager."""
         self._tasks: dict[str, Task] = {}
         self._cleanup_callbacks: dict[str, Callable[[], None]] = {}
@@ -563,10 +565,8 @@ class TaskManager:
 
         # Call cleanup if registered
         if task_id in self._cleanup_callbacks:
-            try:
+            with contextlib.suppress(Exception):
                 self._cleanup_callbacks[task_id]()
-            except Exception:
-                pass
             del self._cleanup_callbacks[task_id]
 
         return True
