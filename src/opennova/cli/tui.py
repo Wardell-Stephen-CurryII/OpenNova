@@ -142,34 +142,10 @@ def _truncate_tool_output(tool_name: str, output: str, max_lines: int = _MAX_OUT
     return "\n".join(visible)
 
 
-class _MessagesLog(RichLog):
-    """RichLog that stores plain text alongside rich renderables."""
+class _SelectableRichLog(RichLog):
+    """RichLog with Textual screen-selection extraction and highlighting."""
 
     can_focus = False
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._plain_lines: list[str] = []
-
-    def _is_following_tail(self) -> bool:
-        """Return whether new messages should keep the log pinned to the bottom."""
-        try:
-            return bool(self.is_vertical_scroll_end)
-        except Exception:
-            return True
-
-    def write(self, text: Any, *args: Any, **kwargs: Any) -> None:
-        if len(args) < 4 and kwargs.get("scroll_end") is None:
-            kwargs["scroll_end"] = self._is_following_tail()
-        super().write(text, *args, **kwargs)
-        self._plain_lines.append(_to_plain(text))
-
-    def clear_messages(self) -> None:
-        self.clear()
-        self._plain_lines.clear()
-
-    def get_plain_text(self) -> str:
-        return "\n".join(self._plain_lines)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return text from the rendered log lines for Textual's screen selection."""
@@ -202,6 +178,34 @@ class _MessagesLog(RichLog):
                     self.selection_style,
                 )
         return line
+
+
+class _MessagesLog(_SelectableRichLog):
+    """Selectable RichLog that stores plain text alongside rich renderables."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._plain_lines: list[str] = []
+
+    def _is_following_tail(self) -> bool:
+        """Return whether new messages should keep the log pinned to the bottom."""
+        try:
+            return bool(self.is_vertical_scroll_end)
+        except Exception:
+            return True
+
+    def write(self, text: Any, *args: Any, **kwargs: Any) -> None:
+        if len(args) < 4 and kwargs.get("scroll_end") is None:
+            kwargs["scroll_end"] = self._is_following_tail()
+        super().write(text, *args, **kwargs)
+        self._plain_lines.append(_to_plain(text))
+
+    def clear_messages(self) -> None:
+        self.clear()
+        self._plain_lines.clear()
+
+    def get_plain_text(self) -> str:
+        return "\n".join(self._plain_lines)
 
 
 def _style_strip_range(
@@ -495,7 +499,7 @@ class OpenNovaTUI(App):
                     wrap=True,
                     max_lines=10000,
                 )
-            yield RichLog(id="tool-panel", highlight=True, markup=True, wrap=True)
+            yield _SelectableRichLog(id="tool-panel", highlight=True, markup=True, wrap=True)
         with Container(id="status-bar"):
             yield Label(id="status-text", markup=True)
         with Container(id="input-container"):

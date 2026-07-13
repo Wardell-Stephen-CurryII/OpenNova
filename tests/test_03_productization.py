@@ -795,6 +795,52 @@ async def test_tui_messages_log_supports_mouse_selection_in_place():
         assert app.screen.get_selected_text() == "hello"
 
 
+@pytest.mark.asyncio
+async def test_tui_workbench_log_supports_mouse_selection_in_place():
+    from textual.app import App, ComposeResult
+
+    from opennova.cli.tui import _SelectableRichLog
+
+    class WorkbenchHarness(App):
+        def compose(self) -> ComposeResult:
+            yield _SelectableRichLog(
+                id="tool-panel",
+                highlight=False,
+                markup=False,
+                wrap=True,
+            )
+
+        def on_mount(self) -> None:
+            self.query_one("#tool-panel", _SelectableRichLog).write(
+                "workbench text",
+                width=20,
+            )
+
+    app = WorkbenchHarness()
+    async with app.run_test(size=(40, 5)) as pilot:
+        await pilot.pause()
+        await pilot.mouse_down("#tool-panel", offset=(0, 0))
+        await pilot.mouse_up("#tool-panel", offset=(8, 0))
+        await pilot.pause()
+
+        assert app.screen.get_selected_text() == "workbench"
+
+
+@pytest.mark.asyncio
+async def test_tui_composes_workbench_with_selectable_log(tmp_path: Path):
+    from opennova.cli.tui import OpenNovaTUI, _SelectableRichLog
+
+    class WorkbenchTUI(OpenNovaTUI):
+        def on_mount(self) -> None:
+            pass
+
+    agent = type("Agent", (), {"plugin_manager": None})()
+    app = WorkbenchTUI(agent, history_file=str(tmp_path / "history"))
+
+    async with app.run_test(size=(120, 10)):
+        assert isinstance(app.query_one("#tool-panel"), _SelectableRichLog)
+
+
 def test_tui_copy_selection_copies_current_screen_selection(monkeypatch):
     from opennova.cli.tui import OpenNovaTUI
 
