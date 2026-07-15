@@ -4,7 +4,7 @@ OpenNova v0.4.1 is a terminal AI coding agent built in Python around a Textual T
 
 **English** | **[简体中文](README.zh-CN.md)**
 
-**[Quickstart](docs/QUICKSTART.en.md)** | **[Tutorial](docs/TUTORIAL.en.md)** | **[API Reference (Chinese)](docs/API.md)**
+**[Quickstart](docs/QUICKSTART.en.md)** | **[Tutorial](docs/TUTORIAL.en.md)** | **[API Reference](docs/API.en.md)**
 
 ## Overview
 

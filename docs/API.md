@@ -1,5 +1,7 @@
 # OpenNova 0.4.1 API 文档
 
+**简体中文** | **[English](API.en.md)**
+
 本文记录当前源码中可复用的 Python 接口。OpenNova 的用户交互界面是 Textual TUI；这里的 API 面向脚本、服务、插件和二次开发，不是旧交互式 CLI 的说明。
 
 ## 安装与导入

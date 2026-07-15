@@ -186,4 +186,4 @@ uv run opennova run --provider anthropic -m claude-sonnet-4 "Review src/"
 - MCP failure: inspect command, args, transport, and server logs.
 - Encoding errors in non-ASCII paths: set `LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1`.
 
-See the [API reference](API.md) for internals and [AGENTS.md](../AGENTS.md) for architecture and development commands.
+See the [API reference](API.en.md) for internals and [AGENTS.md](../AGENTS.md) for architecture and development commands.

@@ -115,4 +115,4 @@ For project paths containing non-ASCII characters, run tests with:
 LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 PYTHONUTF8=1 uv run pytest
 ```
 
-Continue with the [full tutorial](TUTORIAL.en.md), [API reference](API.md), or [issue tracker](https://github.com/Wardell-Stephen-CurryII/OpenNova/issues).
+Continue with the [full tutorial](TUTORIAL.en.md), [API reference](API.en.md), or [issue tracker](https://github.com/Wardell-Stephen-CurryII/OpenNova/issues).
