@@ -10,9 +10,11 @@ Handles:
 
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from opennova.providers.base import Message
+from opennova.providers.models import context_window_for_model
 
 try:
     import tiktoken
@@ -21,26 +23,6 @@ try:
 except ImportError:
     TIKTOKEN_AVAILABLE = False
 
-
-MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "gpt-4o": 128000,
-    "gpt-4o-mini": 128000,
-    "gpt-4-turbo": 128000,
-    "gpt-4": 8192,
-    "o1-preview": 128000,
-    "o1-mini": 128000,
-    "claude-sonnet-4": 200000,
-    "claude-opus-4": 200000,
-    "claude-3-5-sonnet": 200000,
-    "claude-3-5-haiku": 200000,
-    "claude-3-opus": 200000,
-    "claude-3-sonnet": 200000,
-    "claude-3-haiku": 200000,
-    "deepseek-chat": 64000,
-    "deepseek-reasoner": 64000,
-    "deepseek-v4-pro": 131072,
-    "deepseek-v4-flash": 131072,
-}
 
 DEFAULT_CONTEXT_WINDOW = 128000
 RESERVED_OUTPUT_TOKENS = 4096
@@ -69,6 +51,34 @@ class ContextPresentationSnapshot:
     compression_count: int
     has_compressed_summary: bool
     compression_threshold_percent: float
+
+
+class MessageAddStatus(StrEnum):
+    """Outcome of adding one or more messages to the active context."""
+
+    ADDED = "added"
+    ADDED_AFTER_COMPRESSION = "added_after_compression"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class MessageAddResult:
+    """Explicit context insertion result that remains truthy on success."""
+
+    status: MessageAddStatus
+    message_count: int = 0
+    reason: str | None = None
+
+    @property
+    def added(self) -> bool:
+        return self.status is not MessageAddStatus.REJECTED
+
+    def __bool__(self) -> bool:
+        return self.added
+
+
+class ContextCapacityError(RuntimeError):
+    """Raised when a protocol message group cannot fit in the context window."""
 
 
 class ContextManager:
@@ -114,6 +124,8 @@ class ContextManager:
         self._compressor: Any = None
         self._compressing: bool = False
         self._compression_count: int = 0
+        self._compression_failures: int = 0
+        self.compression_failure_limit: int = 3
         self.compression_threshold: float = 0.55
         self.keep_last_pairs: int = 6
 
@@ -124,13 +136,7 @@ class ContextManager:
 
     def _get_context_window(self, model: str) -> int:
         """Get context window for a model."""
-        model_lower = model.lower()
-
-        for key, window in MODEL_CONTEXT_WINDOWS.items():
-            if key.lower() in model_lower:
-                return window
-
-        return DEFAULT_CONTEXT_WINDOW
+        return context_window_for_model(model, DEFAULT_CONTEXT_WINDOW)
 
     def _truncate_tool_result(self, content: str) -> str:
         """Truncate a tool result that exceeds max_tool_result_tokens.
@@ -148,9 +154,7 @@ class ContextManager:
         head = self._encoding.decode(tokens[:head_tokens])
         tail = self._encoding.decode(tokens[-tail_tokens:])
         return (
-            head
-            + f"\n\n... [truncated: {len(tokens)} total tokens, {limit} limit] ...\n\n"
-            + tail
+            head + f"\n\n... [truncated: {len(tokens)} total tokens, {limit} limit] ...\n\n" + tail
         )
 
     def count_tokens(self, text: str) -> int:
@@ -245,7 +249,57 @@ class ContextManager:
             compression_threshold_percent=self.compression_threshold * 100,
         )
 
-    def add_message(self, message: Message) -> bool:
+    def _prepare_message(self, message: Message) -> Message:
+        """Normalize a message before token accounting and insertion."""
+        if message.role != "tool":
+            return message
+
+        token_count = self.count_tokens(message.content)
+        if token_count <= self.max_tool_result_tokens:
+            return message
+
+        return Message(
+            role=message.role,
+            content=self._truncate_tool_result(message.content),
+            tool_call_id=message.tool_call_id,
+            name=message.name,
+            timestamp=message.timestamp,
+        )
+
+    def _append_messages(self, messages: list[Message]) -> MessageAddResult:
+        """Append a complete message group or reject it without partial writes."""
+        prepared = [self._prepare_message(message) for message in messages]
+        if not prepared:
+            return MessageAddResult(MessageAddStatus.ADDED, message_count=0)
+
+        required_tokens = sum(self.count_message_tokens(message) for message in prepared)
+        if (
+            len(self.messages) + len(prepared) > self.max_messages
+            or required_tokens > self._get_effective_available_tokens()
+        ):
+            self._trim_old_messages(
+                required_tokens=required_tokens,
+                required_slots=len(prepared),
+            )
+
+        if (
+            len(self.messages) + len(prepared) > self.max_messages
+            or required_tokens > self._get_effective_available_tokens()
+        ):
+            return MessageAddResult(
+                MessageAddStatus.REJECTED,
+                reason=(
+                    f"Message group requires {required_tokens} tokens and "
+                    f"{len(prepared)} slots, but only "
+                    f"{self._get_effective_available_tokens()} tokens and "
+                    f"{max(0, self.max_messages - len(self.messages))} slots are available"
+                ),
+            )
+
+        self.messages.extend(prepared)
+        return MessageAddResult(MessageAddStatus.ADDED, message_count=len(prepared))
+
+    def add_message(self, message: Message) -> MessageAddResult:
         """
         Add a message to context.
 
@@ -253,54 +307,30 @@ class ContextManager:
             message: Message to add
 
         Returns:
-            True if added successfully, False if would exceed context
+            Explicit result describing whether the message was added
         """
-        # Truncate large tool results before counting/adding
-        if message.role == "tool" and self._encoding:
-            tok = self.count_tokens(message.content)
-            if tok > self.max_tool_result_tokens:
-                message = Message(
-                    role=message.role,
-                    content=self._truncate_tool_result(message.content),
-                    tool_call_id=message.tool_call_id,
-                    name=message.name,
-                    timestamp=message.timestamp,
-                )
+        return self._append_messages([message])
 
-        if len(self.messages) >= self.max_messages:
-            self._trim_old_messages()
-
-        new_tokens = self.count_message_tokens(message)
-
-        if new_tokens > self._get_effective_available_tokens():
-            self._trim_old_messages()
-
-            if new_tokens > self._get_effective_available_tokens():
-                return False
-
-        self.messages.append(message)
-        return True
-
-    def add_user_message(self, content: str) -> None:
+    def add_user_message(self, content: str) -> MessageAddResult:
         """Add a user message."""
         msg = Message(role="user", content=content)
-        self.add_message(msg)
+        return self.add_message(msg)
 
     def add_assistant_message(
         self,
         content: str,
         tool_calls: list[Any] | None = None,
-    ) -> None:
+    ) -> MessageAddResult:
         """Add an assistant message."""
         msg = Message(role="assistant", content=content, tool_calls=tool_calls)
-        self.add_message(msg)
+        return self.add_message(msg)
 
     def add_tool_message(
         self,
         content: str,
         tool_call_id: str,
         name: str | None = None,
-    ) -> None:
+    ) -> MessageAddResult:
         """Add a tool result message."""
         msg = Message(
             role="tool",
@@ -308,7 +338,7 @@ class ContextManager:
             tool_call_id=tool_call_id,
             name=name,
         )
-        self.add_message(msg)
+        return self.add_message(msg)
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
@@ -341,6 +371,8 @@ class ContextManager:
         """Check there are enough messages and we're not currently compressing."""
         if self._compressing:
             return False
+        if self._compression_failures >= self.compression_failure_limit:
+            return False
         min_messages = self.keep_last_pairs * 2 + 4
         return len(self.messages) >= min_messages
 
@@ -351,39 +383,25 @@ class ContextManager:
         tool-result) pairs. Never splits a pair. Returns the index of the
         first message to keep, or None if there aren't enough messages.
         """
-        if len(self.messages) < self.keep_last_pairs * 2:
+        messages_to_keep = max(2, self.keep_last_pairs * 2)
+        if len(self.messages) <= messages_to_keep:
             return None
 
-        pair_count = 0
-        i = len(self.messages) - 1
-        open_tool_ids: set[str] = set()
+        cut = len(self.messages) - messages_to_keep
 
-        while i >= 0 and pair_count < self.keep_last_pairs:
-            msg = self.messages[i]
-            if msg.role == "tool" and msg.tool_call_id:
-                open_tool_ids.add(msg.tool_call_id)
-            elif msg.role == "assistant" and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if tc.id in open_tool_ids:
-                        open_tool_ids.discard(tc.id)
-                        pair_count += 1
-            i -= 1
+        # Never leave tool results without their assistant tool-call message.
+        while cut > 0 and self.messages[cut].role == "tool":
+            cut -= 1
 
-        # Walk back to include orphaned tool results
-        while open_tool_ids and i >= 0:
-            msg = self.messages[i]
-            if msg.role == "assistant" and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if tc.id in open_tool_ids:
-                        open_tool_ids.discard(tc.id)
-            i -= 1
-
-        cut = i + 1
         return cut if cut > 0 else None
 
     async def compress(self) -> bool:
         """Compress old messages into a summary, keeping recent pairs."""
-        if self._compressor is None or self._compressing:
+        if (
+            self._compressor is None
+            or self._compressing
+            or self._compression_failures >= self.compression_failure_limit
+        ):
             return False
 
         cut = self._find_safe_cut_point()
@@ -394,20 +412,25 @@ class ContextManager:
         if not old_messages:
             return False
 
+        self._compressing = True
         try:
-            summary = await self._compressor.compress(
-                old_messages, self._compressed_summary
-            )
-        except Exception:
-            return False
+            try:
+                summary = await self._compressor.compress(old_messages, self._compressed_summary)
+            except Exception:
+                self._compression_failures += 1
+                return False
 
-        if not summary:
-            return False
+            if not summary:
+                self._compression_failures += 1
+                return False
 
-        self._compressed_summary = summary
-        self._compression_count += 1
-        self.messages = self.messages[cut:]
-        return True
+            self._compressed_summary = summary
+            self._compression_count += 1
+            self._compression_failures = 0
+            self.messages = self.messages[cut:]
+            return True
+        finally:
+            self._compressing = False
 
     async def _maybe_compress(self) -> bool:
         """Check conditions and compress if needed."""
@@ -417,18 +440,30 @@ class ContextManager:
             return False
         if not self._is_safe_to_compress():
             return False
-        self._compressing = True
-        try:
-            return await self.compress()
-        finally:
-            self._compressing = False
+        return await self.compress()
 
-    async def add_message_and_compress(self, message: Message) -> bool:
-        """Add a message and potentially compress. Async for ReActLoop use."""
-        added = self.add_message(message)
-        if added:
+    async def add_messages_and_compress(self, messages: list[Message]) -> MessageAddResult:
+        """Atomically add a protocol message group, compressing and retrying once."""
+        result = self._append_messages(messages)
+        if result:
             await self._maybe_compress()
-        return added
+            return result
+
+        if await self.compress():
+            retried = self._append_messages(messages)
+            if retried:
+                await self._maybe_compress()
+                return MessageAddResult(
+                    MessageAddStatus.ADDED_AFTER_COMPRESSION,
+                    message_count=retried.message_count,
+                )
+            return retried
+
+        return result
+
+    async def add_message_and_compress(self, message: Message) -> MessageAddResult:
+        """Add a message and potentially compress. Async for ReActLoop use."""
+        return await self.add_messages_and_compress([message])
 
     # ── llm output ─────────────────────────────────────────────────
 
@@ -462,23 +497,63 @@ class ContextManager:
         result.extend(self.messages)
         return result
 
-    def _trim_old_messages(self, keep_last: int = 4) -> None:
+    def _oldest_protocol_group_end(self) -> int:
+        """Return the end index for the oldest complete conversation group."""
+        if not self.messages:
+            return 0
+        first = self.messages[0]
+        if first.role == "user":
+            end = 1
+            while end < len(self.messages) and self.messages[end].role != "user":
+                end += 1
+            return end
+        if first.role == "assistant" and first.tool_calls:
+            end = 1
+            while end < len(self.messages) and self.messages[end].role == "tool":
+                end += 1
+            return end
+        if first.role == "tool":
+            end = 1
+            while end < len(self.messages) and self.messages[end].role == "tool":
+                end += 1
+            return end
+        return 1
+
+    def _trim_old_messages(
+        self,
+        keep_last: int = 4,
+        *,
+        required_tokens: int = 0,
+        required_slots: int = 0,
+    ) -> None:
         """Fallback trim for when compression is not available.
 
-        Pops oldest messages while token count exceeds 70% of window and
-        more than keep_last messages remain.
+        Removes complete protocol groups rather than orphaning tool results.
         """
-        if len(self.messages) <= keep_last:
-            return
-        while (
-            len(self.messages) > keep_last
-            and self.get_total_tokens() > self.context_window * 0.7
-        ):
-            self.messages.pop(0)
+        while self.messages:
+            over_message_limit = len(self.messages) + required_slots > self.max_messages
+            lacks_tokens = required_tokens > self._get_effective_available_tokens()
+            over_soft_limit = (
+                len(self.messages) > keep_last
+                and self.get_total_tokens() > self.context_window * 0.7
+            )
+            if not (over_message_limit or lacks_tokens or over_soft_limit):
+                break
+            group_end = self._oldest_protocol_group_end()
+            if group_end <= 0:
+                break
+            if (
+                len(self.messages) - group_end < keep_last
+                and not over_message_limit
+                and not lacks_tokens
+            ):
+                break
+            del self.messages[:group_end]
 
     def clear(self) -> None:
         """Clear all messages."""
         self.messages.clear()
+        self._compression_failures = 0
 
     def get_last_n_messages(self, n: int) -> list[Message]:
         """Get the last N messages."""

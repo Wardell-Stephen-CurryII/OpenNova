@@ -113,7 +113,7 @@ def test_plugin_lockfile_and_test_plugin_report_permissions(tmp_path: Path):
     )
     (plugin_root / "hook.py").write_text("def noop():\n    return None\n", encoding="utf-8")
 
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     manager.load_enabled_plugins({})
 
@@ -148,7 +148,7 @@ def test_plugin_test_reports_bad_tool_manifest(tmp_path: Path):
         encoding="utf-8",
     )
 
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("bad")
     manager.load_enabled_plugins({})
 

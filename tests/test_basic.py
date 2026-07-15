@@ -33,10 +33,8 @@ from opennova.tools.task_tools import (
     TaskGetTool,
     TaskListTool,
     TaskUpdateTool,
-    set_global_task_manager,
 )
 from opennova.tools.web_tools import WebFetchTool, WebSearchTool
-from opennova.utils.task_output import read_task_output
 
 
 class MockTool(BaseTool):
@@ -201,8 +199,7 @@ def test_agent_tool_sync_execution_works_inside_running_event_loop():
 
     async def invoke_tool():
         manager = TaskManager()
-        set_global_task_manager(manager)
-        tool = AgentTool(config={"runtime": SyncCompatibleRuntime()})
+        tool = AgentTool(config={"runtime": SyncCompatibleRuntime(), "task_manager": manager})
         return tool.execute(description="sync child", prompt="Run sync child")
 
     result = asyncio.run(invoke_tool())
@@ -239,9 +236,8 @@ async def test_agent_tool_sync_execution_uses_worker_thread_when_loop_running():
             return runtime
 
     manager = TaskManager()
-    set_global_task_manager(manager)
     runtime = WorkerThreadRuntime()
-    tool = AgentTool(config={"runtime": runtime})
+    tool = AgentTool(config={"runtime": runtime, "task_manager": manager})
 
     result = tool.execute(description="nested sync", prompt="Run while loop active")
 
@@ -249,7 +245,9 @@ async def test_agent_tool_sync_execution_uses_worker_thread_when_loop_running():
     assert result.output == "worker thread success"
     assert runtime.child_runtime is not None
     assert runtime.child_runtime.thread_names
-    assert all(name != threading.current_thread().name for name in runtime.child_runtime.thread_names)
+    assert all(
+        name != threading.current_thread().name for name in runtime.child_runtime.thread_names
+    )
 
 
 @pytest.mark.asyncio
@@ -356,9 +354,8 @@ async def test_agent_tool_applies_follow_up_messages_during_run():
             return runtime
 
     manager = TaskManager()
-    set_global_task_manager(manager)
     runtime = RecordingRuntime()
-    tool = AgentTool(config={"runtime": runtime})
+    tool = AgentTool(config={"runtime": runtime, "task_manager": manager})
 
     launch = tool.execute(
         description="background recorder",
@@ -369,7 +366,9 @@ async def test_agent_tool_applies_follow_up_messages_during_run():
     agent_id = launch.metadata["agentId"]
     await asyncio.sleep(0.01)
 
-    send_result = SendMessageTool().execute(to=agent_id, message="Please include the follow-up")
+    send_result = SendMessageTool(config={"task_manager": manager}).execute(
+        to=agent_id, message="Please include the follow-up"
+    )
 
     assert send_result.success is True
     assert send_result.metadata["pending_messages"] == 1
@@ -387,7 +386,10 @@ async def test_agent_tool_applies_follow_up_messages_during_run():
     assert task.session_state["pending_messages"] == 0
     assert task.session_state["delivered_messages"] == 1
     assert task.session_state["delivered_follow_up_batches"] == 1
-    assert task.session_state["last_follow_up_batch"] == "Additional instruction from the parent conversation:\nPlease include the follow-up"
+    assert (
+        task.session_state["last_follow_up_batch"]
+        == "Additional instruction from the parent conversation:\nPlease include the follow-up"
+    )
     assert task.session_state["last_follow_up_batch_id"].startswith("batch_")
     assert task.session_state["last_delivered_message_ids"] == [send_result.metadata["message_id"]]
     assert len(task.delivered_messages) == 1
@@ -398,18 +400,24 @@ async def test_agent_tool_applies_follow_up_messages_during_run():
     assert task.follow_up_batches[0]["batch_id"].startswith("batch_")
     assert task.follow_up_batches[0]["message_count"] == 1
     assert task.follow_up_batches[0]["message_ids"] == [send_result.metadata["message_id"]]
-    assert task.follow_up_batches[0]["rendered_content"] == "Additional instruction from the parent conversation:\nPlease include the follow-up"
-    assert any("Additional instruction from the parent conversation:\nPlease include the follow-up" in snapshot for snapshot in snapshots)
+    assert (
+        task.follow_up_batches[0]["rendered_content"]
+        == "Additional instruction from the parent conversation:\nPlease include the follow-up"
+    )
+    assert any(
+        "Additional instruction from the parent conversation:\nPlease include the follow-up"
+        in snapshot
+        for snapshot in snapshots
+    )
 
 
 def test_send_message_reports_pending_queue_length():
     """send_message should track queued follow-ups for running agents."""
     manager = TaskManager()
-    set_global_task_manager(manager)
     task = manager.create_task(TaskType.LOCAL_AGENT, "Agent: queued")
     manager.update_task_status(task.id, TaskStatus.RUNNING)
 
-    result = SendMessageTool().execute(to=task.id, message="hello")
+    result = SendMessageTool(config={"task_manager": manager}).execute(to=task.id, message="hello")
 
     assert result.success is True
     assert result.metadata["pending_messages"] == 1
@@ -425,11 +433,12 @@ def test_send_message_reports_pending_queue_length():
 def test_send_message_rejects_non_running_agents():
     """send_message should reject completed agents."""
     manager = TaskManager()
-    set_global_task_manager(manager)
     task = manager.create_task(TaskType.LOCAL_AGENT, "Agent: finished")
     manager.update_task_status(task.id, TaskStatus.COMPLETED)
 
-    result = SendMessageTool().execute(to=task.id, message="late update")
+    result = SendMessageTool(config={"task_manager": manager}).execute(
+        to=task.id, message="late update"
+    )
 
     assert result.success is False
     assert "is not running" in (result.error or "")
@@ -465,8 +474,7 @@ async def test_background_agent_completion_notification_includes_usage():
             return runtime
 
     manager = TaskManager()
-    set_global_task_manager(manager)
-    tool = AgentTool(config={"runtime": SuccessfulRuntime()})
+    tool = AgentTool(config={"runtime": SuccessfulRuntime(), "task_manager": manager})
 
     launch = tool.execute(
         description="background success",
@@ -478,7 +486,7 @@ async def test_background_agent_completion_notification_includes_usage():
     await asyncio.sleep(0.05)
 
     task = manager.get_task(agent_id)
-    output, _ = read_task_output(agent_id)
+    output, _ = manager.read_task_output(agent_id)
 
     assert task is not None
     assert task.status == TaskStatus.COMPLETED
@@ -513,8 +521,7 @@ async def test_background_agent_failure_notification_includes_duration():
             return runtime
 
     manager = TaskManager()
-    set_global_task_manager(manager)
-    tool = AgentTool(config={"runtime": FailingRuntime()})
+    tool = AgentTool(config={"runtime": FailingRuntime(), "task_manager": manager})
 
     launch = tool.execute(
         description="background failure",
@@ -526,7 +533,7 @@ async def test_background_agent_failure_notification_includes_duration():
     await asyncio.sleep(0.05)
 
     task = manager.get_task(agent_id)
-    output, _ = read_task_output(agent_id)
+    output, _ = manager.read_task_output(agent_id)
 
     assert task is not None
     assert task.status == TaskStatus.FAILED
@@ -539,8 +546,9 @@ async def test_background_agent_failure_notification_includes_duration():
     assert "<delivered_follow_up_batches>0</delivered_follow_up_batches>" in output
 
 
-def test_create_child_runtime_inherits_flags():
+def test_create_child_runtime_inherits_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Child runtimes should inherit config and feature flags."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     config = {
         "default_provider": "openai",
         "providers": {
@@ -553,7 +561,9 @@ def test_create_child_runtime_inherits_flags():
         "skills": {"enabled": False},
         "mcp": {"enabled": False},
     }
-    runtime = AgentRuntime(config=config, register_default_tools=True, enable_mcp=False, enable_skills=False)
+    runtime = AgentRuntime(
+        config=config, register_default_tools=True, enable_mcp=False, enable_skills=False
+    )
 
     child = runtime.create_child_runtime()
 
@@ -588,11 +598,10 @@ def test_task_dependency_fields_round_trip_through_serialization():
 def test_task_update_tool_applies_dependency_graph_and_reports_outputs():
     """task_update should wire dependencies into manager state and task list/get output."""
     manager = TaskManager()
-    set_global_task_manager(manager)
     prerequisite = manager.create_task(TaskType.LOCAL_WORKFLOW, "Prepare work")
     dependent = manager.create_task(TaskType.LOCAL_WORKFLOW, "Ship work")
 
-    result = TaskUpdateTool().execute(task_id=prerequisite.id, add_blocks=[dependent.id])
+    result = TaskUpdateTool(manager).execute(task_id=prerequisite.id, add_blocks=[dependent.id])
 
     assert result.success is True
     assert result.metadata["updated_dependencies"] == [dependent.id]
@@ -601,13 +610,13 @@ def test_task_update_tool_applies_dependency_graph_and_reports_outputs():
     assert manager.is_task_blocked(dependent.id) is True
     assert manager.get_open_blocker_ids(dependent.id) == [prerequisite.id]
 
-    list_result = TaskListTool().execute()
+    list_result = TaskListTool(manager).execute()
     assert list_result.success is True
     assert f"blocked_by: {prerequisite.id} (open: {prerequisite.id})" in list_result.output
     assert f"blocks: {dependent.id}" in list_result.output
     assert "is_blocked: True" in list_result.output
 
-    get_result = TaskGetTool().execute(task_id=dependent.id)
+    get_result = TaskGetTool(manager).execute(task_id=dependent.id)
     assert get_result.success is True
     assert "Dependencies:" in get_result.output
     assert f"blocked_by: {prerequisite.id} (open: {prerequisite.id})" in get_result.output
@@ -616,7 +625,7 @@ def test_task_update_tool_applies_dependency_graph_and_reports_outputs():
 
     manager.update_task_status(prerequisite.id, TaskStatus.COMPLETED)
 
-    unblocked_result = TaskGetTool().execute(task_id=dependent.id)
+    unblocked_result = TaskGetTool(manager).execute(task_id=dependent.id)
     assert manager.is_task_blocked(dependent.id) is False
     assert manager.get_open_blocker_ids(dependent.id) == []
     assert f"blocked_by: {prerequisite.id} (open: none)" in unblocked_result.output
@@ -626,30 +635,31 @@ def test_task_update_tool_applies_dependency_graph_and_reports_outputs():
 def test_task_update_tool_rejects_invalid_dependencies():
     """task_update should reject missing tasks, self-dependencies, and cycles."""
     manager = TaskManager()
-    set_global_task_manager(manager)
     first = manager.create_task(TaskType.LOCAL_WORKFLOW, "First")
     second = manager.create_task(TaskType.LOCAL_WORKFLOW, "Second")
     third = manager.create_task(TaskType.LOCAL_WORKFLOW, "Third")
 
-    missing = TaskUpdateTool().execute(task_id=first.id, add_blocks=["wmissing"])
+    tool = TaskUpdateTool(manager)
+    missing = tool.execute(task_id=first.id, add_blocks=["wmissing"])
     assert missing.success is False
     assert missing.error == "Task 'wmissing' not found"
 
-    self_dependency = TaskUpdateTool().execute(task_id=first.id, add_blocks=[first.id])
+    self_dependency = tool.execute(task_id=first.id, add_blocks=[first.id])
     assert self_dependency.success is False
     assert self_dependency.error == "A task cannot depend on itself"
 
-    initial = TaskUpdateTool().execute(task_id=first.id, add_blocks=[second.id])
+    initial = tool.execute(task_id=first.id, add_blocks=[second.id])
     assert initial.success is True
 
-    cycle = TaskUpdateTool().execute(task_id=second.id, add_blocks=[first.id])
+    cycle = tool.execute(task_id=second.id, add_blocks=[first.id])
     assert cycle.success is False
     assert cycle.error == "Dependency cycle detected"
 
-    reverse_form = TaskUpdateTool().execute(task_id=third.id, add_blocked_by=[second.id])
+    reverse_form = tool.execute(task_id=third.id, add_blocked_by=[second.id])
     assert reverse_form.success is True
     assert third.blocked_by == [second.id]
     assert second.blocks == [third.id]
+
 
 def test_planner_prefers_llm_plan_for_broad_development_requests():
     """Broad coding tasks should use LLM planning before generic templates."""
@@ -663,7 +673,7 @@ def test_planner_prefers_llm_plan_for_broad_development_requests():
                     '"steps": ['
                     '{"id": "step_1", "description": "Inspect the existing auth flow"}, '
                     '{"id": "step_2", "description": "Add the logout action and UI entry point"}'
-                    ']}'
+                    "]}"
                 )
 
             return Response()
@@ -695,7 +705,9 @@ def test_plan_mode_saves_plan_to_project_directory(tmp_path: Path):
 
             return Plan(
                 task="Persist plan",
-                steps=[PlanStep(id="step_1", description="Write plan to disk", tool_hint="write_file")],
+                steps=[
+                    PlanStep(id="step_1", description="Write plan to disk", tool_hint="write_file")
+                ],
             )
 
     previous_cwd = Path.cwd()
@@ -926,19 +938,25 @@ def test_agent_runtime_execute_approved_plan_runs_steps():
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
     runtime.show_thinking = True
-    runtime.state.set_plan(Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+    runtime.state.set_plan(
+        Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")])
+    )
     runtime.state.set_plan_file_path("saved-plan.md")
     runtime.state.mark_plan_awaiting_approval()
     runtime.state.mark_plan_approved()
 
     captured_tasks = []
     emitted_thoughts = []
-    runtime._emit = lambda event, *args: emitted_thoughts.append(args[0]) if event == "thought" else None
+    runtime._emit = lambda event, *args: (
+        emitted_thoughts.append(args[0]) if event == "thought" else None
+    )
     runtime._sync_plan_progress = lambda plan, active_step_id=None: None
     runtime._persist_current_plan = lambda: None
     runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
 
-    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+    async def fake_run_act_mode(
+        task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False
+    ):
         captured_tasks.append((task, preserve_plan_state))
         runtime.state.last_result = f"done: {task}"
         return f"done: {task}"
@@ -983,12 +1001,16 @@ def test_agent_runtime_execute_approved_plan_skips_completed_steps():
 
     captured_tasks = []
     emitted_thoughts = []
-    runtime._emit = lambda event, *args: emitted_thoughts.append(args[0]) if event == "thought" else None
+    runtime._emit = lambda event, *args: (
+        emitted_thoughts.append(args[0]) if event == "thought" else None
+    )
     runtime._sync_plan_progress = lambda plan, active_step_id=None: None
     runtime._persist_current_plan = lambda: None
     runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
 
-    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+    async def fake_run_act_mode(
+        task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False
+    ):
         captured_tasks.append((task, preserve_plan_state))
         runtime.state.last_result = f"done: {task}"
         return f"done: {task}"
@@ -1013,7 +1035,9 @@ def test_agent_runtime_execute_approved_plan_marks_failures_for_inspection():
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
     runtime.show_thinking = True
-    runtime.state.set_plan(Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+    runtime.state.set_plan(
+        Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")])
+    )
     runtime.state.set_plan_file_path("saved-plan.md")
     runtime.state.mark_plan_awaiting_approval()
     runtime.state.mark_plan_approved()
@@ -1028,7 +1052,9 @@ def test_agent_runtime_execute_approved_plan_marks_failures_for_inspection():
     runtime._persist_current_plan = lambda: None
     runtime._refresh_plan_from_file = lambda: runtime.state.current_plan
 
-    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+    async def fake_run_act_mode(
+        task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False
+    ):
         runtime.state.last_result = f"Task failed: {task}"
         return runtime.state.last_result
 
@@ -1089,7 +1115,10 @@ def test_agent_runtime_execute_approved_plan_refreshes_plan_from_file_and_update
 
     def fake_persist():
         persisted_statuses.append(
-            [(step.id, step.status.value, step.result_summary, step.error) for step in runtime.state.current_plan.steps]
+            [
+                (step.id, step.status.value, step.result_summary, step.error)
+                for step in runtime.state.current_plan.steps
+            ]
         )
 
     runtime._refresh_plan_from_file = fake_refresh
@@ -1098,7 +1127,9 @@ def test_agent_runtime_execute_approved_plan_refreshes_plan_from_file_and_update
 
     captured_tasks = []
 
-    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+    async def fake_run_act_mode(
+        task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False
+    ):
         captured_tasks.append(task)
         runtime.state.last_result = "done from execution"
         return "done from execution"
@@ -1152,7 +1183,9 @@ def test_agent_runtime_execute_approved_plan_continues_after_each_step_completio
 
     captured_tasks: list[str] = []
 
-    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+    async def fake_run_act_mode(
+        task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False
+    ):
         captured_tasks.append(task)
         runtime.state.is_complete = True
         runtime.state.last_result = f"done {len(captured_tasks)}"
@@ -1185,7 +1218,12 @@ def test_agent_runtime_execute_approved_plan_resumes_failed_and_running_steps():
         task="Resume interrupted plan",
         steps=[
             PlanStep(id="step_1", description="Already done", status=StepStatus.DONE),
-            PlanStep(id="step_2", description="Retry failed", status=StepStatus.FAILED, error="old failure"),
+            PlanStep(
+                id="step_2",
+                description="Retry failed",
+                status=StepStatus.FAILED,
+                error="old failure",
+            ),
             PlanStep(id="step_3", description="Retry running", status=StepStatus.RUNNING),
             PlanStep(id="step_4", description="Do pending"),
         ],
@@ -1201,7 +1239,9 @@ def test_agent_runtime_execute_approved_plan_resumes_failed_and_running_steps():
 
     captured_steps: list[str] = []
 
-    async def fake_run_act_mode(task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False):
+    async def fake_run_act_mode(
+        task: str, stream: bool = True, progress_callback=None, preserve_plan_state: bool = False
+    ):
         if "Current step (step_2): Retry failed" in task:
             captured_steps.append("step_2")
         elif "Current step (step_3): Retry running" in task:
@@ -1234,7 +1274,9 @@ def test_agent_runtime_execute_approved_plan_requires_approval():
 
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
-    runtime.state.set_plan(Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")]))
+    runtime.state.set_plan(
+        Plan(task="Execute plan", steps=[PlanStep(id="step_1", description="Do thing")])
+    )
     runtime.state.mark_plan_awaiting_approval()
 
     result = asyncio.run(AgentRuntime.execute_approved_plan(runtime, stream=False))
@@ -1270,6 +1312,7 @@ def test_agent_runtime_create_plan_uses_shared_planner():
     assert runtime.planner.create_calls == ["Unify planning"]
     assert runtime.planner.optimize_calls == ["Unify planning"]
 
+
 def test_agent_runtime_clear_conversation_resets_context_and_state():
     """Clearing the runtime conversation should empty context and reset state."""
     runtime = AgentRuntime.__new__(AgentRuntime)
@@ -1297,18 +1340,25 @@ def test_run_single_task_plan_mode_executes_after_confirmation():
 
         runtime.state.reset(task)
         runtime.state.set_mode(mode)
-        runtime.state.set_plan(Plan(task="Approved plan", steps=[PlanStep(id="step_1", description="Ship it")]))
+        runtime.state.set_plan(
+            Plan(task="Approved plan", steps=[PlanStep(id="step_1", description="Ship it")])
+        )
         runtime.state.mark_plan_awaiting_approval()
         return "Plan ready for approval"
 
     async def fake_execute(stream: bool = True):
         return "executed approved plan"
 
+    async def fake_close():
+        return None
+
     runtime.run = fake_run
     runtime.execute_approved_plan = fake_execute
+    runtime.aclose = fake_close
 
-    with patch("opennova.main.AgentRuntime", return_value=runtime), patch(
-        "opennova.main.click.confirm", return_value=True
+    with (
+        patch("opennova.runtime.agent.AgentRuntime", return_value=runtime),
+        patch("opennova.main.click.confirm", return_value=True),
     ):
         asyncio.run(_run_single_task(config=None, task="Do work", plan_mode=True, stream=False))
 
@@ -1329,7 +1379,9 @@ def test_run_single_task_plan_mode_decline_keeps_plan_waiting():
 
         runtime.state.reset(task)
         runtime.state.set_mode(mode)
-        runtime.state.set_plan(Plan(task="Approved plan", steps=[PlanStep(id="step_1", description="Ship it")]))
+        runtime.state.set_plan(
+            Plan(task="Approved plan", steps=[PlanStep(id="step_1", description="Ship it")])
+        )
         runtime.state.mark_plan_awaiting_approval()
         return "Plan ready for approval"
 
@@ -1337,11 +1389,16 @@ def test_run_single_task_plan_mode_decline_keeps_plan_waiting():
         executed.append(True)
         return "executed approved plan"
 
+    async def fake_close():
+        return None
+
     runtime.run = fake_run
     runtime.execute_approved_plan = fake_execute
+    runtime.aclose = fake_close
 
-    with patch("opennova.main.AgentRuntime", return_value=runtime), patch(
-        "opennova.main.click.confirm", return_value=False
+    with (
+        patch("opennova.runtime.agent.AgentRuntime", return_value=runtime),
+        patch("opennova.main.click.confirm", return_value=False),
     ):
         asyncio.run(_run_single_task(config=None, task="Do work", plan_mode=True, stream=False))
 
@@ -1363,6 +1420,7 @@ def test_exit_plan_mode_tool_without_runtime_state_uses_safe_default_metadata():
     assert result.metadata["requires_confirmation"] is True
     assert result.metadata["plan_approval_status"] == "awaiting_approval"
     assert result.metadata["status"] == "awaiting_approval"
+
 
 def test_enter_plan_mode_tool_updates_runtime_state():
     """Entering plan mode via the tool should update the shared runtime state."""
@@ -1628,7 +1686,10 @@ def test_enter_plan_mode_tool_requires_respecting_plan_first_requests():
     result = tool.execute()
 
     assert result.success is True
-    assert "If the user explicitly asked to plan before implementation" in result.metadata["instructions"]
+    assert (
+        "If the user explicitly asked to plan before implementation"
+        in result.metadata["instructions"]
+    )
 
 
 def test_exit_plan_mode_tool_requires_existing_plan():
@@ -1648,7 +1709,9 @@ def test_agent_runtime_run_approval_text_executes_awaiting_plan_without_resettin
 
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
-    runtime.state.set_plan(Plan(task="Pending plan", steps=[PlanStep(id="step_1", description="Do it")]))
+    runtime.state.set_plan(
+        Plan(task="Pending plan", steps=[PlanStep(id="step_1", description="Do it")])
+    )
     runtime.state.mark_plan_awaiting_approval()
     executed: list[bool] = []
 
@@ -1673,7 +1736,9 @@ def test_agent_runtime_run_development_approval_text_executes_awaiting_plan():
 
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.state = AgentState()
-    runtime.state.set_plan(Plan(task="Pending plan", steps=[PlanStep(id="step_1", description="Do it")]))
+    runtime.state.set_plan(
+        Plan(task="Pending plan", steps=[PlanStep(id="step_1", description="Do it")])
+    )
     runtime.state.mark_plan_awaiting_approval()
     executed: list[bool] = []
 
@@ -1724,10 +1789,8 @@ def test_react_loop_exit_plan_mode_observation_marks_turn_complete():
     assert state.last_action == "exit_plan_mode"
 
 
-
-
 class Completed:
-    def __init__(self, stdout='', stderr='', returncode=0):
+    def __init__(self, stdout="", stderr="", returncode=0):
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
@@ -1742,16 +1805,18 @@ def test_ask_user_question_supports_free_text_and_choice_modes():
     assert no_options.metadata["prompt_payload"]["free_text"] is True
 
     # 1 option → free-text mode
-    one_option = tool.execute(question='Pick one?', options=[{'label': 'Only', 'description': 'One'}])
+    one_option = tool.execute(
+        question="Pick one?", options=[{"label": "Only", "description": "One"}]
+    )
     assert one_option.success is True
     assert one_option.metadata["prompt_payload"]["free_text"] is True
 
     # 2+ options → choice mode
     two_options = tool.execute(
-        question='Pick one?',
+        question="Pick one?",
         options=[
-            {'label': 'A', 'description': 'First'},
-            {'label': 'B', 'description': 'Second'},
+            {"label": "A", "description": "First"},
+            {"label": "B", "description": "Second"},
         ],
     )
     assert two_options.success is True
@@ -1759,13 +1824,13 @@ def test_ask_user_question_supports_free_text_and_choice_modes():
 
     # 5+ options → still works (no upper limit)
     five_options = tool.execute(
-        question='Pick one?',
+        question="Pick one?",
         options=[
-            {'label': '1', 'description': 'one'},
-            {'label': '2', 'description': 'two'},
-            {'label': '3', 'description': 'three'},
-            {'label': '4', 'description': 'four'},
-            {'label': '5', 'description': 'five'},
+            {"label": "1", "description": "one"},
+            {"label": "2", "description": "two"},
+            {"label": "3", "description": "three"},
+            {"label": "4", "description": "four"},
+            {"label": "5", "description": "five"},
         ],
     )
     assert five_options.success is True
@@ -1774,288 +1839,315 @@ def test_ask_user_question_supports_free_text_and_choice_modes():
 
 def test_ask_user_question_formats_single_select_header_and_preview():
     tool = AskUserQuestionTool()
-    preview = 'x' * 105
+    preview = "x" * 105
 
     result = tool.execute(
-        question='Which approach should we use?',
-        header='Approach',
+        question="Which approach should we use?",
+        header="Approach",
         options=[
             {
-                'label': 'Option A',
-                'description': 'Safer path',
-                'preview': preview,
+                "label": "Option A",
+                "description": "Safer path",
+                "preview": preview,
             },
             {
-                'label': 'Option B',
-                'description': 'Faster path',
+                "label": "Option B",
+                "description": "Faster path",
             },
         ],
     )
 
     assert result.success is True
-    assert 'Question: Which approach should we use?' in result.output
-    assert '[Approach]' in result.output
-    assert '(Select one option)' in result.output
-    assert 'Preview: ' + ('x' * 100) + '...' in result.output
-    assert result.metadata['questions'][0]['header'] == 'Approach'
-    assert result.metadata['questions'][0]['multiSelect'] is False
-    assert result.metadata['interaction_required'] is True
-    assert result.metadata['prompt_payload']['header'] == 'Approach'
+    assert "Question: Which approach should we use?" in result.output
+    assert "[Approach]" in result.output
+    assert "(Select one option)" in result.output
+    assert "Preview: " + ("x" * 100) + "..." in result.output
+    assert result.metadata["questions"][0]["header"] == "Approach"
+    assert result.metadata["questions"][0]["multiSelect"] is False
+    assert result.metadata["interaction_required"] is True
+    assert result.metadata["prompt_payload"]["header"] == "Approach"
 
 
 def test_ask_user_question_formats_multi_select_prompt():
     tool = AskUserQuestionTool()
 
     result = tool.execute(
-        question='Which features do you want?',
+        question="Which features do you want?",
         multi_select=True,
         options=[
-            {'label': 'A', 'description': 'Alpha'},
-            {'label': 'B', 'description': 'Beta'},
+            {"label": "A", "description": "Alpha"},
+            {"label": "B", "description": "Beta"},
         ],
     )
 
     assert result.success is True
-    assert '(Select multiple options, comma-separated)' in result.output
-    assert result.metadata['questions'][0]['multiSelect'] is True
+    assert "(Select multiple options, comma-separated)" in result.output
+    assert result.metadata["questions"][0]["multiSelect"] is True
 
 
 def test_web_search_returns_explicit_unconfigured_error_with_metadata():
-    result = WebSearchTool().execute(query='latest docs', num_results=10)
+    result = WebSearchTool().execute(query="latest docs", num_results=10)
 
     assert result.success is False
-    assert result.error == 'Web search is not configured in this runtime.'
-    assert result.metadata['query'] == 'latest docs'
-    assert result.metadata['count'] == 0
-    assert result.metadata['requested_count'] == 10
-    assert result.metadata['current_year'] >= 2026
+    assert result.error == "Web search is not configured in this runtime."
+    assert result.metadata["query"] == "latest docs"
+    assert result.metadata["count"] == 0
+    assert result.metadata["requested_count"] == 10
+    assert result.metadata["current_year"] >= 2026
 
 
 def test_web_fetch_rejects_invalid_url():
-    result = WebFetchTool().execute(url='not-a-url')
+    result = WebFetchTool().execute(url="not-a-url")
 
     assert result.success is False
-    assert result.error == 'Invalid URL: not-a-url'
+    assert result.error == "Invalid URL: not-a-url"
 
 
 def test_web_fetch_extracts_plain_text_from_html():
     tool = WebFetchTool()
 
-    result = tool._extract_content('<html><body><h1>Docs</h1><p>Hello <b>world</b></p></body></html>', 'text/html')
+    result = tool._extract_content(
+        "<html><body><h1>Docs</h1><p>Hello <b>world</b></p></body></html>", "text/html"
+    )
 
-    assert 'Docs' in result
-    assert 'Hello world' in result
+    assert "Docs" in result
+    assert "Hello world" in result
 
 
 def test_web_fetch_handles_urlparse_failure():
     tool = WebFetchTool()
 
-    with patch('opennova.tools.web_tools.urlparse', side_effect=ValueError('parse failed')):
-        result = tool.execute(url='https://example.com')
+    with patch("opennova.tools.web_tools.urlparse", side_effect=ValueError("parse failed")):
+        result = tool.execute(url="https://example.com")
 
     assert result.success is False
-    assert result.error == 'parse failed'
+    assert result.error == "parse failed"
 
 
 def test_git_status_parse_and_execute_reports_sections():
     tool = GitStatusTool()
-    status_output = 'MM staged_and_modified.py\nM  unstaged.py\nA  added.py\nD  deleted.py\n?? new_file.py\n'
+    status_output = (
+        "MM staged_and_modified.py\nM  unstaged.py\nA  added.py\nD  deleted.py\n?? new_file.py\n"
+    )
 
-    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+    with patch("opennova.tools.git_tools.subprocess.run") as mock_run:
         mock_run.side_effect = [
             Completed(stdout=status_output),
-            Completed(stdout='feature/test\n'),
+            Completed(stdout="feature/test\n"),
         ]
 
         result = tool.execute()
 
     assert result.success is True
-    assert result.metadata['branch'] == 'feature/test'
-    assert result.metadata['staged'] == ['staged_and_modified.py', 'added.py']
-    assert result.metadata['unstaged'] == ['unstaged.py', 'deleted.py']
-    assert result.metadata['untracked'] == ['new_file.py']
-    assert 'Staged changes:' in result.output
-    assert 'Unstaged changes:' in result.output
-    assert 'Untracked files:' in result.output
+    assert result.metadata["branch"] == "feature/test"
+    assert result.metadata["staged"] == ["staged_and_modified.py", "added.py"]
+    assert result.metadata["unstaged"] == ["unstaged.py", "deleted.py"]
+    assert result.metadata["untracked"] == ["new_file.py"]
+    assert "Staged changes:" in result.output
+    assert "Unstaged changes:" in result.output
+    assert "Untracked files:" in result.output
 
 
 def test_git_status_handles_clean_repo_and_unknown_branch():
     tool = GitStatusTool()
 
-    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+    with patch("opennova.tools.git_tools.subprocess.run") as mock_run:
         mock_run.side_effect = [
-            subprocess.CalledProcessError(1, ['git', 'branch']),
+            subprocess.CalledProcessError(1, ["git", "branch"]),
         ]
 
-        parsed = tool._parse_git_status('')
+        parsed = tool._parse_git_status("")
 
-    assert parsed.branch == 'unknown'
+    assert parsed.branch == "unknown"
     assert parsed.has_changes is False
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='')):
+    with patch("opennova.tools.git_tools.subprocess.run", return_value=Completed(stdout="")):
         result = tool.execute()
 
     assert result.success is True
-    assert '(No changes)' in result.output
-    assert result.metadata['has_changes'] is False
+    assert "(No changes)" in result.output
+    assert result.metadata["has_changes"] is False
 
 
 def test_git_diff_supports_cached_empty_and_truncation():
     tool = GitDiffTool()
-    long_diff = 'a' * 10001
+    long_diff = "a" * 10001
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='')) as mock_run:
+    with patch(
+        "opennova.tools.git_tools.subprocess.run", return_value=Completed(stdout="")
+    ) as mock_run:
         empty_result = tool.execute()
         assert empty_result.success is True
-        assert empty_result.output == 'No changes to show.'
-        assert mock_run.call_args.args[0] == ['git', 'diff']
+        assert empty_result.output == "No changes to show."
+        assert mock_run.call_args.args[0] == ["git", "diff"]
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout=long_diff)) as mock_run:
+    with patch(
+        "opennova.tools.git_tools.subprocess.run", return_value=Completed(stdout=long_diff)
+    ) as mock_run:
         cached_result = tool.execute(cached=True)
         assert cached_result.success is True
-        assert cached_result.metadata['cached'] is True
-        assert cached_result.output.endswith('... (diff truncated)')
-        assert mock_run.call_args.args[0] == ['git', 'diff', '--cached']
+        assert cached_result.metadata["cached"] is True
+        assert cached_result.output.endswith("... (diff truncated)")
+        assert mock_run.call_args.args[0] == ["git", "diff", "--cached"]
 
 
 def test_git_diff_handles_subprocess_failure():
     tool = GitDiffTool()
 
-    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('diff failed')):
+    with patch("opennova.tools.git_tools.subprocess.run", side_effect=RuntimeError("diff failed")):
         result = tool.execute()
 
     assert result.success is False
-    assert result.error == 'diff failed'
+    assert result.error == "diff failed"
 
 
 def test_git_log_handles_normal_empty_and_failure_cases():
     tool = GitLogTool()
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='abc123 first\ndef456 second\n')):
+    with patch(
+        "opennova.tools.git_tools.subprocess.run",
+        return_value=Completed(stdout="abc123 first\ndef456 second\n"),
+    ):
         result = tool.execute(max_count=2)
     assert result.success is True
-    assert result.metadata['count'] == 2
-    assert result.metadata['commits'] == ['abc123 first', 'def456 second']
-    assert 'Recent commits:' in result.output
+    assert result.metadata["count"] == 2
+    assert result.metadata["commits"] == ["abc123 first", "def456 second"]
+    assert "Recent commits:" in result.output
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='   ')):
+    with patch("opennova.tools.git_tools.subprocess.run", return_value=Completed(stdout="   ")):
         empty = tool.execute()
     assert empty.success is True
-    assert empty.output == 'No commits in history.'
-    assert empty.metadata['commits'] == []
+    assert empty.output == "No commits in history."
+    assert empty.metadata["commits"] == []
 
-    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('log failed')):
+    with patch("opennova.tools.git_tools.subprocess.run", side_effect=RuntimeError("log failed")):
         failed = tool.execute()
     assert failed.success is False
-    assert failed.error == 'log failed'
+    assert failed.error == "log failed"
 
 
 def test_git_commit_uses_explicit_message_and_amend():
     tool = GitCommitTool()
 
-    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+    with patch("opennova.tools.git_tools.subprocess.run") as mock_run:
         mock_run.side_effect = [
-            Completed(stdout='', returncode=0),
-            Completed(stdout='12345678abcdef\n'),
+            Completed(stdout="", returncode=0),
+            Completed(stdout="12345678abcdef\n"),
         ]
 
-        result = tool.execute(message='Fix bug', amend=True)
+        result = tool.execute(message="Fix bug", amend=True)
 
     assert result.success is True
-    assert result.metadata['commit_hash'] == '12345678'
-    assert result.metadata['message'] == 'Fix bug'
-    assert mock_run.call_args_list[0].args[0] == ['git', 'commit', '-m', 'Fix bug', '--amend']
+    assert result.metadata["commit_hash"] == "12345678"
+    assert result.metadata["message"] == "Fix bug"
+    assert mock_run.call_args_list[0].args[0] == ["git", "commit", "-m", "Fix bug", "--amend"]
 
 
 def test_git_commit_generates_message_and_handles_failures():
     tool = GitCommitTool()
 
     with (
-        patch.object(tool, '_generate_commit_message', return_value='Auto message') as mock_generate,
-        patch('opennova.tools.git_tools.subprocess.run') as mock_run,
+        patch.object(
+            tool, "_generate_commit_message", return_value="Auto message"
+        ) as mock_generate,
+        patch("opennova.tools.git_tools.subprocess.run") as mock_run,
     ):
         mock_run.side_effect = [
-            Completed(stdout='', returncode=0),
-            Completed(stdout='abcdef123456\n'),
+            Completed(stdout="", returncode=0),
+            Completed(stdout="abcdef123456\n"),
         ]
         result = tool.execute()
 
     assert result.success is True
-    assert result.metadata['message'] == 'Auto message'
+    assert result.metadata["message"] == "Auto message"
     mock_generate.assert_called_once()
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stderr='commit failed', returncode=1)):
-        failed_commit = tool.execute(message='Broken')
+    with patch(
+        "opennova.tools.git_tools.subprocess.run",
+        return_value=Completed(stderr="commit failed", returncode=1),
+    ):
+        failed_commit = tool.execute(message="Broken")
     assert failed_commit.success is False
-    assert failed_commit.error == 'commit failed'
+    assert failed_commit.error == "commit failed"
 
-    with patch('opennova.tools.git_tools.subprocess.run') as mock_run:
+    with patch("opennova.tools.git_tools.subprocess.run") as mock_run:
         mock_run.side_effect = [
-            Completed(stdout='', returncode=0),
-            RuntimeError('rev parse failed'),
+            Completed(stdout="", returncode=0),
+            RuntimeError("rev parse failed"),
         ]
-        failed_hash = tool.execute(message='Broken hash')
+        failed_hash = tool.execute(message="Broken hash")
     assert failed_hash.success is False
-    assert failed_hash.error == 'rev parse failed'
+    assert failed_hash.error == "rev parse failed"
 
 
 def test_git_commit_message_generation_fallbacks():
     tool = GitCommitTool()
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='file.py | 3 ++-\n')):
+    with patch(
+        "opennova.tools.git_tools.subprocess.run",
+        return_value=Completed(stdout="file.py | 3 ++-\n"),
+    ):
         message = tool._generate_commit_message()
-    assert message == 'Update changes'
+    assert message == "Update changes"
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='src/a.py | 1 | +\nsrc/b.py | 2 | ++\n')):
+    with patch(
+        "opennova.tools.git_tools.subprocess.run",
+        return_value=Completed(stdout="src/a.py | 1 | +\nsrc/b.py | 2 | ++\n"),
+    ):
         parsed_message = tool._generate_commit_message()
-    assert parsed_message == 'Update code with changes to: src/a.py (+), src/b.py (++)'
+    assert parsed_message == "Update code with changes to: src/a.py (+), src/b.py (++)"
 
-    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('stat failed')):
+    with patch("opennova.tools.git_tools.subprocess.run", side_effect=RuntimeError("stat failed")):
         fallback = tool._generate_commit_message()
-    assert fallback == 'Update changes'
+    assert fallback == "Update changes"
 
 
 def test_git_branch_reports_current_branch_and_empty_state():
     tool = GitBranchTool()
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='* master\n  feature/test\n  remotes/origin/master\n')):
+    with patch(
+        "opennova.tools.git_tools.subprocess.run",
+        return_value=Completed(stdout="* master\n  feature/test\n  remotes/origin/master\n"),
+    ):
         result = tool.execute()
     assert result.success is True
-    assert result.metadata['current'] == 'master'
-    assert result.metadata['branches'] == ['master', 'feature/test', 'remotes/origin/master']
-    assert '* master (current)' in result.output
+    assert result.metadata["current"] == "master"
+    assert result.metadata["branches"] == ["master", "feature/test", "remotes/origin/master"]
+    assert "* master (current)" in result.output
 
-    with patch('opennova.tools.git_tools.subprocess.run', return_value=Completed(stdout='')):
+    with patch("opennova.tools.git_tools.subprocess.run", return_value=Completed(stdout="")):
         empty = tool.execute()
     assert empty.success is True
-    assert empty.output == 'No branches found.'
-    assert empty.metadata['branches'] == []
+    assert empty.output == "No branches found."
+    assert empty.metadata["branches"] == []
 
-    with patch('opennova.tools.git_tools.subprocess.run', side_effect=RuntimeError('branch failed')):
+    with patch(
+        "opennova.tools.git_tools.subprocess.run", side_effect=RuntimeError("branch failed")
+    ):
         failed = tool.execute()
     assert failed.success is False
-    assert failed.error == 'branch failed'
+    assert failed.error == "branch failed"
 
 
 @pytest.mark.asyncio
 async def test_react_loop_resolves_interactive_tool_results_via_callback():
     class InteractiveTool(BaseTool):
-        name = 'interactive_tool'
-        description = 'Interactive test tool'
+        name = "interactive_tool"
+        description = "Interactive test tool"
 
         def execute(self, **kwargs):
             return ToolResult(
                 success=True,
-                output='Question: Choose one',
+                output="Question: Choose one",
                 metadata={
-                    'interaction_required': True,
-                    'prompt_payload': {
-                        'question': 'Choose one',
-                        'options': [
-                            {'index': 1, 'label': 'Alpha', 'description': 'A'},
-                            {'index': 2, 'label': 'Beta', 'description': 'B'},
+                    "interaction_required": True,
+                    "prompt_payload": {
+                        "question": "Choose one",
+                        "options": [
+                            {"index": 1, "label": "Alpha", "description": "A"},
+                            {"index": 2, "label": "Beta", "description": "B"},
                         ],
-                        'multi_select': False,
+                        "multi_select": False,
                     },
                 },
             )
@@ -2066,14 +2158,15 @@ async def test_react_loop_resolves_interactive_tool_results_via_callback():
 
         async def chat(self, messages, tools=None, **kwargs):
             from opennova.providers.base import FinishReason, LLMResponse, ToolCall
+
             self.calls += 1
             if self.calls == 1:
                 return LLMResponse(
-                    content='ask user',
-                    tool_calls=[ToolCall(id='call_1', name='interactive_tool', arguments={})],
+                    content="ask user",
+                    tool_calls=[ToolCall(id="call_1", name="interactive_tool", arguments={})],
                     finish_reason=FinishReason.TOOL_CALL,
                 )
-            return LLMResponse(content='done', finish_reason=FinishReason.STOP)
+            return LLMResponse(content="done", finish_reason=FinishReason.STOP)
 
     registry = ToolRegistry()
     registry.clear()
@@ -2084,39 +2177,42 @@ async def test_react_loop_resolves_interactive_tool_results_via_callback():
         state=AgentState(),
         stream=False,
         interaction_callback=lambda metadata: {
-            'answer': 'Alpha',
-            'answers': {'Choose one': 'Alpha'},
-            'selected_options': [{'index': 1, 'label': 'Alpha'}],
-            'display': 'Alpha',
+            "answer": "Alpha",
+            "answers": {"Choose one": "Alpha"},
+            "selected_options": [{"index": 1, "label": "Alpha"}],
+            "display": "Alpha",
         },
     )
 
-    result = await loop.run('choose')
+    result = await loop.run("choose")
 
-    assert result == 'done'
-    assert any(message.role == 'tool' and message.content == 'Answer to: Choose one\nAlpha' for message in loop.messages)
+    assert result == "done"
+    assert any(
+        message.role == "tool" and message.content == "Answer to: Choose one\nAlpha"
+        for message in loop.messages
+    )
 
 
 def test_ask_user_question_exposes_interaction_metadata_contract():
     tool = AskUserQuestionTool()
 
     result = tool.execute(
-        question='Which approach should we use?',
-        header='Approach',
+        question="Which approach should we use?",
+        header="Approach",
         options=[
-            {'label': 'Option A', 'description': 'Safer path'},
-            {'label': 'Option B', 'description': 'Faster path'},
+            {"label": "Option A", "description": "Safer path"},
+            {"label": "Option B", "description": "Faster path"},
         ],
     )
 
     assert result.success is True
-    assert result.metadata['interaction_required'] is True
-    assert result.metadata['interaction_type'] == 'ask_user_question'
-    assert result.metadata['prompt_payload']['question'] == 'Which approach should we use?'
-    assert result.metadata['prompt_payload']['options'][0]['index'] == 1
-    assert result.metadata['questions'][0]['multiSelect'] is False
-    assert result.metadata['questions'][0]['allow_custom_answer'] is True
-    assert result.metadata['prompt_payload']['allow_custom_answer'] is True
+    assert result.metadata["interaction_required"] is True
+    assert result.metadata["interaction_type"] == "ask_user_question"
+    assert result.metadata["prompt_payload"]["question"] == "Which approach should we use?"
+    assert result.metadata["prompt_payload"]["options"][0]["index"] == 1
+    assert result.metadata["questions"][0]["multiSelect"] is False
+    assert result.metadata["questions"][0]["allow_custom_answer"] is True
+    assert result.metadata["prompt_payload"]["allow_custom_answer"] is True
 
 
 def test_react_loop_marks_unresolved_interaction_without_callback():
@@ -2127,26 +2223,30 @@ def test_react_loop_marks_unresolved_interaction_without_callback():
         stream=False,
     )
 
-    result = asyncio.run(loop._resolve_interaction(ToolResult(
-        success=True,
-        output='Question: choose',
-        metadata={'interaction_required': True, 'prompt_payload': {'question': 'choose'}},
-    )))
+    result = asyncio.run(
+        loop._resolve_interaction(
+            ToolResult(
+                success=True,
+                output="Question: choose",
+                metadata={"interaction_required": True, "prompt_payload": {"question": "choose"}},
+            )
+        )
+    )
 
     assert result.success is False
-    assert result.metadata['interaction_unresolved'] is True
-    assert 'Interactive response required' in result.error
+    assert result.metadata["interaction_unresolved"] is True
+    assert "Interactive response required" in result.error
 
 
 @pytest.mark.asyncio
 async def test_web_fetch_async_execute_returns_real_metadata_and_extracted_text():
     tool = WebFetchTool()
 
-    response = type('Response', (), {})()
-    response.text = '<html><body><h1>Title</h1><p>Hello <b>world</b></p></body></html>'
+    response = type("Response", (), {})()
+    response.text = "<html><body><h1>Title</h1><p>Hello <b>world</b></p></body></html>"
     response.status_code = 200
-    response.headers = {'content-type': 'text/html; charset=utf-8'}
-    response.url = 'https://example.com/final'
+    response.headers = {"content-type": "text/html; charset=utf-8"}
+    response.url = "https://example.com/final"
     response.raise_for_status = lambda: None
 
     client = AsyncMock()
@@ -2154,15 +2254,15 @@ async def test_web_fetch_async_execute_returns_real_metadata_and_extracted_text(
     client.__aenter__.return_value = client
     client.__aexit__.return_value = None
 
-    with patch('opennova.tools.web_tools.httpx.AsyncClient', return_value=client):
-        result = await tool.async_execute(url='https://example.com/start')
+    with patch("opennova.tools.web_tools.httpx.AsyncClient", return_value=client):
+        result = await tool.async_execute(url="https://example.com/start")
 
     assert result.success is True
-    assert 'Title' in result.output
-    assert 'Hello world' in result.output
-    assert result.metadata['url'] == 'https://example.com/start'
-    assert result.metadata['final_url'] == 'https://example.com/final'
-    assert result.metadata['status_code'] == 200
+    assert "Title" in result.output
+    assert "Hello world" in result.output
+    assert result.metadata["url"] == "https://example.com/start"
+    assert result.metadata["final_url"] == "https://example.com/final"
+    assert result.metadata["status_code"] == 200
 
 
 @pytest.mark.asyncio
@@ -2170,11 +2270,11 @@ async def test_web_fetch_async_execute_truncates_and_handles_failures():
     tool = WebFetchTool()
     tool._max_output_chars = 10
 
-    response = type('Response', (), {})()
-    response.text = 'x' * 20
+    response = type("Response", (), {})()
+    response.text = "x" * 20
     response.status_code = 200
-    response.headers = {'content-type': 'text/plain'}
-    response.url = 'https://example.com/final'
+    response.headers = {"content-type": "text/plain"}
+    response.url = "https://example.com/final"
     response.raise_for_status = lambda: None
 
     client = AsyncMock()
@@ -2182,33 +2282,33 @@ async def test_web_fetch_async_execute_truncates_and_handles_failures():
     client.__aenter__.return_value = client
     client.__aexit__.return_value = None
 
-    with patch('opennova.tools.web_tools.httpx.AsyncClient', return_value=client):
-        truncated = await tool.async_execute(url='https://example.com/start')
+    with patch("opennova.tools.web_tools.httpx.AsyncClient", return_value=client):
+        truncated = await tool.async_execute(url="https://example.com/start")
     assert truncated.success is True
-    assert truncated.output.endswith('... [truncated]')
+    assert truncated.output.endswith("... [truncated]")
 
     failing_client = AsyncMock()
-    failing_client.get.side_effect = RuntimeError('network failed')
+    failing_client.get.side_effect = RuntimeError("network failed")
     failing_client.__aenter__.return_value = failing_client
     failing_client.__aexit__.return_value = None
 
-    with patch('opennova.tools.web_tools.httpx.AsyncClient', return_value=failing_client):
-        failed = await tool.async_execute(url='https://example.com/start')
+    with patch("opennova.tools.web_tools.httpx.AsyncClient", return_value=failing_client):
+        failed = await tool.async_execute(url="https://example.com/start")
     assert failed.success is False
-    assert failed.error == 'network failed'
+    assert failed.error == "network failed"
 
 
 def test_web_search_returns_explicit_unconfigured_error():
     result = WebSearchTool().execute(
-        query='latest docs',
-        allowed_domains=['docs.python.org'],
-        blocked_domains=['example.com'],
+        query="latest docs",
+        allowed_domains=["docs.python.org"],
+        blocked_domains=["example.com"],
         num_results=5,
     )
 
     assert result.success is False
-    assert result.error == 'Web search is not configured in this runtime.'
-    assert result.metadata['query'] == 'latest docs'
-    assert result.metadata['allowed_domains'] == ['docs.python.org']
-    assert result.metadata['blocked_domains'] == ['example.com']
-    assert result.metadata['count'] == 0
+    assert result.error == "Web search is not configured in this runtime."
+    assert result.metadata["query"] == "latest docs"
+    assert result.metadata["allowed_domains"] == ["docs.python.org"]
+    assert result.metadata["blocked_domains"] == ["example.com"]
+    assert result.metadata["count"] == 0

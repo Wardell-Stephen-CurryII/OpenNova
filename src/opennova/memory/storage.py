@@ -24,7 +24,10 @@ class MemoryStorage:
     """
     Persistent storage for memory entries.
 
-    Stores memories in the .claude/memory/ directory.
+    Compatibility storage for explicit legacy memory entries.
+
+    This store is not injected automatically into agent context. Current
+    project memory lives in OPENNOVA.md, .opennova/memory/, and memory.json.
     """
 
     def __init__(self, memory_dir: str | None = None):

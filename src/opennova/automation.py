@@ -9,10 +9,14 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from opennova.runtime.cancellation import CancellationToken
 
-def compute_retry_delay(attempt: int, base_seconds: float = 1.0, max_seconds: float = 60.0) -> float:
+
+def compute_retry_delay(
+    attempt: int, base_seconds: float = 1.0, max_seconds: float = 60.0
+) -> float:
     """Compute exponential retry delay capped at max_seconds."""
-    return min(max_seconds, base_seconds * (2 ** max(0, attempt)))
+    return min(max_seconds, base_seconds * (2.0 ** max(0, attempt)))
 
 
 @dataclass
@@ -99,14 +103,17 @@ class LocalAutomationScheduler:
 
     def due_tasks(self) -> list[ScheduledTask]:
         now = self.clock()
-        return [
-            task
-            for task in self.tasks.values()
-            if task.enabled and task.next_run_at <= now
-        ]
+        return [task for task in self.tasks.values() if task.enabled and task.next_run_at <= now]
 
-    def run_now(self, task_id: str, runner: Callable[[ScheduledTask], object]) -> ScheduledRun:
+    def run_now(
+        self,
+        task_id: str,
+        runner: Callable[[ScheduledTask], object],
+        cancellation_token: CancellationToken | None = None,
+    ) -> ScheduledRun:
         task = self.tasks[task_id]
+        if cancellation_token:
+            cancellation_token.raise_if_cancelled()
         run = self._run_task(task, runner)
         if task.interval_seconds and task.enabled:
             task.next_run_at = self.clock() + task.interval_seconds
@@ -115,10 +122,16 @@ class LocalAutomationScheduler:
         self.save()
         return run
 
-    def run_due(self, runner: Callable[[ScheduledTask], object]) -> list[str]:
+    def run_due(
+        self,
+        runner: Callable[[ScheduledTask], object],
+        cancellation_token: CancellationToken | None = None,
+    ) -> list[str]:
         ran: list[str] = []
         now = self.clock()
         for task in self.due_tasks():
+            if cancellation_token:
+                cancellation_token.raise_if_cancelled()
             self._run_task(task, runner)
             ran.append(task.id)
             if task.interval_seconds:
@@ -129,7 +142,9 @@ class LocalAutomationScheduler:
             self.save()
         return ran
 
-    def _run_task(self, task: ScheduledTask, runner: Callable[[ScheduledTask], object]) -> ScheduledRun:
+    def _run_task(
+        self, task: ScheduledTask, runner: Callable[[ScheduledTask], object]
+    ) -> ScheduledRun:
         try:
             output = runner(task)
             run = ScheduledRun(
@@ -156,7 +171,9 @@ class LocalAutomationScheduler:
             "tasks": [asdict(task) for task in self.tasks.values()],
             "history": [asdict(run) for run in self.history],
         }
-        self.storage_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.storage_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     def _load(self) -> None:
         if not self.storage_path.exists():
@@ -227,12 +244,18 @@ class LocalAutomationMonitor:
     def __init__(self, scheduler: LocalAutomationScheduler):
         self.scheduler = scheduler
 
-    def tick(self, runner: Callable[[ScheduledTask], object]) -> list[dict[str, object]]:
+    def tick(
+        self,
+        runner: Callable[[ScheduledTask], object],
+        cancellation_token: CancellationToken | None = None,
+    ) -> list[dict[str, object]]:
         """Run due tasks once and return monitor events."""
         due = self.scheduler.due_tasks()
         events: list[dict[str, object]] = []
         for task in due:
-            run = self.scheduler.run_now(task.id, runner)
+            if cancellation_token:
+                cancellation_token.raise_if_cancelled()
+            run = self.scheduler.run_now(task.id, runner, cancellation_token)
             events.append(
                 {
                     "type": "automation_run",
@@ -263,17 +286,22 @@ class LocalAutomationDaemon:
         """Mark the daemon as stopped."""
         self.running = False
 
-    def run_once(self, runner: Callable[[ScheduledTask], object]) -> list[dict[str, object]]:
+    def run_once(
+        self,
+        runner: Callable[[ScheduledTask], object],
+        cancellation_token: CancellationToken | None = None,
+    ) -> list[dict[str, object]]:
         """Run one monitor tick when started."""
         if not self.running:
             return []
-        self.last_events = self.monitor.tick(runner)
+        self.last_events = self.monitor.tick(runner, cancellation_token)
         return self.last_events
 
     def run_until_idle(
         self,
         runner: Callable[[ScheduledTask], object],
         max_ticks: int = 10,
+        cancellation_token: CancellationToken | None = None,
     ) -> list[dict[str, object]]:
         """Run monitor ticks until no due tasks remain or max_ticks is reached."""
         if not self.running:
@@ -281,7 +309,9 @@ class LocalAutomationDaemon:
 
         all_events: list[dict[str, object]] = []
         for _ in range(max_ticks):
-            events = self.monitor.tick(runner)
+            if cancellation_token:
+                cancellation_token.raise_if_cancelled()
+            events = self.monitor.tick(runner, cancellation_token)
             if not events:
                 break
             all_events.extend(events)
@@ -293,6 +323,7 @@ class LocalAutomationDaemon:
         runner: Callable[[ScheduledTask], object],
         max_retries: int = 1,
         archive_callback: Callable[[dict[str, object]], object] | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> list[dict[str, object]]:
         """Run due tasks with a small local retry loop and optional archive callback."""
         if not self.running:
@@ -302,7 +333,9 @@ class LocalAutomationDaemon:
         for task in list(self.monitor.scheduler.due_tasks()):
             attempts = 0
             while True:
-                run = self.monitor.scheduler.run_now(task.id, runner)
+                if cancellation_token:
+                    cancellation_token.raise_if_cancelled()
+                run = self.monitor.scheduler.run_now(task.id, runner, cancellation_token)
                 if run.success:
                     event = self._event_from_run(run, "automation_run")
                     events.append(event)

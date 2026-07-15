@@ -102,6 +102,7 @@ uv run opennova run "读取 README.md"
 | `/resume [id]` | 选择或恢复会话 |
 | `/permissions ...` | 查看或修改审批规则 |
 | `/plugins ...` | 管理项目插件 |
+| `/hooks [trust|untrust]` | 查看或管理项目 hooks 信任 |
 | `/automations ...` | 管理本地自动化 |
 | `/diagnostics [path]` | 运行 Python 诊断 |
 | `/checkpoint ...` | 查看或恢复文件检查点 |

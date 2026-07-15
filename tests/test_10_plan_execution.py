@@ -101,7 +101,7 @@ def test_plugin_audit_reports_trusted_tool_hook_and_mcp_risks(tmp_path: Path):
         encoding="utf-8",
     )
 
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     manager.load_enabled_plugins({})
 

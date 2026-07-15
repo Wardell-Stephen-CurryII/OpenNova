@@ -30,15 +30,15 @@ from opennova import OpenNovaClient
 from opennova.config import load_config
 
 async def main() -> None:
-    client = OpenNovaClient(load_config())
-    session_id = client.create_session()
-    result = await client.submit_message(
-        session_id,
-        "Inspect the test structure in the current project",
-        mode="act",
-        stream=True,
-    )
-    print(result)
+    async with OpenNovaClient(load_config()) as client:
+        session_id = client.create_session()
+        result = await client.submit_message(
+            session_id,
+            "Inspect the test structure in the current project",
+            mode="act",
+            stream=True,
+        )
+        print(result)
 
 asyncio.run(main())
 ```
@@ -58,6 +58,9 @@ client.resume_session(persisted_session_id)
   same as listing sessions stored on disk.
 - `resume_session(session_id) -> str`: Load a session from disk and continue using its original
   session id.
+- `await cancel_run(session_id) -> bool`: Cancel and await the active run.
+- `await close_session(session_id) -> bool`: Cancel the run, close its runtime, and remove it.
+- `await aclose()`: Close every session owned by the client; prefer `async with`.
 
 ### Message methods
 
@@ -79,6 +82,7 @@ async for event in client.stream_message(session_id, "Task"):
 - `tool_result`
 - `tool_error`
 - `tool_cancelled`
+- `run_cancelled`
 - `run_complete`
 - `run_error`
 
@@ -100,6 +104,7 @@ runtime = AgentRuntime(load_config())
 runtime.register_callback("stream", lambda chunk: print(chunk.content, end=""))
 result = await runtime.run("Summarize README", mode="act", stream=True)
 runtime.flush_session()
+await runtime.aclose()
 ```
 
 Common public methods:
@@ -108,6 +113,8 @@ Common public methods:
 await runtime.run(task, mode="act", stream=True)
 await runtime.chat(message, stream=True)
 await runtime.execute_approved_plan(stream=True)
+runtime.cancel_run("Cancelled by host")
+await runtime.aclose()
 runtime.clear_conversation()
 runtime.resume_session(session_id)
 runtime.get_sessions()
@@ -281,6 +288,8 @@ tool_result = guard.check_tool_call("execute_command", {"command": "git status"}
 `GuardResult` contains the allow/deny decision, risk level, reason, and metadata. The `request`,
 `auto`, and `full` modes control approval policy only; they cannot override hard blocks, explicit
 deny rules, network/path restrictions, or the OS process sandbox.
+Configuration display, tool events, tool observations, and transcripts redact detected secrets by
+default.
 
 ## Extension points
 
@@ -290,7 +299,7 @@ deny rules, network/path restrictions, or the OS process sandbox.
 - Skill: Add `<scope>/skills/<name>/SKILL.md`.
 - MCP: Integrate through `MCPServerConfig` and `MCPManager`.
 - Plugin: Declare tools, slash commands, and hooks in the project plugin directory and pass the
-  trust/lock checks.
+  workspace-path, content-digest, and lock checks.
 
 These Python APIs are still in the `0.x` development phase. Integration code should prefer
 explicit entry points such as `OpenNovaClient`, `SDKEvent`, `BaseTool`, and the configuration

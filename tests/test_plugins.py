@@ -14,9 +14,7 @@ def test_plugin_manager_loads_manifest_and_applies_hooks_skills_and_mcp(tmp_path
     plugin_dir = tmp_path / ".opennova" / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "hooks.py").write_text(
-        "def pre_tool_use(event):\n"
-        "    event['metadata']['plugin'] = 'demo'\n"
-        "    return event\n",
+        "def pre_tool_use(event):\n    event['metadata']['plugin'] = 'demo'\n    return event\n",
         encoding="utf-8",
     )
     (plugin_dir / "plugin.yaml").write_text(
@@ -40,7 +38,7 @@ hooks:
 
     config = {"skills": {"dirs": []}, "mcp": {"servers": []}}
     hooks = HookManager(project_path=tmp_path)
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     loaded = manager.load_enabled_plugins(config=config, hook_manager=hooks)
 
@@ -61,11 +59,15 @@ def test_plugin_manager_exposes_trusted_skill_sources_with_namespaces(tmp_path: 
     nested_skill = plugin_dir / "skills" / "frontend" / "review"
     direct_skill.mkdir(parents=True)
     nested_skill.mkdir(parents=True)
-    (direct_skill / "SKILL.md").write_text("---\ndescription: Direct skill\n---\nBody\n", encoding="utf-8")
-    (nested_skill / "SKILL.md").write_text("---\ndescription: Review skill\n---\nBody\n", encoding="utf-8")
+    (direct_skill / "SKILL.md").write_text(
+        "---\ndescription: Direct skill\n---\nBody\n", encoding="utf-8"
+    )
+    (nested_skill / "SKILL.md").write_text(
+        "---\ndescription: Review skill\n---\nBody\n", encoding="utf-8"
+    )
     (plugin_dir / "plugin.yaml").write_text("name: demo\nskills:\n  - skills\n", encoding="utf-8")
 
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     manager.load_enabled_plugins(config={}, hook_manager=None)
     sources = manager.get_skill_sources()
@@ -82,7 +84,7 @@ def test_plugin_manager_omits_untrusted_skill_sources(tmp_path: Path):
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text("name: demo\nskills:\n  - skills\n", encoding="utf-8")
 
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     manager.load_enabled_plugins(config={}, hook_manager=None)
 
     assert manager.get_skill_sources() == []
@@ -95,7 +97,10 @@ def test_plugin_manager_skips_disabled_plugins(tmp_path: Path):
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text("name: disabled\nenabled: false\n", encoding="utf-8")
 
-    loaded = PluginManager(project_path=tmp_path).load_enabled_plugins(config={})
+    loaded = PluginManager(
+        project_path=tmp_path,
+        trust_path=tmp_path / "trust.json",
+    ).load_enabled_plugins(config={})
 
     assert loaded == []
 
@@ -119,7 +124,7 @@ def test_plugin_manager_reports_bad_manifest(tmp_path: Path):
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text("name: [broken\n", encoding="utf-8")
 
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     loaded = manager.load_enabled_plugins(config={})
 
     assert loaded == []

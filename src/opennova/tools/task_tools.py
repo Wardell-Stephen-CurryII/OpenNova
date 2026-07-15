@@ -16,22 +16,21 @@ from typing import Any
 from opennova.tasks import Task, TaskManager, TaskStatus, TaskType
 from opennova.tools.base import BaseTool, ToolResult
 
-# Global task manager instance (will be set by AgentRuntime)
-_global_task_manager: TaskManager | None = None
 
+class TaskManagerTool(BaseTool):
+    """Base class for tools bound to one runtime-owned TaskManager."""
 
-def set_global_task_manager(manager: TaskManager) -> None:
-    """Set the global task manager instance."""
-    global _global_task_manager
-    _global_task_manager = manager
-
-
-def get_global_task_manager() -> TaskManager:
-    """Get the global task manager instance."""
-    if _global_task_manager is None:
-        # Create a fallback if not set
-        set_global_task_manager(TaskManager())
-    return _global_task_manager
+    def __init__(
+        self,
+        task_manager: TaskManager | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(config)
+        configured = self.config.get("task_manager")
+        manager = task_manager or (configured if isinstance(configured, TaskManager) else None)
+        if manager is None:
+            raise ValueError("A runtime-owned TaskManager is required")
+        self.task_manager: TaskManager = manager
 
 
 def _format_dependency_details(manager: TaskManager, task: Task) -> list[str]:
@@ -55,7 +54,7 @@ def _format_dependency_details(manager: TaskManager, task: Task) -> list[str]:
     return details
 
 
-class TaskCreateTool(BaseTool):
+class TaskCreateTool(TaskManagerTool):
     """Create a new structured task for tracking work."""
 
     name = "task_create"
@@ -82,7 +81,7 @@ class TaskCreateTool(BaseTool):
             ToolResult with task ID
         """
         try:
-            manager = get_global_task_manager()
+            manager = self.task_manager
             full_description = f"{subject}: {description}"
             task_type = TaskType.LOCAL_WORKFLOW
 
@@ -105,7 +104,7 @@ class TaskCreateTool(BaseTool):
             return ToolResult(success=False, output="", error=str(e))
 
 
-class TaskListTool(BaseTool):
+class TaskListTool(TaskManagerTool):
     """List all tasks in the task list."""
 
     name = "task_list"
@@ -119,7 +118,7 @@ class TaskListTool(BaseTool):
             ToolResult with task list
         """
         try:
-            manager = get_global_task_manager()
+            manager = self.task_manager
             tasks = manager.get_all_tasks()
 
             if not tasks:
@@ -127,9 +126,13 @@ class TaskListTool(BaseTool):
 
             output_lines = ["Tasks:"]
             for task in tasks:
-                status_icon = {"pending": "○", "running": "⟳", "completed": "✓", "failed": "✗", "killed": "⊘"}.get(
-                    task.status.value, "?"
-                )
+                status_icon = {
+                    "pending": "○",
+                    "running": "⟳",
+                    "completed": "✓",
+                    "failed": "✗",
+                    "killed": "⊘",
+                }.get(task.status.value, "?")
                 owner = task.metadata.get("owner", "")
                 dependency_details = _format_dependency_details(manager, task)
 
@@ -150,7 +153,7 @@ class TaskListTool(BaseTool):
             return ToolResult(success=False, output="", error=str(e))
 
 
-class TaskGetTool(BaseTool):
+class TaskGetTool(TaskManagerTool):
     """Get a task by its ID."""
 
     name = "task_get"
@@ -167,7 +170,7 @@ class TaskGetTool(BaseTool):
             ToolResult with task details
         """
         try:
-            manager = get_global_task_manager()
+            manager = self.task_manager
             task = manager.get_task(task_id)
 
             if not task:
@@ -216,7 +219,7 @@ class TaskGetTool(BaseTool):
             return ToolResult(success=False, output="", error=str(e))
 
 
-class TaskUpdateTool(BaseTool):
+class TaskUpdateTool(TaskManagerTool):
     """Update a task in the task list."""
 
     name = "task_update"
@@ -253,7 +256,7 @@ class TaskUpdateTool(BaseTool):
             ToolResult with updated task info
         """
         try:
-            manager = get_global_task_manager()
+            manager = self.task_manager
             task = manager.get_task(task_id)
 
             if not task:
@@ -318,7 +321,7 @@ class TaskUpdateTool(BaseTool):
             return ToolResult(success=False, output="", error=str(e))
 
 
-class TaskStopTool(BaseTool):
+class TaskStopTool(TaskManagerTool):
     """Stop a running background task."""
 
     name = "task_stop"
@@ -335,7 +338,7 @@ class TaskStopTool(BaseTool):
             ToolResult indicating success/failure
         """
         try:
-            manager = get_global_task_manager()
+            manager = self.task_manager
             stopped = asyncio.run(manager.stop_task(task_id))
 
             if stopped:
@@ -360,7 +363,7 @@ class TaskStopTool(BaseTool):
             return ToolResult(success=False, output="", error=str(e))
 
 
-class TaskOutputTool(BaseTool):
+class TaskOutputTool(TaskManagerTool):
     """Get output from a running or completed background task."""
 
     name = "task_output"
@@ -378,9 +381,7 @@ class TaskOutputTool(BaseTool):
             ToolResult with task output
         """
         try:
-            from opennova.utils.task_output import read_task_output
-
-            manager = get_global_task_manager()
+            manager = self.task_manager
             task = manager.get_task(task_id)
 
             if not task:
@@ -390,7 +391,9 @@ class TaskOutputTool(BaseTool):
                     error=f"Task '{task_id}' not found",
                 )
 
-            content, offset = read_task_output(task_id, max_length, task.output_offset)
+            content, offset = manager.read_task_output(
+                task_id, max_length=max_length, offset=task.output_offset
+            )
 
             if not content:
                 return ToolResult(

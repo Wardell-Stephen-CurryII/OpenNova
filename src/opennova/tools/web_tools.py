@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from opennova.runtime.events import current_tool_context
 from opennova.tools.base import BaseTool, ToolResult
 
 
@@ -65,6 +66,9 @@ class WebFetchTool(BaseTool):
 
     async def async_execute(self, url: str, **kwargs: Any) -> ToolResult:
         try:
+            context = current_tool_context()
+            if context and context.abort_signal:
+                context.abort_signal.raise_if_cancelled()
             if not bool(self.config.get("allow_network", True)):
                 return ToolResult(
                     success=False,
@@ -85,6 +89,8 @@ class WebFetchTool(BaseTool):
             async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
                 response = await client.get(url)
                 response.raise_for_status()
+            if context and context.abort_signal:
+                context.abort_signal.raise_if_cancelled()
 
             content_type = response.headers.get("content-type", "")
             extracted = self._extract_content(response.text, content_type)

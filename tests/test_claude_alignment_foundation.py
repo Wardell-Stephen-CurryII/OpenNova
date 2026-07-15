@@ -56,7 +56,10 @@ def test_tool_registry_instances_do_not_share_tools():
     assert not second.has_tool("dummy")
 
 
-def test_child_runtime_has_isolated_mutable_state_and_security_policy():
+def test_child_runtime_has_isolated_mutable_state_and_security_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     runtime = AgentRuntime(
         {
             "default_provider": "deepseek",
@@ -191,7 +194,9 @@ def test_glob_and_grep_tools_respect_gitignore_and_max_results(tmp_path: Path):
     (tmp_path / "ignored.py").write_text("needle ignored\n", encoding="utf-8")
     config = {"working_dir": str(tmp_path)}
 
-    glob_result = GlobFilesTool(config=config).execute("*.py", directory=str(tmp_path), max_results=1)
+    glob_result = GlobFilesTool(config=config).execute(
+        "*.py", directory=str(tmp_path), max_results=1
+    )
     grep_result = GrepCodeTool(config=config).execute(
         "needle",
         directory=str(tmp_path),

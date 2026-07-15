@@ -150,7 +150,9 @@ mcp:
       args: ["-y", "@modelcontextprotocol/server-filesystem", "./src"]
 ```
 
-项目插件可以增加工具和 slash command，但只有可信插件才会加载。通过 `/plugins` 查看、信任、锁定、检查漂移和审计；`/hooks` 查看已加载 hooks。
+项目插件可以增加工具和 slash command，但只有工作区路径和内容摘要均匹配信任记录时才会
+加载。通过 `/plugins` 查看、信任、锁定、检查漂移和审计。项目 Python hooks 默认不执行；
+使用 `/hooks trust` 信任当前摘要，代码变化后需要重新信任，使用 `/hooks untrust` 可撤销。
 
 ## 检查点与导出
 

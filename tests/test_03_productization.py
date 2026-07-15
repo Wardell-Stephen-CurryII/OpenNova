@@ -145,7 +145,7 @@ hooks:
 
     config = {"skills": {"dirs": []}, "mcp": {"servers": []}}
     hooks = HookManager(project_path=tmp_path)
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     loaded = manager.load_enabled_plugins(config=config, hook_manager=hooks)
 
     assert [plugin.name for plugin in loaded] == ["demo"]
@@ -275,7 +275,9 @@ def test_session_manager_snapshot_persists_transcript_and_newest_sorting(
     second_id = manager.start_session()
     manager.save_snapshot(
         [Message(role="user", content="a much longer first prompt than twenty chars")],
-        transcript_events=[{"kind": "user_message", "text": "a much longer first prompt than twenty chars"}],
+        transcript_events=[
+            {"kind": "user_message", "text": "a much longer first prompt than twenty chars"}
+        ],
     )
 
     first_file = manager._sessions_dir / f"{first_id}.jsonl"
@@ -400,7 +402,9 @@ def test_runtime_resume_session_keeps_writing_to_original_session_file(
     assert [message.content for message in loaded] == ["hello", "world", "again"]
 
 
-def test_session_manager_snapshot_persists_plan_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_session_manager_snapshot_persists_plan_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     from opennova.runtime.state import Plan, PlanStep
     from opennova.session import SessionManager
 
@@ -426,7 +430,9 @@ def test_session_manager_snapshot_persists_plan_state(tmp_path: Path, monkeypatc
     assert loaded.plan_state["plan_approval_status"] == "awaiting_approval"
 
 
-def test_runtime_resume_session_restores_plan_state_from_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_runtime_resume_session_restores_plan_state_from_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     from opennova.memory.context import ContextManager
     from opennova.runtime.agent import AgentRuntime
     from opennova.runtime.state import Plan, PlanStep
@@ -1516,7 +1522,9 @@ def test_tui_canonical_tool_event_does_not_steal_plan_tab():
             "_workbench_visible": True,
             "_tool_progress": Progress(),
             "_tool_cards": ToolCardStore(),
-            "query_one": lambda self, selector: type("Log", (), {"write": lambda self, value: None})(),
+            "query_one": lambda self, selector: type(
+                "Log", (), {"write": lambda self, value: None}
+            )(),
             "_write_tool_start": lambda self, log, tool_name, detail: None,
             "_write_tool_result": lambda self, log, **kwargs: None,
             "_refresh_tool_panel": lambda self: None,
@@ -1671,7 +1679,9 @@ def test_tui_workbench_renders_completed_runtime_plan_without_snapshot_fallback(
             "_tool_panel_visible": True,
             "_tool_cards": ToolCardStore(),
             "query_one": query_one,
-            "_set_tool_panel_visible": lambda self, visible: setattr(self, "_workbench_visible", visible),
+            "_set_tool_panel_visible": lambda self, visible: setattr(
+                self, "_workbench_visible", visible
+            ),
             "_set_status": lambda self, message="": None,
             "_refresh_workbench_panel": lambda self: OpenNovaTUI._refresh_workbench_panel(self),
         },
@@ -2024,7 +2034,9 @@ async def test_tui_input_submission_launches_resume_picker_in_background():
             "_is_agent_running": lambda self: False,
             "_handle_command": fail_if_called_directly,
             "_launch_agent_task": launch_task,
-            "query_one": lambda self, selector, *args: input_widget if selector == "#input" else log,
+            "query_one": lambda self, selector, *args: (
+                input_widget if selector == "#input" else log
+            ),
         },
     )()
 
@@ -2108,7 +2120,9 @@ async def test_tui_input_submission_does_not_force_scroll_to_bottom_after_echo()
             "_is_agent_running": lambda self: False,
             "_launch_agent_task": launch_task,
             "_execute_task": fake_execute_task,
-            "query_one": lambda self, selector, *args: input_widget if selector == "#input" else log,
+            "query_one": lambda self, selector, *args: (
+                input_widget if selector == "#input" else log
+            ),
         },
     )()
 
@@ -2158,7 +2172,9 @@ def test_tui_startup_continue_restores_newest_session():
                 AssertionError("should not show welcome when continue succeeds")
             ),
             "_focus_input": lambda self: None,
-            "query_one": lambda self, selector: type("Log", (), {"write": lambda self, value: None})(),
+            "query_one": lambda self, selector: type(
+                "Log", (), {"write": lambda self, value: None}
+            )(),
         },
     )()
 
@@ -2197,9 +2213,11 @@ def test_tui_restore_loaded_session_replays_transcript_events():
         {
             "_replaying_transcript": False,
             "_write_user_message": lambda self, log, text, record=False: log.write(("user", text)),
-            "_write_assistant_message": lambda self, log, text, record=False: log.write(("assistant", text)),
-            "_replay_transcript_event": lambda self, log, event: OpenNovaTUI._replay_transcript_event(
-                self, log, event
+            "_write_assistant_message": lambda self, log, text, record=False: log.write(
+                ("assistant", text)
+            ),
+            "_replay_transcript_event": lambda self, log, event: (
+                OpenNovaTUI._replay_transcript_event(self, log, event)
             ),
             "_replay_legacy_message": lambda self, log, message: OpenNovaTUI._replay_legacy_message(
                 self, log, message
@@ -2211,14 +2229,20 @@ def test_tui_restore_loaded_session_replays_transcript_events():
         session_id="session-1",
         messages=[],
         transcript_events=[
-            SessionTranscriptEvent(kind="user_message", payload={"kind": "user_message", "text": "hello"}),
+            SessionTranscriptEvent(
+                kind="user_message", payload={"kind": "user_message", "text": "hello"}
+            ),
             SessionTranscriptEvent(
                 kind="assistant_markdown",
                 payload={"kind": "assistant_markdown", "content": "world"},
             ),
             SessionTranscriptEvent(
                 kind="tool_start",
-                payload={"kind": "tool_start", "tool_name": "read_file", "detail": "(path='README.md')"},
+                payload={
+                    "kind": "tool_start",
+                    "tool_name": "read_file",
+                    "detail": "(path='README.md')",
+                },
             ),
         ],
         compression_summary=None,

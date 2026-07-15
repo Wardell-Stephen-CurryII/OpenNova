@@ -16,7 +16,6 @@ from opennova.config import (
     load_config,
     validate_config,
 )
-from opennova.runtime.agent import AgentRuntime
 
 
 def print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
@@ -173,17 +172,16 @@ def list_tools(ctx: click.Context) -> None:
     """
     List all available tools.
     """
-    config = _load_and_validate_config(
-        ctx.obj.get("config_path"),
-        permission_mode=ctx.obj.get("permission_mode"),
-    )
-    agent = AgentRuntime(config)
+    del ctx
+    from opennova.runtime.bootstrap import inspect_runtime
+
+    snapshot = inspect_runtime()
 
     click.echo("Available tools:\n")
-    for tool_name in agent.get_tools():
+    for tool_name in snapshot.tool_names:
         click.echo(f"  • {tool_name}")
 
-    click.echo(f"\nTotal: {len(agent.get_tools())} tools")
+    click.echo(f"\nTotal: {len(snapshot.tool_names)} tools")
 
 
 @main.command()
@@ -199,7 +197,7 @@ def config_cmd(ctx: click.Context) -> None:
     import yaml
 
     click.echo("Current configuration:\n")
-    click.echo(yaml.dump(config.data, default_flow_style=False, sort_keys=False))
+    click.echo(yaml.dump(config.redacted_data(), default_flow_style=False, sort_keys=False))
 
 
 @main.command()
@@ -233,6 +231,7 @@ async def _run_single_task(
     from rich.console import Console
 
     from opennova.providers.base import StreamChunk
+    from opennova.runtime.agent import AgentRuntime
     from opennova.runtime.state import Plan
     from opennova.tools.base import ToolResult
 
@@ -307,6 +306,8 @@ async def _run_single_task(
     except Exception as e:
         console.print(f"\n[red]Error: {e}[/red]")
         sys.exit(1)
+    finally:
+        await agent.aclose()
 
 
 def _load_and_validate_config(

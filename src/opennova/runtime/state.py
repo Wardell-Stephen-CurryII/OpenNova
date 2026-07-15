@@ -259,6 +259,7 @@ class AgentState:
         self.error_count = 0
         self.last_action = None
         self.last_result = None
+        self.run_id = uuid4().hex
 
     def reset_execution(self, task: str = "") -> None:
         """Reset per-run execution fields while preserving approved plan state."""
@@ -271,6 +272,7 @@ class AgentState:
         self.error_count = 0
         self.last_action = None
         self.last_result = None
+        self.run_id = uuid4().hex
 
     def increment_iteration(self, run_id: str | None = None) -> None:
         """Increment iteration counter."""
@@ -290,9 +292,7 @@ class AgentState:
 
     def mark_complete(self, result: str | None = None, run_id: str | None = None) -> None:
         """Mark task as complete."""
-        if self._dispatch(
-            "run_completed", expected_run_id=run_id, result=result, success=True
-        ):
+        if self._dispatch("run_completed", expected_run_id=run_id, result=result, success=True):
             return
         self.is_complete = True
         self.last_result = result
@@ -311,7 +311,13 @@ class AgentState:
 
     def cancel_run(self, run_id: str | None = None) -> None:
         """Cancel the current run if its identity is still active."""
-        self._dispatch("run_cancelled", expected_run_id=run_id)
+        if self._dispatch("run_cancelled", expected_run_id=run_id):
+            return
+        if run_id is not None and self.run_id != run_id:
+            return
+        self.is_complete = False
+        self.last_result = "Run cancelled"
+        self.run_id = None
 
     def begin_interaction(self, interaction_type: str) -> None:
         self._dispatch("interaction_waiting", interaction_type=interaction_type)

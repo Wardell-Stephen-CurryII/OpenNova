@@ -90,7 +90,7 @@ tools:
         encoding="utf-8",
     )
 
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("bad")
     manager.load_enabled_plugins(config={})
     tools = manager.build_tools(config={"working_dir": str(tmp_path)})
@@ -119,7 +119,7 @@ tools:
         encoding="utf-8",
     )
 
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("good")
     manager.load_enabled_plugins(config={})
     tools = manager.build_tools(config={"working_dir": str(tmp_path)})

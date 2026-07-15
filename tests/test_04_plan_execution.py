@@ -132,13 +132,18 @@ tools:
         encoding="utf-8",
     )
 
-    manager = PluginManager(project_path=tmp_path)
+    manager = PluginManager(project_path=tmp_path, trust_path=tmp_path / "trust.json")
     manager.load_enabled_plugins(config={})
     assert manager.build_tools(config={"working_dir": str(tmp_path)}) == []
 
     manager.trust_plugin("demo")
     manager.load_enabled_plugins(config={})
-    tools = manager.build_tools(config={"working_dir": str(tmp_path)})
+    tools = manager.build_tools(
+        config={
+            "working_dir": str(tmp_path),
+            "process_sandbox": {"enabled": False},
+        }
+    )
 
     assert [tool.name for tool in tools] == ["demo_echo"]
     result = tools[0].execute()
@@ -150,7 +155,9 @@ def test_python_definition_resolves_import_alias_across_files(tmp_path: Path):
     from opennova.tools.diagnostics_tools import PythonDefinitionTool, PythonSymbolsTool
 
     (tmp_path / "lib.py").write_text("def target():\n    return 1\n", encoding="utf-8")
-    (tmp_path / "main.py").write_text("from lib import target as alias\nvalue = alias()\n", encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        "from lib import target as alias\nvalue = alias()\n", encoding="utf-8"
+    )
     config = {"working_dir": str(tmp_path)}
 
     symbols = PythonSymbolsTool(config=config).execute(path=str(tmp_path))

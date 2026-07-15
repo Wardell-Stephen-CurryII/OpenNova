@@ -472,21 +472,27 @@ class OpenNovaTUI(App):
         self._last_plan_chat_signature: tuple[Any, ...] | None = None
         self._state_unsubscribe = None
         self._runtime_unsubscribers: list[Any] = []
+        self._ui_tasks: set[asyncio.Task[Any]] = set()
         self._callbacks_registered = False
         self._plan_callback_registered = False
         self._pending_workbench_revision = -1
         self._automation_daemon = None
         self._startup_resume_mode = startup_resume_mode
         self._replaying_transcript = False
-        self.command_registry = SlashCommandRegistry.default()
-        for command in getattr(getattr(self.agent, "plugin_manager", None), "commands", []):
-            self.command_registry.register_plugin_command(command)
+        self.command_registry = self._build_command_registry()
         self._last_ctrl_c: float = 0.0
         # Guard against duplicate Submitted events from a single Enter press
         self._last_submitted_text: str = ""
         self._last_submitted_time: float = 0.0
 
     # ── lifecycle ────────────────────────────────────────────────
+
+    def _build_command_registry(self) -> SlashCommandRegistry:
+        """Build commands from the current trusted plugin snapshot."""
+        registry = SlashCommandRegistry.default()
+        for command in getattr(getattr(self.agent, "plugin_manager", None), "commands", []):
+            registry.register_plugin_command(command)
+        return registry
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -515,9 +521,26 @@ class OpenNovaTUI(App):
         self._subscribe_runtime_state()
         self.call_after_refresh(self._after_mount)
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
+        with suppress(Exception):
+            self.agent.cancel_run("TUI closed")
+        if self._agent_task is not None and not self._agent_task.done():
+            self._agent_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._agent_task
+        current_task = asyncio.current_task()
+        pending_ui_tasks = [
+            task for task in self._ui_tasks if not task.done() and task is not current_task
+        ]
+        for task in pending_ui_tasks:
+            task.cancel()
+        if pending_ui_tasks:
+            await asyncio.gather(*pending_ui_tasks, return_exceptions=True)
+        self._ui_tasks.clear()
         with suppress(Exception):
             self.agent.flush_session()
+        with suppress(Exception):
+            await self.agent.aclose()
         if callable(self._state_unsubscribe):
             self._state_unsubscribe()
         for unsubscribe in self._runtime_unsubscribers:
@@ -909,7 +932,7 @@ class OpenNovaTUI(App):
         """Cancel the running agent task, or double-press to exit."""
         if self._is_agent_running():
             with suppress(Exception):
-                self.agent.state.cancel_run(self.agent.state.run_id)
+                self.agent.cancel_run("User cancelled from TUI")
             self._agent_task.cancel()
             self._set_status("[yellow]Cancelling...[/yellow]")
             return
@@ -1094,7 +1117,9 @@ class OpenNovaTUI(App):
             skills = self.agent.get_skills()
             tokens = remainder.split(maxsplit=1)
             if text.endswith(" ") and tokens:
-                hint = self.agent.get_skill_argument_hint(tokens[0], tokens[1] if len(tokens) > 1 else "")
+                hint = self.agent.get_skill_argument_hint(
+                    tokens[0], tokens[1] if len(tokens) > 1 else ""
+                )
                 if hint:
                     return [f"{text}{hint}"]
             matches = [f"/skill {s}" for s in skills if s.startswith(skill_prefix)]
@@ -1195,7 +1220,9 @@ class OpenNovaTUI(App):
 
         with suppress(Exception):
             input_widget = self.query_one("#input", Input)
-            if pressed in input_widget.value and self._handle_option_digit_shortcut(input_widget.value):
+            if pressed in input_widget.value and self._handle_option_digit_shortcut(
+                input_widget.value
+            ):
                 return True
 
         self._set_workbench_tab(_MAC_OPTION_DIGIT_TABS[pressed])
@@ -1212,7 +1239,9 @@ class OpenNovaTUI(App):
         with suppress(Exception):
             input_widget = self.query_one("#input", Input)
             input_widget.value = cleaned
-            input_widget.cursor_position = min(getattr(input_widget, "cursor_position", len(cleaned)), len(cleaned))
+            input_widget.cursor_position = min(
+                getattr(input_widget, "cursor_position", len(cleaned)), len(cleaned)
+            )
         self._set_workbench_tab(tab)
         return True
 
@@ -1283,7 +1312,9 @@ class OpenNovaTUI(App):
             except Exception:
                 self._reset_input_state()
 
-        asyncio.create_task(_runner())
+        task = asyncio.create_task(_runner())
+        self._ui_tasks.add(task)
+        task.add_done_callback(self._ui_tasks.discard)
 
     async def _handle_command(self, text: str) -> None:
         parts = text.split(maxsplit=1)
@@ -1320,7 +1351,7 @@ class OpenNovaTUI(App):
 - `/permissions mode request|auto|full` - Switch approval mode for this run
 - `/permissions <tool> allow|deny|ask` - Update a persisted tool permission rule
 - `/plugins [trust|untrust|test name|lock|drift|warnings|audit [--policy strict]]` - Manage and audit local plugins
-- `/hooks` - Show loaded hook counts
+- `/hooks [trust|untrust]` - Inspect or change project-hook trust
 - `/automations` - List local scheduled automations
 - `/automations once <name> <run_at> <prompt>` - Schedule a one-shot local automation
 - `/automations interval <name> <seconds> <prompt>` - Schedule an interval automation
@@ -1386,7 +1417,9 @@ class OpenNovaTUI(App):
 
         for name in sorted(names):
             info = skill_registry.get_skill_info(name) or {}
-            table.add_row(name, str(info.get("activation_state", "static")), info.get("description", ""))
+            table.add_row(
+                name, str(info.get("activation_state", "static")), info.get("description", "")
+            )
         log.write(table)
 
     async def _cmd_skill(self, args: str) -> None:
@@ -1474,7 +1507,7 @@ class OpenNovaTUI(App):
             log.write(f"[cyan]Config path:[/cyan] {self.config.config_path}")
         log.write(
             Syntax(
-                yaml.dump(self.config.data, default_flow_style=False, sort_keys=False),
+                yaml.dump(self.config.redacted_data(), default_flow_style=False, sort_keys=False),
                 "yaml",
                 theme="monokai",
             )
@@ -1596,8 +1629,7 @@ class OpenNovaTUI(App):
             decision = aliases.get(tokens[1])
             if decision is None:
                 log.write(
-                    "[red]Usage: /permissions [mode request|auto|full|"
-                    "<tool> allow|deny|ask][/red]"
+                    "[red]Usage: /permissions [mode request|auto|full|<tool> allow|deny|ask][/red]"
                 )
                 return
             store.record(tokens[0], decision)
@@ -1632,21 +1664,39 @@ class OpenNovaTUI(App):
         if not manager:
             log.write("[yellow]No plugin manager available.[/yellow]")
             return
+
+        async def refresh_surfaces() -> None:
+            refresher = getattr(self.agent, "refresh_plugin_contributions", None)
+            if callable(refresher):
+                await refresher()
+            else:
+                manager.load_enabled_plugins(
+                    self.agent.config,
+                    hook_manager=self.agent.hook_manager,
+                )
+            self.command_registry = self._build_command_registry()
+
+        await refresh_surfaces()
         tokens = args.split()
-        if tokens and tokens[0] in {"trust", "untrust", "test", "lock", "drift", "warnings", "audit"}:
+        if tokens and tokens[0] in {
+            "trust",
+            "untrust",
+            "test",
+            "lock",
+            "drift",
+            "warnings",
+            "audit",
+        }:
             from opennova.cli.plugin_commands import handle_plugin_command
 
-            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
             result = handle_plugin_command(manager, args)
-            manager.load_enabled_plugins(self.agent.config, hook_manager=self.agent.hook_manager)
+            await refresh_surfaces()
             if result.success:
                 log.write(f"[green]{result.output}[/green]")
             else:
                 log.write(f"[red]{result.error or 'Plugin command failed'}[/red]")
             return
-        plugins = manager.load_enabled_plugins(
-            self.agent.config, hook_manager=self.agent.hook_manager
-        )
+        plugins = manager.plugins
         if not plugins:
             log.write("[yellow]No project plugins discovered.[/yellow]")
             return
@@ -1662,12 +1712,44 @@ class OpenNovaTUI(App):
 
     async def _cmd_hooks(self, args: str) -> None:
         log = self.query_one("#messages")
-        callbacks = getattr(getattr(self.agent, "hook_manager", None), "_callbacks", {})
+        hook_manager = getattr(self.agent, "hook_manager", None)
+        trust_store = getattr(self.agent, "workspace_trust_store", None)
+        if hook_manager is None or trust_store is None:
+            log.write("[yellow]No hook manager available.[/yellow]")
+            return
+
+        digest = hook_manager.project_hooks_digest()
+        project_path = hook_manager.project_path
+        command = args.strip().lower()
+        if command == "trust":
+            if not digest:
+                log.write("[yellow]No project hooks found.[/yellow]")
+                return
+            trust_store.trust_hooks(project_path, digest)
+            hook_manager.load_project_hooks()
+            self.agent.workspace_hook_digest = digest
+            self.agent.workspace_hooks_trusted = True
+            log.write("[green]Trusted and loaded the current project-hook snapshot.[/green]")
+        elif command == "untrust":
+            trust_store.untrust_hooks(project_path)
+            hook_manager.clear_source("workspace-hooks")
+            self.agent.workspace_hooks_trusted = False
+            log.write("[green]Project-hook trust removed; callbacks unloaded.[/green]")
+        elif command:
+            log.write("[red]Usage: /hooks [trust|untrust][/red]")
+            return
+
+        trusted = trust_store.hooks_are_trusted(project_path, digest)
+        callbacks = getattr(hook_manager, "_callbacks", {})
         table = Table(title="Hooks")
         table.add_column("Event", style="cyan")
         table.add_column("Callbacks")
         for event_name, items in sorted(callbacks.items()):
             table.add_row(event_name, str(len(items)))
+        table.caption = (
+            f"Project hooks: {'trusted' if trusted else 'untrusted'}; "
+            f"digest: {digest[:12] if digest else 'none'}"
+        )
         log.write(table)
 
     async def _cmd_automations(self, args: str) -> None:
@@ -1759,7 +1841,9 @@ class OpenNovaTUI(App):
         from opennova.transcript import TranscriptExporter
 
         log = self.query_one("#messages")
-        output_dir = Path(args.strip()).expanduser() if args.strip() else Path(".opennova") / "exports"
+        output_dir = (
+            Path(args.strip()).expanduser() if args.strip() else Path(".opennova") / "exports"
+        )
         path = TranscriptExporter(output_dir).export_runtime(self.agent)
         log.write(f"[green]Transcript exported to {path}[/green]")
 
@@ -1822,7 +1906,9 @@ class OpenNovaTUI(App):
                     else write_chat
                 )
                 signature = OpenNovaTUI._plan_chat_signature(self, plan)
-                if should_write_chat and signature != getattr(self, "_last_plan_chat_signature", None):
+                if should_write_chat and signature != getattr(
+                    self, "_last_plan_chat_signature", None
+                ):
                     _log = self.query_one("#messages")
                     table = Table(title=f"Plan: {plan.task}")
                     table.add_column("Step", style="cyan")
@@ -2313,7 +2399,9 @@ class OpenNovaTUI(App):
 
     # ── diff display ─────────────────────────────────────────────
 
-    def _write_diff(self, log: _MessagesLog, diff_text: str, max_lines: int = _MAX_OUTPUT_LINES) -> None:
+    def _write_diff(
+        self, log: _MessagesLog, diff_text: str, max_lines: int = _MAX_OUTPUT_LINES
+    ) -> None:
         lines = diff_text.splitlines()
         if len(lines) > max_lines:
             lines = lines[:max_lines]

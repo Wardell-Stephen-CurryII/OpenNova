@@ -314,9 +314,7 @@ class Guardrails:
         elif mode == PermissionMode.FULL:
             requires_confirmation = False
         else:
-            requires_confirmation = (
-                safety_result.risk_level == RiskLevel.DANGER or explicitly_ask
-            )
+            requires_confirmation = safety_result.risk_level == RiskLevel.DANGER or explicitly_ask
             if explicitly_ask:
                 approval_source = "explicit_ask"
             elif safety_result.risk_level == RiskLevel.DANGER:
@@ -335,9 +333,7 @@ class Guardrails:
                     and not requires_confirmation
                     and safety_result.risk_level in {RiskLevel.SAFE, RiskLevel.WARN}
                 ),
-                "approval_bypassed": bool(
-                    mode == PermissionMode.FULL and prior_confirmation
-                ),
+                "approval_bypassed": bool(mode == PermissionMode.FULL and prior_confirmation),
             }
         )
         return safety_result
@@ -541,9 +537,13 @@ class Guardrails:
                 True,
                 metadata=metadata,
             )
-        return GuardResult(True, RiskLevel.SAFE, f"MCP tool trusted: {mcp_server}.{mcp_tool}", metadata=metadata)
+        return GuardResult(
+            True, RiskLevel.SAFE, f"MCP tool trusted: {mcp_server}.{mcp_tool}", metadata=metadata
+        )
 
-    def _check_secret_content(self, tool_name: str, arguments: dict[str, Any]) -> GuardResult | None:
+    def _check_secret_content(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> GuardResult | None:
         if tool_name not in {"write_file", "create_file", "edit_file", "multi_edit_file"}:
             return None
         content = _extract_write_content(arguments)
@@ -625,9 +625,7 @@ class Guardrails:
             try:
                 path.relative_to(work_path)
             except ValueError:
-                if not any(
-                    path.is_relative_to(Path(p).resolve()) for p in self.allowed_paths
-                ):
+                if not any(path.is_relative_to(Path(p).resolve()) for p in self.allowed_paths):
                     return GuardResult(
                         allowed=False,
                         risk_level=RiskLevel.DANGER,
@@ -772,6 +770,15 @@ class Guardrails:
             return permission_result
 
         if tool_name == "execute_command":
+            command_working_dir = arguments.get("working_dir")
+            if command_working_dir:
+                path_result = self.check_file_path(
+                    str(command_working_dir),
+                    "read",
+                    working_dir,
+                )
+                if not path_result.allowed:
+                    return path_result
             command = arguments.get("command", "")
             result = self.check_command(command)
 

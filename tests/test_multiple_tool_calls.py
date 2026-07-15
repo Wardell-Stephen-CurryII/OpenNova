@@ -158,12 +158,29 @@ async def test_multi_call_tool_events_have_unique_sequential_ids():
     await loop.run("Call both tools", on_tool_event=events.append)
 
     start_events = [event for event in events if event.type == "tool_start"]
-    assert [event.tool_id for event in start_events] == [
-        "tool_0001",
-        "tool_0002",
-        "tool_0003",
-        "tool_0004",
+    tool_ids = [event.tool_id for event in start_events]
+    assert len(set(tool_ids)) == 4
+    assert [tool_id.rsplit("_", 1)[-1] for tool_id in tool_ids] == [
+        "0001",
+        "0002",
+        "0003",
+        "0004",
     ]
+
+
+@pytest.mark.asyncio
+async def test_tool_event_ids_do_not_repeat_across_runs():
+    first_loop = make_loop(BatchedProvider(1), RecordingTool("tool_1"))
+    second_loop = make_loop(BatchedProvider(1), RecordingTool("tool_1"))
+    first_events = []
+    second_events = []
+
+    await first_loop.run("First turn", on_tool_event=first_events.append)
+    await second_loop.run("Second turn", on_tool_event=second_events.append)
+
+    first_id = next(event.tool_id for event in first_events if event.type == "tool_start")
+    second_id = next(event.tool_id for event in second_events if event.type == "tool_start")
+    assert first_id != second_id
 
 
 @pytest.mark.asyncio

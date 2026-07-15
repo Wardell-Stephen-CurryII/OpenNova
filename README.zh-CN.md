@@ -186,7 +186,9 @@ Skills 使用目录式 `SKILL.md`：
 .opennova/skills/<name>/SKILL.md
 ```
 
-MCP 支持 stdio 和 SSE。项目插件可以增加可信工具与 slash command，并通过 `/plugins` 完成锁定、漂移检查、警告和审计。
+MCP 支持 stdio 和 SSE。项目插件可以增加可信工具与 slash command，并通过 `/plugins`
+完成锁定、漂移检查、警告和审计。插件信任记录保存在仓库之外，并同时绑定工作区路径和插件
+内容摘要。项目 Python hooks 默认不执行，需使用 `/hooks trust` 信任当前 hooks 摘要。
 
 ## 安全模型
 
@@ -195,6 +197,10 @@ MCP 支持 stdio 和 SSE。项目插件可以增加可信工具与 slash command
 - `full`：跳过审批弹窗，但不会绕过硬性限制
 
 无论使用哪种模式，hard block、显式 deny、Plan 审批、路径/网络策略、敏感信息保护和可选进程沙箱都继续生效。
+
+配置展示、canonical tool event、工具 observation 和持久化 transcript 默认会脱敏检测到的密钥。
+进程沙箱只允许读取系统/运行时根及显式项目路径；可选 backend 不可用且未开启强制模式时，
+命令输出会显示 fallback 警告。设置 `security.process_sandbox.enforce: true` 可改为 fail closed。
 
 ## Python SDK
 
@@ -205,10 +211,10 @@ from opennova import OpenNovaClient
 from opennova.config import load_config
 
 async def main() -> None:
-    client = OpenNovaClient(load_config())
-    session_id = client.create_session()
-    result = await client.submit_message(session_id, "总结这个项目")
-    print(result)
+    async with OpenNovaClient(load_config()) as client:
+        session_id = client.create_session()
+        result = await client.submit_message(session_id, "总结这个项目")
+        print(result)
 
 asyncio.run(main())
 ```

@@ -1,10 +1,14 @@
-"""Memory Extractor - Extracts memory from conversations."""
+"""Legacy explicit memory extraction helpers.
+
+This compatibility API is never run automatically. Project memory injected by
+OpenNova comes from OPENNOVA.md, .opennova/memory/*.md, and ProjectMemory.
+"""
 
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
 
 from opennova.memory.types.feedback_memory import FeedbackMemory, FeedbackType
 from opennova.memory.types.project_memory import ProjectMemory
@@ -23,6 +27,15 @@ class ExtractionResult:
     reference_memories: list[ReferenceMemory] = field(default_factory=list)
 
 
+class ExtractedMemoryMap(TypedDict):
+    """Precisely typed intermediate buckets for one user message."""
+
+    user: list[UserMemory]
+    feedback: list[FeedbackMemory]
+    project: list[ProjectMemory]
+    reference: list[ReferenceMemory]
+
+
 class MemoryExtractor:
     """
     Extracts relevant information from conversations for memory.
@@ -38,7 +51,7 @@ class MemoryExtractor:
     PREFERENCE_PATTERNS = [
         r"(?:i|I) (?:prefer|like|want|choose|should use) (?:\w+\s+)?(.+?)(?:\.|,|;|$)",
         r"(?:i|I) (?:don't|do not|avoid|hate|prefer not) (?:\w+\s+)?(.+?)(?:\.|,|;|$)",
-        r"(?:my|our|the project) (?:\w+\s+)?(?:uses|uses|convention|style|pattern|architecture|framework)",
+        r"(?:my|our|the project) (?:\w+\s+)?(?:uses|convention|style|pattern|architecture|framework)\s+(.+?)(?:\.|,|;|$)",
     ]
 
     REFERENCE_PATTERNS = [
@@ -79,9 +92,7 @@ class MemoryExtractor:
 
         return result
 
-    def _extract_from_user_message(
-        self, content: str, timestamp: datetime
-    ) -> dict[str, list[UserMemory]]:
+    def _extract_from_user_message(self, content: str, timestamp: datetime) -> ExtractedMemoryMap:
         """Extract memories from a user message.
 
         Args:
@@ -91,10 +102,11 @@ class MemoryExtractor:
         Returns:
             Dict with categorized memories
         """
-        extracted: dict[str, list[UserMemory]] = {
+        extracted: ExtractedMemoryMap = {
             "user": [],
             "feedback": [],
             "project": [],
+            "reference": [],
         }
 
         # Extract preferences
@@ -114,16 +126,16 @@ class MemoryExtractor:
         # Extract references
         for pattern in self.REFERENCE_PATTERNS:
             for match in re.finditer(pattern, content, re.IGNORECASE):
-                url_or_reference = match.group(0)
+                url_or_reference = match.group(0).rstrip('.,;:!?)"]}')
                 extracted["reference"].append(
-                        ReferenceMemory(
-                            id=str(uuid.uuid4()),
-                            content=f"Referenced: {url_or_reference}",
-                            created_at=timestamp,
-                            tags=["reference"],
-                            url=url_or_reference if url_or_reference.startswith("http") else None,
-                        )
+                    ReferenceMemory(
+                        id=str(uuid.uuid4()),
+                        content=f"Referenced: {url_or_reference}",
+                        created_at=timestamp,
+                        tags=["reference"],
+                        url=url_or_reference if url_or_reference.startswith("http") else None,
                     )
+                )
 
         # Extract project decisions
         for pattern in self.PROJECT_PATTERNS:
@@ -145,24 +157,27 @@ class MemoryExtractor:
             "negative": ["bad", "wrong", "error", "issue", "problem", "doesn't work"],
         }
 
-        words = content.lower().split()
-        for word in words:
-            if word in feedback_indicators["positive"]:
-                extracted["feedback"].append(
+        normalized = content.lower()
+        for feedback_kind, indicators in feedback_indicators.items():
+            for indicator in indicators:
+                if not re.search(rf"(?<!\w){re.escape(indicator)}(?!\w)", normalized):
+                    continue
+                if feedback_kind == "positive":
+                    extracted["feedback"].append(
                         FeedbackMemory(
                             id=str(uuid.uuid4()),
-                            content=f"Positive feedback: {word}",
+                            content=f"Positive feedback: {indicator}",
                             feedback_type=FeedbackType.APPROVAL,
                             created_at=timestamp,
                             tags=["feedback", "positive"],
                         )
                     )
-            elif word in feedback_indicators["negative"]:
-                extracted["feedback"].append(
+                else:
+                    extracted["feedback"].append(
                         FeedbackMemory(
                             id=str(uuid.uuid4()),
-                            content=f"Negative feedback: {word}",
-                            feedback_type=FeedbackType.NEATIVE,
+                            content=f"Negative feedback: {indicator}",
+                            feedback_type=FeedbackType.REJECTION,
                             created_at=timestamp,
                             tags=["feedback", "negative"],
                         )
@@ -170,9 +185,7 @@ class MemoryExtractor:
 
         return extracted
 
-    def extract_preferences(
-        self, content: str, context: str = ""
-    ) -> list[str]:
+    def extract_preferences(self, content: str, context: str = "") -> list[str]:
         """
         Extract user preferences from content.
 
@@ -191,9 +204,7 @@ class MemoryExtractor:
                     preferences.append(preference)
         return preferences
 
-    def extract_references(
-        self, content: str
-    ) -> list[str]:
+    def extract_references(self, content: str) -> list[str]:
         """
         Extract resource references from content.
 
@@ -206,12 +217,10 @@ class MemoryExtractor:
         references = []
         for pattern in self.REFERENCE_PATTERNS:
             for match in re.finditer(pattern, content, re.IGNORECASE):
-                references.append(match.group(0))
+                references.append(match.group(0).rstrip('.,;:!?)"]}'))
         return references
 
-    def extract_project_context(
-        self, content: str
-    ) -> dict[str, Any]:
+    def extract_project_context(self, content: str) -> dict[str, Any]:
         """
         Extract project decisions and context.
 
@@ -221,7 +230,7 @@ class MemoryExtractor:
         Returns:
             Dict with project context
         """
-        context = {
+        context: dict[str, list[str]] = {
             "decisions": [],
             "requirements": [],
             "architecture": [],

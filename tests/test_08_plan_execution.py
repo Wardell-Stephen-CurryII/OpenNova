@@ -136,7 +136,7 @@ def test_plugin_lock_and_drift_commands(tmp_path: Path):
     }
     (plugin_root / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
 
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     manager.load_enabled_plugins({})
 

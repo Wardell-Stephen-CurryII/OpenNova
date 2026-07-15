@@ -137,7 +137,10 @@ mcp:
       args: ["-y", "@modelcontextprotocol/server-filesystem", "./src"]
 ```
 
-Project plugins may add tools and slash commands, but only trusted plugins are loaded. `/plugins` provides trust, lock, drift, warning, and audit operations; `/hooks` reports loaded hooks.
+Project plugins may add tools and slash commands, but they load only when both the workspace path
+and content digest match an external trust record. `/plugins` provides trust, lock, drift, warning,
+and audit operations. Project Python hooks do not execute by default; use `/hooks trust` for the
+current digest, re-trust after changes, and `/hooks untrust` to revoke access.
 
 ## Checkpoints and exports
 

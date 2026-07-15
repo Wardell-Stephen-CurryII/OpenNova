@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 ProcessSandboxBackend = Literal["auto", "seatbelt", "bubblewrap", "none"]
 
@@ -43,9 +43,12 @@ class ProcessSandboxConfig:
         tmp_dir: str | None = None,
     ) -> ProcessSandboxConfig:
         data = sandbox_config or {}
+        backend_value = str(data.get("backend", "auto"))
+        if backend_value not in {"auto", "seatbelt", "bubblewrap", "none"}:
+            raise ValueError(f"Unsupported process sandbox backend: {backend_value}")
         return cls(
             enabled=bool(data.get("enabled", True)),
-            backend=str(data.get("backend", "auto")),
+            backend=cast(ProcessSandboxBackend, backend_value),
             enforce=bool(data.get("enforce", False)),
             working_dir=working_dir,
             allowed_paths=list(allowed_paths or []),
@@ -64,6 +67,15 @@ class ProcessSandboxPlan:
     cwd: str
     env: dict[str, str]
     metadata: dict[str, Any]
+    cleanup_paths: list[str] = field(default_factory=list)
+
+    def cleanup(self) -> None:
+        """Remove temporary sandbox artifacts after process termination."""
+        for value in self.cleanup_paths:
+            try:
+                Path(value).unlink(missing_ok=True)
+            except OSError:
+                continue
 
 
 class ProcessSandbox:
@@ -118,7 +130,10 @@ class ProcessSandbox:
             wrapped = original_argv
             metadata["fallback_reason"] = f"unsupported process sandbox backend: {backend}"
 
-        return ProcessSandboxPlan(wrapped, working_dir, env, metadata)
+        cleanup_paths = []
+        if metadata.get("profile_path"):
+            cleanup_paths.append(str(metadata["profile_path"]))
+        return ProcessSandboxPlan(wrapped, working_dir, env, metadata, cleanup_paths)
 
     def _base_metadata(self, *, applied: bool) -> dict[str, Any]:
         writable_roots = self._writable_roots()
@@ -129,8 +144,10 @@ class ProcessSandbox:
             "applied": applied,
             "network_allowed": self.config.allow_network,
             "writable_roots": writable_roots,
+            "readable_roots": self._effective_read_roots(),
             "tmp_dir": self._tmp_dir(),
             "fallback_reason": None,
+            "fallback_visible": True,
         }
 
     @staticmethod
@@ -185,9 +202,10 @@ class ProcessSandbox:
             "(deny default)",
             "(allow process*)",
             "(allow sysctl-read)",
-            "(allow file-read*)",
             "(deny file-write*)",
         ]
+        for root in self._effective_read_roots():
+            lines.append(f'(allow file-read* (subpath "{_escape_seatbelt_path(root)}"))')
         for root in self._writable_roots():
             lines.append(f'(allow file-write* (subpath "{_escape_seatbelt_path(root)}"))')
         if self.config.allow_network:
@@ -222,12 +240,34 @@ class ProcessSandbox:
         return wrapped
 
     def _read_roots(self) -> list[str]:
-        roots = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]
+        roots = [
+            "/System",
+            "/Library",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/lib64",
+            "/etc",
+            "/dev",
+            "/opt",
+            "/nix",
+            "/private/var/db",
+            "/private/var/select",
+        ]
         roots.extend(self.config.extra_read_roots)
         return _dedupe_paths(roots)
 
+    def _effective_read_roots(self) -> list[str]:
+        """Return system read roots plus all explicitly writable locations."""
+        return _dedupe_paths([*self._read_roots(), *self._writable_roots()])
+
     def _writable_roots(self) -> list[str]:
-        roots = [self.config.working_dir, *self.config.allowed_paths, *self.config.extra_writable_roots]
+        roots = [
+            self.config.working_dir,
+            *self.config.allowed_paths,
+            *self.config.extra_writable_roots,
+        ]
         roots.append(self._tmp_dir())
         return _dedupe_paths(str(Path(root).expanduser().resolve()) for root in roots if root)
 

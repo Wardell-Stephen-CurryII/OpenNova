@@ -106,7 +106,12 @@ def test_python_external_analyzer_plans_backend_commands():
     )
 
     assert pyright.plan_diagnostics(project).argv == ["pyright", str(project), "--outputjson"]
-    assert ruff.plan_diagnostics(project).argv == ["ruff", "check", str(project), "--output-format=json"]
+    assert ruff.plan_diagnostics(project).argv == [
+        "ruff",
+        "check",
+        str(project),
+        "--output-format=json",
+    ]
     ast_plan = ast.plan_diagnostics(project)
     assert ast_plan.argv == []
     assert ast_plan.fallback_reason == "No external Python analyzer available; using AST fallback"
@@ -128,7 +133,7 @@ def test_plugin_lockfile_drift_and_plugin_test_command(tmp_path: Path):
     }
     (plugin_root / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
 
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     manager.load_enabled_plugins({})
     lockfile = manager.build_lockfile()

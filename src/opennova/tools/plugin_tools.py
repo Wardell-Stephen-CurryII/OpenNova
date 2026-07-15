@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
+import shlex
 from typing import Any
 
 from opennova.tools.base import BaseTool, ToolResult
-from opennova.utils.encoding import utf8_environment
+from opennova.tools.shell_tools import ExecuteCommandTool
 
 
 class PluginCommandTool(BaseTool):
@@ -30,31 +29,29 @@ class PluginCommandTool(BaseTool):
         self.args = args or []
         self.permission = permission
         self._read_only = read_only or permission == "read"
+        self._command_tool = ExecuteCommandTool(self.config)
+
+    @property
+    def command_line(self) -> str:
+        return shlex.join([self.command, *self.args])
 
     def execute(self) -> ToolResult:
-        try:
-            cwd = Path(self.config.get("working_dir", ".")).resolve()
-            result = subprocess.run(
-                [self.command, *self.args],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=utf8_environment(),
-            )
-            output = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
-            return ToolResult(
-                success=result.returncode == 0,
-                output=output or "(no output)",
-                error=None if result.returncode == 0 else f"Plugin tool exited {result.returncode}",
-                metadata={
-                    "plugin_tool": True,
-                    "returncode": result.returncode,
-                    "permission": self.permission,
-                },
-            )
-        except Exception as exc:
-            return ToolResult(success=False, output="", error=str(exc), metadata={"plugin_tool": True})
+        return self._decorate_result(self._command_tool.execute(self.command_line))
+
+    async def async_execute(self) -> ToolResult:
+        """Execute through the shared cancellable process-sandbox path."""
+        result = await self._command_tool.async_execute(self.command_line)
+        return self._decorate_result(result)
+
+    def _decorate_result(self, result: ToolResult) -> ToolResult:
+        result.metadata.update(
+            {
+                "plugin_tool": True,
+                "returncode": result.metadata.get("exit_code"),
+                "permission": self.permission,
+            }
+        )
+        return result
 
     def is_read_only(self, **kwargs: Any) -> bool:
         return self._read_only
