@@ -1,4 +1,4 @@
-# OpenNova 0.4.1 API Reference
+# OpenNova 0.4.2 API Reference
 
 **[简体中文](API.md)** | **English**
 
@@ -17,7 +17,7 @@ from opennova import OpenNovaClient, SDKEvent, __version__
 from opennova.config import Config, load_config
 ```
 
-The package version and `pyproject.toml` are both set to 0.4.1.
+The package version and `pyproject.toml` are both set to 0.4.2.
 
 ## Recommended entry point: OpenNovaClient
 

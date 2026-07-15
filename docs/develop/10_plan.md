@@ -1,6 +1,6 @@
 # OpenNova 10 计划：Tool Card Keymap、Transcript Checkpoint Lookup、插件 Audit/Signature 与 Automation Archive
 
-> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.1 的当前命令或功能状态。
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
 
 ## Summary
 10 计划接续 `09_plan.md` 的后续建议，把已有状态机继续推进为更靠近 Claude Code 的可操作产品薄层。本轮继续避免一次性重写完整 Textual UI 或引入常驻服务，而是实现可测试的小能力：Tool Card 键盘动作适配、transcript checkpoint 反查、插件权限审计与签名占位、automation 归档目录管理，以及 diagnostics 统一事件模型。

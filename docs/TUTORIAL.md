@@ -1,4 +1,4 @@
-# OpenNova 0.4.1 使用教程
+# OpenNova 0.4.2 使用教程
 
 本教程面向直接使用 OpenNova 的开发者。当前交互入口只有 Textual TUI；旧交互式 CLI 和 `opennova tui` 子命令已经移除。
 

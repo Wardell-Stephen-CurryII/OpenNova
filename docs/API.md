@@ -1,4 +1,4 @@
-# OpenNova 0.4.1 API 文档
+# OpenNova 0.4.2 API 文档
 
 **简体中文** | **[English](API.en.md)**
 
@@ -15,7 +15,7 @@ from opennova import OpenNovaClient, SDKEvent, __version__
 from opennova.config import Config, load_config
 ```
 
-包版本和 `pyproject.toml` 在 0.4.1 中保持一致。
+包版本和 `pyproject.toml` 在 0.4.2 中保持一致。
 
 ## 推荐入口：OpenNovaClient
 

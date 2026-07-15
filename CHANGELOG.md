@@ -5,10 +5,16 @@ the commits that changed the package version in `pyproject.toml` and `src/openno
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-15
+
 ### Added
 
 - Added context-line support to `grep_code`.
 - Added GitHub Actions quality checks and Python 3.11/3.12 test jobs for pushes and pull requests.
+- Added runtime-owned cancellation handles spanning shell processes, MCP, web requests, sub-agents,
+  automation, the SDK, and the TUI.
+- Added workspace- and content-digest-bound trust for project hooks and plugin contributions.
+- Added centralized model profiles and a side-effect-free tool inspection catalog.
 
 ### Changed
 
@@ -17,6 +23,10 @@ the commits that changed the package version in `pyproject.toml` and `src/openno
 - Reduced unnecessary approval prompts in `auto` permission mode while preserving hard blocks,
   explicit policy rules, sandbox restrictions, and audit records.
 - Limited permission prompts to the actionable approve-or-cancel choices.
+- Isolated task managers, tool identifiers, event listeners, and cleanup ownership by runtime and
+  session.
+- Strengthened session path identity, process sandbox read boundaries, provider error handling,
+  plugin contribution refresh, and SDK resource lifecycle management.
 
 ### Fixed
 
@@ -26,6 +36,11 @@ the commits that changed the package version in `pyproject.toml` and `src/openno
 - Restored mouse selection and clipboard copying in the right-side workbench.
 - Resolved repository-wide Ruff violations and added code-quality regression coverage.
 - Corrected the pinned `setup-uv` action version in CI.
+- Fixed automatic context compression, repeated-summary interpolation, atomic assistant/tool
+  message insertion, and Anthropic tool-only serialization.
+- Prevented configuration and tool-event output from exposing expanded secrets.
+- Prevented untrusted, revoked, or content-drifted project extensions from remaining active in the
+  current runtime.
 
 ## [0.4.1] - 2026-07-12
 
@@ -188,7 +203,8 @@ the commits that changed the package version in `pyproject.toml` and `src/openno
 - Added the initial ReAct agent runtime, conversation context, tool registry, and streaming support.
 - Added the foundational file, shell, search, and editing tools.
 
-[Unreleased]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Wardell-Stephen-CurryII/OpenNova/releases/tag/v0.4.1
 [0.4.0]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/075ab4b...6865b4b
 [0.3.0]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/f577ef6...075ab4b
