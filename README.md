@@ -186,7 +186,10 @@ Skills use a directory-based `SKILL.md` format:
 .opennova/skills/<name>/SKILL.md
 ```
 
-MCP supports stdio and SSE transports. Project plugins can add trusted tools and slash commands; plugin lock, drift, warning, and audit operations are exposed through `/plugins`.
+MCP supports stdio and SSE transports. Project plugins can add trusted tools and slash commands;
+plugin lock, drift, warning, and audit operations are exposed through `/plugins`. Plugin trust is
+stored outside the repository and is bound to the workspace path and plugin content digest.
+Project Python hooks are disabled until the current hook digest is approved with `/hooks trust`.
 
 ## Security model
 
@@ -198,6 +201,11 @@ MCP supports stdio and SSE transports. Project plugins can add trusted tools and
 
 Hard blocks, explicit deny rules, plan approval, path/network policy, secret handling, and the optional OS process sandbox remain active in every mode.
 
+Configuration display, canonical tool events, tool observations, and persisted transcripts redact
+detected secrets by default. The process sandbox limits reads to system/runtime roots and explicit
+project paths; when an optional backend is unavailable and enforcement is disabled, command output
+shows a visible fallback warning. Use `security.process_sandbox.enforce: true` to fail closed.
+
 ## Python SDK
 
 ```python
@@ -207,10 +215,10 @@ from opennova import OpenNovaClient
 from opennova.config import load_config
 
 async def main() -> None:
-    client = OpenNovaClient(load_config())
-    session_id = client.create_session()
-    result = await client.submit_message(session_id, "Summarize this project")
-    print(result)
+    async with OpenNovaClient(load_config()) as client:
+        session_id = client.create_session()
+        result = await client.submit_message(session_id, "Summarize this project")
+        print(result)
 
 asyncio.run(main())
 ```

@@ -47,7 +47,9 @@ def test_checkpoint_diff_from_transcript_returns_matching_diff(tmp_path: Path):
 
 
 def test_checkpoint_diff_from_transcript_reports_missing_id(tmp_path: Path):
-    transcript = TranscriptExporter(tmp_path).export(session_id="session", messages=[], tool_events=[])
+    transcript = TranscriptExporter(tmp_path).export(
+        session_id="session", messages=[], tool_events=[]
+    )
 
     result = handle_checkpoint_command(tmp_path, f"diff --from-transcript {transcript} missing")
 
@@ -70,7 +72,7 @@ def test_plugin_policy_audit_flags_signature_hooks_and_mcp(tmp_path: Path):
         encoding="utf-8",
     )
 
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     manager.load_enabled_plugins({})
     violations = manager.audit_policy(PluginPolicy.strict())

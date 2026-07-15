@@ -28,15 +28,15 @@ from opennova import OpenNovaClient
 from opennova.config import load_config
 
 async def main() -> None:
-    client = OpenNovaClient(load_config())
-    session_id = client.create_session()
-    result = await client.submit_message(
-        session_id,
-        "检查当前项目的测试结构",
-        mode="act",
-        stream=True,
-    )
-    print(result)
+    async with OpenNovaClient(load_config()) as client:
+        session_id = client.create_session()
+        result = await client.submit_message(
+            session_id,
+            "检查当前项目的测试结构",
+            mode="act",
+            stream=True,
+        )
+        print(result)
 
 asyncio.run(main())
 ```
@@ -54,6 +54,9 @@ client.resume_session(persisted_session_id)
 - `get_runtime(session_id) -> AgentRuntime`：取得当前进程中的运行时
 - `list_sessions() -> list[dict]`：列出当前 client 管理的运行时，不等同于磁盘会话列表
 - `resume_session(session_id) -> str`：加载磁盘会话，并继续使用原 session id
+- `await cancel_run(session_id) -> bool`：取消并等待当前运行结束
+- `await close_session(session_id) -> bool`：取消运行、关闭 runtime 并移除 session
+- `await aclose()`：关闭 client 拥有的全部 session；推荐使用 `async with`
 
 ### 消息方法
 
@@ -75,6 +78,7 @@ async for event in client.stream_message(session_id, "任务"):
 - `tool_result`
 - `tool_error`
 - `tool_cancelled`
+- `run_cancelled`
 - `run_complete`
 - `run_error`
 
@@ -95,6 +99,7 @@ runtime = AgentRuntime(load_config())
 runtime.register_callback("stream", lambda chunk: print(chunk.content, end=""))
 result = await runtime.run("总结 README", mode="act", stream=True)
 runtime.flush_session()
+await runtime.aclose()
 ```
 
 常用公开方法：
@@ -103,6 +108,8 @@ runtime.flush_session()
 await runtime.run(task, mode="act", stream=True)
 await runtime.chat(message, stream=True)
 await runtime.execute_approved_plan(stream=True)
+runtime.cancel_run("Cancelled by host")
+await runtime.aclose()
 runtime.clear_conversation()
 runtime.resume_session(session_id)
 runtime.get_sessions()
@@ -256,7 +263,7 @@ http_result = guard.check_http_request("https://example.com", method="GET")
 tool_result = guard.check_tool_call("execute_command", {"command": "git status"})
 ```
 
-`GuardResult` 包含是否允许、风险等级、原因和 metadata。`request`、`auto`、`full` 只控制审批策略，不能覆盖 hard block、显式 deny、网络/路径限制或 OS 进程沙箱。
+`GuardResult` 包含是否允许、风险等级、原因和 metadata。`request`、`auto`、`full` 只控制审批策略，不能覆盖 hard block、显式 deny、网络/路径限制或 OS 进程沙箱。配置展示、工具事件、工具 observation 和 transcript 默认经过密钥脱敏。
 
 ## 扩展入口
 
@@ -264,6 +271,6 @@ tool_result = guard.check_tool_call("execute_command", {"command": "git status"}
 - Tool：继承 `BaseTool`，通过 `AgentRuntime.register_tool()` 注册
 - Skill：新增 `<scope>/skills/<name>/SKILL.md`
 - MCP：通过 `MCPServerConfig` 和 `MCPManager` 接入
-- Plugin：在项目插件目录声明工具、slash command 和 hooks，并经过 trust/lock 检查
+- Plugin：在项目插件目录声明工具、slash command 和 hooks，并经过工作区路径、内容摘要和 lock 检查
 
 这些 Python API 仍处于 `0.x` 阶段。集成代码应优先使用 `OpenNovaClient`、`SDKEvent`、`BaseTool` 和配置类型等明确入口，避免依赖带下划线的内部方法。

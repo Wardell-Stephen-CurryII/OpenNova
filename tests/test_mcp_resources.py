@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 import pytest
 
 from opennova.mcp.connector import MCPConnector
@@ -107,9 +110,10 @@ async def test_mcp_resource_tools_use_manager_and_return_structured_metadata():
     assert read_result.metadata["server_name"] == "docs"
 
 
-def test_runtime_registers_mcp_resource_tools_when_mcp_disabled():
+def test_runtime_registers_mcp_resource_tools_when_mcp_disabled(tmp_path: Path, monkeypatch):
     from opennova.runtime.agent import AgentRuntime
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     runtime = AgentRuntime(
         {
             "default_provider": "deepseek",
@@ -126,3 +130,4 @@ def test_runtime_registers_mcp_resource_tools_when_mcp_disabled():
     assert "list_mcp_resources" in runtime_tools
     assert "read_mcp_resource" in runtime_tools
     assert "list_mcp_resources" not in registry.list_names()
+    asyncio.run(runtime.aclose())

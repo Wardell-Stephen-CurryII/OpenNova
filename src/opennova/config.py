@@ -9,11 +9,14 @@ Handles loading configuration from:
 """
 
 import os
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from opennova.security.secrets import redact_sensitive_data
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "default_provider": "deepseek",
@@ -110,13 +113,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
 class Config:
     """Configuration container."""
 
-    data: dict[str, Any] = field(default_factory=lambda: DEFAULT_CONFIG.copy())
+    data: dict[str, Any] = field(default_factory=lambda: deepcopy(DEFAULT_CONFIG))
     config_path: str | None = None
+
+    def __post_init__(self) -> None:
+        self.data = deepcopy(self.data)
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by key (supports dot notation)."""
         keys = key.split(".")
-        value = self.data
+        value: Any = self.data
 
         for k in keys:
             if isinstance(value, dict):
@@ -135,11 +141,35 @@ class Config:
         data = self.data
 
         for k in keys[:-1]:
-            if k not in data:
-                data[k] = {}
-            data = data[k]
+            child = data.get(k)
+            if not isinstance(child, dict):
+                child = {}
+                data[k] = child
+            data = child
 
         data[keys[-1]] = value
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        """Provide the mutable-mapping operation used by extension loaders."""
+        return self.data.setdefault(key, deepcopy(default))
+
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.data[key] = value
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.data
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return an isolated mutable snapshot for runtime ownership."""
+        return deepcopy(self.data)
+
+    def redacted_data(self) -> dict[str, Any]:
+        """Return a safe representation for terminal and diagnostic output."""
+        redacted = redact_sensitive_data(self.data)
+        return redacted if isinstance(redacted, dict) else {}
 
     def save(self, path: str | None = None) -> None:
         """Save configuration to file."""
@@ -155,21 +185,36 @@ class Config:
     def get_mcp_servers(self) -> list[dict[str, Any]]:
         """Get MCP server configurations."""
         mcp_config = self.get("mcp", {})
+        if not isinstance(mcp_config, dict):
+            return []
         if not mcp_config.get("enabled", True):
             return []
-        return mcp_config.get("servers", [])
+        servers = mcp_config.get("servers", [])
+        if not isinstance(servers, list):
+            return []
+        return [deepcopy(server) for server in servers if isinstance(server, dict)]
 
     def get_skill_dirs(self) -> list[str]:
         """Get skill directories to load from."""
         skills_config = self.get("skills", {})
+        if not isinstance(skills_config, dict):
+            return []
         if not skills_config.get("enabled", True):
             return []
-        return skills_config.get("dirs", [])
+        directories = skills_config.get("dirs", [])
+        if not isinstance(directories, list):
+            return []
+        return [str(directory) for directory in directories]
 
     def get_excluded_skills(self) -> list[str]:
         """Get list of excluded skill names."""
         skills_config = self.get("skills", {})
-        return skills_config.get("exclude", [])
+        if not isinstance(skills_config, dict):
+            return []
+        excluded = skills_config.get("exclude", [])
+        if not isinstance(excluded, list):
+            return []
+        return [str(name) for name in excluded]
 
 
 def _expand_env_vars(value: Any) -> Any:
@@ -188,15 +233,24 @@ def _expand_env_vars(value: Any) -> Any:
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deep merge two dictionaries."""
-    result = base.copy()
+    result = deepcopy(base)
 
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
         else:
-            result[key] = value
+            result[key] = deepcopy(value)
 
     return result
+
+
+def _config_mapping(value: Any, source: str) -> dict[str, Any]:
+    """Validate that one YAML document can participate in config merging."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Configuration in {source} must be a YAML mapping")
+    return value
 
 
 def find_config_file() -> Path | None:
@@ -240,13 +294,13 @@ def load_config(
         if env_file.exists():
             load_dotenv(env_file)
 
-    config_data = DEFAULT_CONFIG.copy()
+    config_data = deepcopy(DEFAULT_CONFIG)
     loaded_path = None
 
     global_config = Path.home() / ".opennova" / "config.yaml"
     if global_config.exists():
         with open(global_config) as f:
-            global_data = yaml.safe_load(f) or {}
+            global_data = _config_mapping(yaml.safe_load(f), str(global_config))
             config_data = _deep_merge(config_data, global_data)
             loaded_path = str(global_config)
 
@@ -254,18 +308,18 @@ def load_config(
         config_file = Path(config_path)
         if config_file.exists():
             with open(config_file) as f:
-                file_data = yaml.safe_load(f) or {}
+                file_data = _config_mapping(yaml.safe_load(f), str(config_file))
                 config_data = _deep_merge(config_data, file_data)
                 loaded_path = str(config_file)
     else:
         project_config = Path(".opennova/config.yaml")
         if project_config.exists():
             with open(project_config) as f:
-                project_data = yaml.safe_load(f) or {}
+                project_data = _config_mapping(yaml.safe_load(f), str(project_config))
                 config_data = _deep_merge(config_data, project_data)
                 loaded_path = str(project_config)
 
-    config_data = _expand_env_vars(config_data)
+    config_data = _config_mapping(_expand_env_vars(config_data), "expanded configuration")
 
     return Config(data=config_data, config_path=loaded_path)
 

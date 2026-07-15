@@ -64,7 +64,7 @@ For focused work, run the smallest relevant pytest file first. The UTF-8 environ
 
 ## Runtime and tools
 
-`AgentRuntime` owns configuration, providers, context, state, sessions, plugins, Skills, MCP, and the tool registry. `AgentLoop` performs model/tool iterations and emits callbacks plus canonical `ToolEvent` values.
+`AgentRuntime` owns configuration, providers, context, state, sessions, plugins, Skills, MCP, the tool registry, tasks, and the active `RunHandle`. `AgentLoop` performs model/tool iterations and emits callbacks plus canonical `ToolEvent` values. Cancellation must propagate through the shared `CancellationToken`; SDK, TUI, and one-shot callers must close runtimes with `aclose()`.
 
 Built-in tools are grouped as follows:
 
@@ -108,11 +108,13 @@ Permission modes are `request`, `auto`, and `full`. Full mode skips ordinary app
 
 File operations must use the shared sandbox. Shell execution must pass through command policy and the process sandbox plan. External tool and MCP calls must preserve security context and audit metadata. Never log unredacted secrets.
 
+Inspection commands such as `list-tools` must use the side-effect-free inspection profile. They must not create a provider/session, connect MCP, or import executable project extensions.
+
 ## Skills, plugins, and MCP
 
 Skills use `~/.opennova/skills/<name>/SKILL.md`, `.opennova/skills/<name>/SKILL.md`, or configured roots. Preserve namespaced resolution, invocation permissions, argument substitution, path activation, and ranking.
 
-Project plugins are untrusted until explicitly trusted. Keep lockfile, drift, warning, and audit behavior intact when extending plugin loading. MCP currently supports stdio and SSE; WebSocket is represented in types but intentionally rejected as unsupported.
+Project plugins and Python hooks are untrusted until explicitly trusted. Trust records live outside the repository and are bound to the canonical workspace plus current content digest; content drift must disable active contributions until re-trusted. Keep lockfile, drift, warning, and audit behavior intact when extending plugin loading. MCP currently supports stdio and SSE; WebSocket is represented in types but intentionally rejected as unsupported.
 
 ## Tests and style
 

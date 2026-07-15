@@ -37,9 +37,7 @@ Summary:"""
         previous_summary: str | None = None,
     ) -> str:
         if previous_summary:
-            previous_summary_block = (
-                "<previous_summary>\n{previous_summary}\n</previous_summary>"
-            )
+            previous_summary_block = f"<previous_summary>\n{previous_summary}\n</previous_summary>"
         else:
             previous_summary_block = ""
         return self.COMPRESSION_PROMPT.format(

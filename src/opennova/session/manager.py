@@ -4,22 +4,27 @@ Mirrors Claude Code's session storage: each session is a UUID-named JSONL file
 in ``~/.opennova/sessions/<sanitized-project-path>/``.
 """
 
+import hashlib
+import importlib
 import json
 import os
 import re
 import tempfile
 import threading
+import unicodedata
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+_fcntl: Any
 try:
-    import fcntl
+    _fcntl = importlib.import_module("fcntl")
 except ImportError:  # pragma: no cover - non-POSIX fallback
-    fcntl = None
+    _fcntl = None
 
 SESSION_SCHEMA_VERSION = 2
 DEFAULT_PERSISTENCE_CONFIG = {
@@ -31,8 +36,21 @@ DEFAULT_PERSISTENCE_CONFIG = {
 
 
 def _sanitize_path(path: str) -> str:
-    """Convert a filesystem path into a safe directory name."""
+    """Return the pre-0.4.2 project directory key for migration only."""
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", str(Path(path).resolve()))
+
+
+def _project_directory_name(path: str | Path) -> str:
+    """Build a readable collision-resistant key from a canonical project path."""
+    resolved = Path(path).resolve()
+    normalized_path = unicodedata.normalize("NFC", str(resolved))
+    raw_slug = unicodedata.normalize("NFKC", resolved.name or "root")
+    slug = "".join(
+        character if character.isalnum() or character in "-_" else "-" for character in raw_slug
+    )
+    slug = re.sub(r"[-_]{2,}", "-", slug).strip("-_") or "project"
+    digest = hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()[:12]
+    return f"{slug[:48]}-{digest}"
 
 
 @dataclass
@@ -100,8 +118,12 @@ class SessionManager:
     ) -> None:
         resolved = str(Path(project_path).resolve())
         self._project_root = Path(resolved)
-        self._sessions_dir = Path.home() / ".opennova" / "sessions" / _sanitize_path(resolved)
+        self._sessions_root = (Path.home() / ".opennova" / "sessions").resolve()
+        self._sessions_dir = self._sessions_root / _project_directory_name(resolved)
+        legacy_dir = self._sessions_root / _sanitize_path(resolved)
+        self._legacy_sessions_dir = legacy_dir if legacy_dir != self._sessions_dir else None
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_verified_legacy_sessions()
         self._session_id: str | None = None
         self._file: Path | None = None
         self._message_count: int = 0
@@ -129,7 +151,7 @@ class SessionManager:
         """Generate a new session ID and prepare the file (lazy creation)."""
         self.flush_runtime_events()
         self._session_id = str(uuid.uuid4())
-        self._file = self._sessions_dir / f"{self._session_id}.jsonl"
+        self._file = self._session_path(self._session_id)
         self._message_count = 0
         self._first_prompt = None
         self._title = None
@@ -141,8 +163,14 @@ class SessionManager:
     def resume_session(self, session_id: str) -> str:
         """Switch the active writer back to an existing session file."""
         self.flush_runtime_events()
-        self._session_id = session_id
-        self._file = self._sessions_dir / f"{session_id}.jsonl"
+        canonical_id = self._validate_session_id(session_id)
+        source = self._resolve_session_file(canonical_id)
+        if not source.exists():
+            raise FileNotFoundError(f"Session not found: {canonical_id}")
+        if source.parent != self._sessions_dir.resolve():
+            source = self._copy_legacy_session_for_resume(source, canonical_id)
+        self._session_id = canonical_id
+        self._file = source
         self._message_count = 0
         self._first_prompt = None
         self._title = None
@@ -319,8 +347,7 @@ class SessionManager:
             self._last_snapshot_revision = snapshot_revision
             self._events_since_snapshot = len(retained)
             self._journal_bytes_since_snapshot = sum(
-                len(json.dumps(entry, ensure_ascii=False).encode("utf-8")) + 1
-                for entry in retained
+                len(json.dumps(entry, ensure_ascii=False).encode("utf-8")) + 1 for entry in retained
             )
             self._last_snapshot_args = {
                 "messages": list(messages),
@@ -410,9 +437,7 @@ class SessionManager:
             needs_header = not self._header_written
             with open(self._file, "a", encoding="utf-8") as stream:
                 if needs_header:
-                    stream.write(
-                        json.dumps(self._session_header(), ensure_ascii=False) + "\n"
-                    )
+                    stream.write(json.dumps(self._session_header(), ensure_ascii=False) + "\n")
                     self._header_written = True
                 for entry in entries:
                     stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -445,21 +470,21 @@ class SessionManager:
                     Path(temporary_path).unlink()
 
     @contextmanager
-    def _file_lock(self, *, exclusive: bool):
+    def _file_lock(self, *, exclusive: bool) -> Iterator[None]:
         if self._file is None:
             yield
             return
         lock_path = self._file.with_suffix(self._file.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "a+", encoding="utf-8") as lock_stream:
-            if fcntl is not None:
-                operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-                fcntl.flock(lock_stream.fileno(), operation)
+            if _fcntl is not None:
+                operation = _fcntl.LOCK_EX if exclusive else _fcntl.LOCK_SH
+                _fcntl.flock(lock_stream.fileno(), operation)
             try:
                 yield
             finally:
-                if fcntl is not None:
-                    fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+                if _fcntl is not None:
+                    _fcntl.flock(lock_stream.fileno(), _fcntl.LOCK_UN)
 
     def _session_header(self) -> dict[str, Any]:
         if self._created_at is None:
@@ -534,7 +559,7 @@ class SessionManager:
     def _read_v2_runtime(
         self, session_id: str
     ) -> tuple[int, dict[str, Any], list[dict[str, Any]], list[str], int]:
-        file = self._sessions_dir / f"{session_id}.jsonl"
+        file = self._resolve_session_file(session_id)
         if not file.exists():
             return 1, {}, [], [], 0
         warnings: list[str] = []
@@ -568,10 +593,14 @@ class SessionManager:
             )
 
         snapshots = [entry for entry in entries if entry.get("type") == "runtime_snapshot"]
-        snapshot_entry = max(snapshots, key=lambda item: int(item.get("revision", 0))) if snapshots else None
+        snapshot_entry = (
+            max(snapshots, key=lambda item: int(item.get("revision", 0))) if snapshots else None
+        )
         if snapshot_entry:
             snapshot = dict(snapshot_entry.get("state") or {})
-            snapshot_revision = int(snapshot_entry.get("revision", snapshot.get("revision", 0)))
+            snapshot_revision = int(
+                snapshot_entry.get("revision", snapshot.get("revision", 0)) or 0
+            )
             schema_version = SESSION_SCHEMA_VERSION
         else:
             legacy_snapshot = next(
@@ -607,7 +636,7 @@ class SessionManager:
 
     def get_compression_markers(self, session_id: str) -> list[CompressionMarker]:
         """Read all compression markers from a session JSONL file."""
-        file = self._sessions_dir / f"{session_id}.jsonl"
+        file = self._resolve_session_file(session_id)
         if not file.exists():
             return []
         markers: list[CompressionMarker] = []
@@ -632,9 +661,7 @@ class SessionManager:
 
     # ── load ────────────────────────────────────────────────────────
 
-    def load_session(
-        self, session_id: str, apply_compression: bool = True
-    ) -> list[Any]:
+    def load_session(self, session_id: str, apply_compression: bool = True) -> list[Any]:
         """Load and deserialize messages from a session JSONL file.
 
         If apply_compression is True and compression markers exist, only
@@ -645,7 +672,7 @@ class SessionManager:
         """
         from opennova.providers.base import Message
 
-        file = self._sessions_dir / f"{session_id}.jsonl"
+        file = self._resolve_session_file(session_id)
         if not file.exists():
             return []
 
@@ -709,10 +736,7 @@ class SessionManager:
     def list_sessions(self) -> list[SessionMeta]:
         """Return metadata for all saved sessions, newest first."""
         result: list[SessionMeta] = []
-        if not self._sessions_dir.exists():
-            return result
-
-        for file in sorted(self._sessions_dir.glob("*.jsonl")):
+        for file in self._iter_session_files():
             if not self._is_valid_uuid(file.stem):
                 continue
             stat = file.stat()
@@ -757,7 +781,7 @@ class SessionManager:
 
     def _load_transcript_events(self, session_id: str) -> list[SessionTranscriptEvent]:
         """Load replayable transcript events from a session file."""
-        file = self._sessions_dir / f"{session_id}.jsonl"
+        file = self._resolve_session_file(session_id)
         if not file.exists():
             return []
 
@@ -780,7 +804,7 @@ class SessionManager:
 
     def _load_plan_state(self, session_id: str) -> dict[str, Any]:
         """Load persisted runtime plan state from a session file."""
-        file = self._sessions_dir / f"{session_id}.jsonl"
+        file = self._resolve_session_file(session_id)
         if not file.exists():
             return {}
 
@@ -833,6 +857,113 @@ class SessionManager:
             return True
         except ValueError:
             return False
+
+    @staticmethod
+    def _validate_session_id(session_id: str) -> str:
+        """Return a canonical UUID or reject path-like and malformed identifiers."""
+        if not isinstance(session_id, str):
+            raise ValueError("Session id must be a UUID string")
+        try:
+            parsed = uuid.UUID(session_id)
+        except (ValueError, AttributeError) as exc:
+            raise ValueError(f"Invalid session id: {session_id!r}") from exc
+        canonical = str(parsed)
+        if canonical != session_id.lower():
+            raise ValueError(f"Session id must use canonical UUID form: {canonical}")
+        return canonical
+
+    def _session_path(self, session_id: str, directory: Path | None = None) -> Path:
+        """Create a confined path for a validated session UUID."""
+        canonical_id = self._validate_session_id(session_id)
+        root = (directory or self._sessions_dir).resolve()
+        candidate = (root / f"{canonical_id}.jsonl").resolve()
+        if candidate.parent != root:
+            raise ValueError("Session path escapes the configured session directory")
+        return candidate
+
+    def _resolve_session_file(self, session_id: str) -> Path:
+        """Resolve a session in the current directory or a read-only legacy directory."""
+        current = self._session_path(session_id)
+        if current.exists():
+            return current
+        if self._legacy_sessions_dir is not None:
+            legacy = self._session_path(session_id, self._legacy_sessions_dir)
+            if legacy.exists() and self._legacy_session_belongs_to_project(legacy) is not False:
+                return legacy
+        return current
+
+    def _iter_session_files(self) -> list[Path]:
+        """List current and compatible legacy files without duplicate session ids."""
+        files: dict[str, Path] = {}
+        if self._sessions_dir.exists():
+            for file in sorted(self._sessions_dir.glob("*.jsonl")):
+                if self._is_valid_uuid(file.stem):
+                    files[file.stem] = file
+        legacy = self._legacy_sessions_dir
+        if legacy is not None and legacy.exists():
+            for file in sorted(legacy.glob("*.jsonl")):
+                if (
+                    self._is_valid_uuid(file.stem)
+                    and file.stem not in files
+                    and self._legacy_session_belongs_to_project(file) is not False
+                ):
+                    files[file.stem] = file
+        return list(files.values())
+
+    def _legacy_session_belongs_to_project(self, file: Path) -> bool | None:
+        """Return verified ownership, or None for headerless legacy sessions."""
+        for entry in self._read_entries_unlocked(file):
+            if entry.get("type") != "session_header":
+                continue
+            project_root = entry.get("project_root")
+            if not project_root:
+                return None
+            try:
+                return Path(str(project_root)).resolve() == self._project_root
+            except (OSError, RuntimeError):
+                return False
+        return None
+
+    def _migrate_verified_legacy_sessions(self) -> None:
+        """Atomically move only legacy sessions whose project identity is verified."""
+        legacy = self._legacy_sessions_dir
+        if legacy is None or not legacy.exists():
+            return
+        for source in legacy.glob("*.jsonl"):
+            if not self._is_valid_uuid(source.stem):
+                continue
+            if self._legacy_session_belongs_to_project(source) is not True:
+                continue
+            destination = self._session_path(source.stem)
+            if destination.exists():
+                continue
+            os.replace(source, destination)
+
+    def _copy_legacy_session_for_resume(self, source: Path, session_id: str) -> Path:
+        """Copy an ambiguous v1 legacy session before appending, preserving its source."""
+        destination = self._session_path(session_id)
+        if destination.exists():
+            return destination
+        temporary_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=self._sessions_dir,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary_path = stream.name
+                stream.write(source.read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, destination)
+            temporary_path = None
+            return destination
+        finally:
+            if temporary_path:
+                with suppress(FileNotFoundError):
+                    Path(temporary_path).unlink()
 
     # ── clear ───────────────────────────────────────────────────────
 

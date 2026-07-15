@@ -5,6 +5,7 @@ This module defines the abstract base class for all LLM providers
 and the standard data structures used throughout the system.
 """
 
+import asyncio
 import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -15,6 +16,102 @@ from enum import StrEnum
 from typing import Any, Literal
 
 ToolChoice = Literal["auto", "required", "none"]
+
+
+class ProviderError(RuntimeError):
+    """Stable provider failure exposed to runtime and SDK consumers."""
+
+    code = "provider_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str | None = None,
+        retryable: bool = False,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.retryable = retryable
+        self.status_code = status_code
+
+
+class ProviderProtocolError(ProviderError):
+    code = "provider_protocol_error"
+
+
+class ProviderRateLimitError(ProviderError):
+    code = "provider_rate_limit"
+
+
+class ProviderTimeoutError(ProviderError):
+    code = "provider_timeout"
+
+
+class ProviderContextLengthError(ProviderError):
+    code = "provider_context_length"
+
+
+class ProviderRetryExhaustedError(ProviderError):
+    code = "provider_retry_exhausted"
+
+
+def parse_tool_arguments(raw: Any, *, tool_name: str, tool_call_id: str) -> dict[str, Any]:
+    """Parse provider tool arguments or reject malformed/non-object payloads."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ProviderProtocolError(
+            f"Malformed arguments for tool '{tool_name}' ({tool_call_id}): {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ProviderProtocolError(
+            f"Arguments for tool '{tool_name}' ({tool_call_id}) must be a JSON object"
+        )
+    return parsed
+
+
+def normalize_provider_error(exc: Exception, *, provider: str) -> ProviderError:
+    """Map SDK-specific failures to a small provider-neutral error hierarchy."""
+    if isinstance(exc, ProviderError):
+        return exc
+
+    name = type(exc).__name__.lower()
+    message = str(exc) or type(exc).__name__
+    lowered = message.lower()
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+
+    if status_code == 429 or "ratelimit" in name or "rate limit" in lowered:
+        return ProviderRateLimitError(
+            message, provider=provider, retryable=True, status_code=status_code
+        )
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or "timeout" in name:
+        return ProviderTimeoutError(
+            message, provider=provider, retryable=True, status_code=status_code
+        )
+    if "context" in lowered and any(word in lowered for word in ("length", "window", "token")):
+        return ProviderContextLengthError(
+            message, provider=provider, retryable=False, status_code=status_code
+        )
+    retry_markers = ("max retries", "retries exhausted", "retry exhausted")
+    if "retry" in name or any(marker in lowered for marker in retry_markers):
+        return ProviderRetryExhaustedError(
+            message,
+            provider=provider,
+            retryable=True,
+            status_code=status_code,
+        )
+    return ProviderError(
+        message,
+        provider=provider,
+        retryable=bool(status_code and status_code >= 500),
+        status_code=status_code,
+    )
 
 
 class FinishReason(StrEnum):
@@ -141,7 +238,9 @@ class Message:
         msg: dict[str, Any] = {"role": self.role, "content": self.content}
 
         if self.role == "assistant" and self.tool_calls:
-            content_blocks = [{"type": "text", "text": self.content}]
+            content_blocks: list[dict[str, Any]] = []
+            if self.content:
+                content_blocks.append({"type": "text", "text": self.content})
             for tc in self.tool_calls:
                 content_blocks.append(
                     {
@@ -245,6 +344,8 @@ class StreamChunk:
 
 class BaseLLMProvider(ABC):
     """
+
+    provider_name = "base"
     Abstract base class for LLM providers.
 
     All provider implementations must inherit from this class and implement
@@ -296,7 +397,7 @@ class BaseLLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def stream_chat(
+    def stream_chat(
         self,
         messages: list[Message],
         tools: list[ToolSchema] | None = None,
@@ -313,7 +414,7 @@ class BaseLLMProvider(ABC):
         Yields:
             Stream chunks as they arrive
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def get_model_info(self) -> dict[str, Any]:
@@ -327,12 +428,34 @@ class BaseLLMProvider(ABC):
 
     def _build_system_prompt(self, messages: list[Message]) -> str | None:
         """Combine system messages in order for providers with a system field."""
-        parts = [msg.content.strip() for msg in messages if msg.role == "system" and msg.content.strip()]
+        parts = [
+            msg.content.strip() for msg in messages if msg.role == "system" and msg.content.strip()
+        ]
         return "\n\n".join(parts) or None
 
     def _filter_messages_for_anthropic(self, messages: list[Message]) -> list[Message]:
         """Filter out system messages for Anthropic API."""
         return [msg for msg in messages if msg.role != "system"]
+
+    def _messages_to_anthropic(self, messages: list[Message]) -> list[dict[str, Any]]:
+        """Serialize messages while grouping one assistant turn's tool results."""
+        serialized: list[dict[str, Any]] = []
+        for message in self._filter_messages_for_anthropic(messages):
+            if message.role == "tool" and not message.tool_call_id:
+                raise ProviderProtocolError("Anthropic tool results require a tool_call_id")
+            converted = message.to_anthropic_format()
+            if message.role == "tool" and serialized:
+                previous = serialized[-1]
+                previous_content = previous.get("content")
+                if (
+                    previous.get("role") == "user"
+                    and isinstance(previous_content, list)
+                    and all(block.get("type") == "tool_result" for block in previous_content)
+                ):
+                    previous_content.extend(converted["content"])
+                    continue
+            serialized.append(converted)
+        return serialized
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(model={self.model})"

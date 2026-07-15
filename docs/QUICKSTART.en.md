@@ -102,6 +102,7 @@ Drag over text directly in the message log, then press `Ctrl+Shift+C`. `Cmd+C` a
 | `/resume [id]` | Pick or restore a session |
 | `/permissions ...` | Inspect or update approval rules |
 | `/plugins ...` | Manage project plugins |
+| `/hooks [trust|untrust]` | Inspect or manage project hook trust |
 | `/automations ...` | Manage local automations |
 | `/diagnostics [path]` | Run Python diagnostics |
 | `/checkpoint ...` | Inspect or restore file checkpoints |

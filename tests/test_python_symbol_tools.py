@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 
@@ -44,7 +45,9 @@ def test_python_definition_returns_location_and_context(tmp_path: Path):
     from opennova.tools.diagnostics_tools import PythonDefinitionTool
 
     _write_sample(tmp_path)
-    result = PythonDefinitionTool(config={"working_dir": str(tmp_path)}).execute("helper", str(tmp_path))
+    result = PythonDefinitionTool(config={"working_dir": str(tmp_path)}).execute(
+        "helper", str(tmp_path)
+    )
 
     assert result.success is True
     assert result.metadata["definition"]["name"] == "helper"
@@ -79,9 +82,10 @@ def test_python_symbol_tools_reject_outside_sandbox(tmp_path: Path):
     assert "outside allowed directories" in (result.error or "").lower()
 
 
-def test_runtime_registers_python_symbol_tools():
+def test_runtime_registers_python_symbol_tools(tmp_path: Path, monkeypatch):
     from opennova.runtime.agent import AgentRuntime
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     runtime = AgentRuntime(
         {
             "default_provider": "deepseek",
@@ -95,3 +99,4 @@ def test_runtime_registers_python_symbol_tools():
 
     tools = set(runtime.get_tools())
     assert {"python_symbols", "python_definition", "python_references"}.issubset(tools)
+    asyncio.run(runtime.aclose())

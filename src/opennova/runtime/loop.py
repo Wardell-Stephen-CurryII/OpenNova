@@ -12,13 +12,15 @@ import asyncio
 import os
 import re
 import traceback
+import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
 from opennova.hooks import HookManager
-from opennova.memory.context import ContextManager
+from opennova.memory.context import ContextCapacityError, ContextManager, MessageAddResult
 from opennova.memory.working import ActionStatus, WorkingMemory
 from opennova.providers.base import (
     BaseLLMProvider,
@@ -27,10 +29,18 @@ from opennova.providers.base import (
     Message,
     ToolCall,
 )
-from opennova.runtime.events import ToolEvent, ToolUseContext
+from opennova.runtime.cancellation import CancellationToken
+from opennova.runtime.events import (
+    ToolEvent,
+    ToolEventType,
+    ToolUseContext,
+    reset_current_tool_context,
+    set_current_tool_context,
+)
 from opennova.runtime.state import AgentState
 from opennova.runtime.workflow import WorkflowDecision, WorkflowRouter, WorkflowRoutingResult
 from opennova.security.guardrails import Guardrails, GuardResult, RiskLevel
+from opennova.security.secrets import redact_sensitive_data
 from opennova.skills.hook_adapter import register_skill_hooks
 from opennova.skills.registry import SkillRegistry
 from opennova.tools.base import ToolRegistry, ToolResult
@@ -116,6 +126,7 @@ class ReActLoop:
         working_dir: str | None = None,
         hook_manager: HookManager | None = None,
         audit_logger: Any | None = None,
+        cancellation_token: CancellationToken | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -136,12 +147,15 @@ class ReActLoop:
         self.iteration_start_callback = iteration_start_callback
         self.interaction_callback = interaction_callback
         self.skill_registry = skill_registry
-        self.context_manager = context_manager if context_manager is not None else ContextManager(model=llm.model)
+        self.context_manager = (
+            context_manager if context_manager is not None else ContextManager(model=llm.model)
+        )
         self.working_memory = working_memory
         self.guardrails = guardrails
         self.working_dir = working_dir
         self.hook_manager = hook_manager
         self.audit_logger = audit_logger
+        self.cancellation_token = cancellation_token or CancellationToken()
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
@@ -176,8 +190,10 @@ class ReActLoop:
             self.context_manager.add_message(message)
 
     def add_message(self, message: Message) -> None:
-        """Add a message to the context."""
-        self.context_manager.add_message(message)
+        """Add a message to the context and fail loudly on capacity rejection."""
+        result = self.context_manager.add_message(message)
+        if isinstance(result, MessageAddResult) and not result:
+            raise ContextCapacityError(result.reason or "Message did not fit in context")
 
     async def run(
         self,
@@ -209,7 +225,7 @@ class ReActLoop:
             self.state.reset_execution(task)
         else:
             self.state.reset(task)
-        self.active_run_id = self.state.run_id
+        self.active_run_id = self.state.run_id or uuid.uuid4().hex
         self.on_thought = on_thought
         self.on_action = on_action
         self.on_result = on_result
@@ -234,7 +250,8 @@ class ReActLoop:
                 pending_routed_action = ParsedAction(
                     tool_name="enter_plan_mode",
                     arguments={},
-                    thought=workflow.reason or "The user wants a reviewable plan before implementation.",
+                    thought=workflow.reason
+                    or "The user wants a reviewable plan before implementation.",
                 )
             elif not workflow.resolved:
                 self.add_message(
@@ -327,27 +344,42 @@ class ReActLoop:
                             continue
 
                         tool_context = self._start_tool_context(action)
-                        self._emit_tool_event(
-                            ToolEvent(
-                                type="tool_start",
-                                tool_id=tool_context.tool_id,
-                                tool_name=action.tool_name,
-                                arguments=dict(action.arguments),
-                                started_at=tool_context.started_at,
-                                risk_level=tool_context.risk_level,
+                        try:
+                            self._emit_tool_event(
+                                ToolEvent(
+                                    type="tool_start",
+                                    tool_id=tool_context.tool_id,
+                                    tool_name=action.tool_name,
+                                    arguments=dict(tool_context.arguments),
+                                    started_at=tool_context.started_at,
+                                    risk_level=tool_context.risk_level,
+                                )
                             )
-                        )
-                        if self.on_action:
-                            self.on_action(action.tool_name, action.arguments)
+                            if self.on_action:
+                                with suppress(Exception):
+                                    self.on_action(action.tool_name, tool_context.arguments)
 
-                        self._report_progress(activity=f"Running tool: {action.tool_name}", last_tool_name=action.tool_name)
-                        result = await self._act(action)
+                            self._report_progress(
+                                activity=f"Running tool: {action.tool_name}",
+                                last_tool_name=action.tool_name,
+                            )
+                            result = await self._act(action)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            result = ToolResult(
+                                success=False,
+                                output="",
+                                error=f"Tool execution callback failed: {exc}",
+                            )
+                        result = self._redact_tool_result_for_observation(result)
+                        self._finish_tool_context(result)
                         if self.state.run_id != self.active_run_id:
                             break
-                        self._finish_tool_context(result)
 
                         if self.on_result:
-                            self.on_result(result)
+                            with suppress(Exception):
+                                self.on_result(result)
 
                         self._report_progress(
                             activity=f"Completed tool: {action.tool_name}",
@@ -372,8 +404,10 @@ class ReActLoop:
 
                 except Exception as e:
                     self.state.increment_error(self.active_run_id)
-                    error_detail = f"Error in iteration {self.state.iteration}: {type(e).__name__}: {e}"
-                    tb = traceback.format_exc()
+                    error_detail = self._redacted_text(
+                        f"Error in iteration {self.state.iteration}: {type(e).__name__}: {e}"
+                    )
+                    tb = self._redacted_text(traceback.format_exc())
                     full_error = f"{error_detail}\n\nTraceback:\n{tb}"
                     self._errors.append(full_error)
                     print(f"\n[ERROR] {full_error}\n")
@@ -383,6 +417,11 @@ class ReActLoop:
                             content=f"An error occurred: {error_detail}. Please try a different approach.",
                         )
                     )
+        except asyncio.CancelledError:
+            self.cancellation_token.cancel("Run cancelled")
+            self.state.cancel_run(self.active_run_id)
+            self._cancel_tool_context(self.cancellation_token.reason)
+            raise
         finally:
             self._clear_skill_execution_context()
 
@@ -446,7 +485,8 @@ class ReActLoop:
             "iteration": self.state.iteration,
             "is_complete": mark_complete,
         }
-        self.progress_callback(payload)
+        with suppress(Exception):
+            self.progress_callback(payload)
 
     def _emit_iteration_start(self) -> None:
         """Notify listeners before a new iteration begins."""
@@ -457,16 +497,60 @@ class ReActLoop:
         """Create and store canonical context for the current tool call."""
         tool = self.tool_registry.get(action.tool_name)
         self._tool_event_sequence += 1
-        tool_id = f"tool_{self._tool_event_sequence:04d}"
+        run_id = getattr(self, "active_run_id", None) or uuid.uuid4().hex
+        tool_id = f"tool_{run_id}_{self._tool_event_sequence:04d}"
         max_result_chars = getattr(tool, "max_result_chars", None)
         self._current_tool_context = ToolUseContext(
             tool_id=tool_id,
             tool_name=action.tool_name,
-            arguments=dict(action.arguments),
+            arguments=self._redacted_arguments(action.arguments),
             started_at=perf_counter(),
             max_result_chars=max_result_chars,
+            abort_signal=self.cancellation_token,
         )
         return self._current_tool_context
+
+    def _redaction_enabled(self) -> bool:
+        """Return whether tool observations should be sanitized before persistence."""
+        guardrails = getattr(self, "guardrails", None)
+        if not guardrails:
+            return False
+        policy = guardrails.secrets_policy
+        return bool(policy.get("enabled", True)) and bool(policy.get("redact_tool_outputs", True))
+
+    def _redacted_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Build an event-safe argument copy without changing execution inputs."""
+        guardrails = getattr(self, "guardrails", None)
+        if not self._redaction_enabled() or not guardrails:
+            return dict(arguments)
+        redacted = redact_sensitive_data(
+            arguments,
+            scanner=guardrails.secret_scanner,
+        )
+        return redacted if isinstance(redacted, dict) else {}
+
+    def _redacted_text(self, text: str) -> str:
+        """Sanitize one log or observation string under the active secret policy."""
+        guardrails = getattr(self, "guardrails", None)
+        if not self._redaction_enabled() or not guardrails:
+            return text
+        return str(guardrails.secret_scanner.redact(text))
+
+    def _redact_tool_result_for_observation(self, result: ToolResult) -> ToolResult:
+        """Prevent tool-produced secrets from reaching events, memory, or transcripts."""
+        guardrails = getattr(self, "guardrails", None)
+        if not self._redaction_enabled() or not guardrails:
+            return result
+        result.output = self._redacted_text(result.output or "")
+        if result.error:
+            result.error = self._redacted_text(result.error)
+        redacted_metadata = redact_sensitive_data(
+            result.metadata,
+            scanner=guardrails.secret_scanner,
+        )
+        if isinstance(redacted_metadata, dict):
+            result.metadata = redacted_metadata
+        return result
 
     def _finish_tool_context(self, result: ToolResult) -> None:
         """Emit the final canonical event for a tool invocation."""
@@ -481,31 +565,58 @@ class ReActLoop:
             if isinstance(result.metadata, dict)
             else context.risk_level
         )
-        event_type = "tool_result" if result.success else "tool_error"
-        self._emit_tool_event(
-            ToolEvent(
-                type=event_type,
-                tool_id=context.tool_id,
-                tool_name=context.tool_name,
-                arguments=dict(context.arguments),
-                started_at=context.started_at,
-                duration_ms=int(elapsed * 1000),
-                risk_level=risk_level,
-                success=result.success,
-                output=output,
-                error=result.error,
-                diff=diff,
-                collapsible=len(output) > 1200,
-                metadata=dict(result.metadata or {}),
-            )
+        event_type: ToolEventType = (
+            "tool_cancelled"
+            if result.metadata.get("cancelled")
+            else "tool_result"
+            if result.success
+            else "tool_error"
+        )
+        event = ToolEvent(
+            type=event_type,
+            tool_id=context.tool_id,
+            tool_name=context.tool_name,
+            arguments=dict(context.arguments),
+            started_at=context.started_at,
+            duration_ms=int(elapsed * 1000),
+            risk_level=risk_level,
+            success=result.success,
+            output=output,
+            error=result.error,
+            diff=diff,
+            collapsible=len(output) > 1200,
+            metadata=dict(result.metadata or {}),
         )
         result.metadata.setdefault("tool_id", context.tool_id)
         result.metadata.setdefault("duration_ms", int(elapsed * 1000))
         self._current_tool_context = None
+        self._emit_tool_event(event)
+
+    def _cancel_tool_context(self, reason: str) -> None:
+        """Emit one terminal cancellation event for the active tool."""
+        context = self._current_tool_context
+        if context is None:
+            return
+        elapsed = max(0.0, perf_counter() - context.started_at)
+        event = ToolEvent(
+            type="tool_cancelled",
+            tool_id=context.tool_id,
+            tool_name=context.tool_name,
+            arguments=dict(context.arguments),
+            started_at=context.started_at,
+            duration_ms=int(elapsed * 1000),
+            risk_level=context.risk_level,
+            success=False,
+            error=reason,
+            metadata={"cancelled": True},
+        )
+        self._current_tool_context = None
+        self._emit_tool_event(event)
 
     def _emit_tool_event(self, event: ToolEvent) -> None:
         if self.on_tool_event:
-            self.on_tool_event(event)
+            with suppress(Exception):
+                self.on_tool_event(event)
 
     async def _think(self) -> LLMResponse:
         """
@@ -628,7 +739,11 @@ class ReActLoop:
         elif self.skill_registry:
             action = self._parse_skill_invocation(action, content)
 
-        if response.finish_reason == FinishReason.STOP and not response.tool_calls and not action.tool_name:
+        if (
+            response.finish_reason == FinishReason.STOP
+            and not response.tool_calls
+            and not action.tool_name
+        ):
             routed_action = self._route_task_to_project_init(task)
             if not routed_action:
                 routed_action = self._route_task_to_skill(task)
@@ -775,11 +890,13 @@ class ReActLoop:
             Tool execution result
         """
         tool = self.tool_registry.get(action.tool_name)
+        self.cancellation_token.raise_if_cancelled()
         action.arguments = self._normalize_tool_arguments(tool, action.arguments)
         started_at = perf_counter()
         guard_result: GuardResult | None = None
         checkpoint_metadata: dict[str, Any] = {}
         action_record = None
+        context_token = set_current_tool_context(self._current_tool_context)
         if self.working_memory:
             action_record = self.working_memory.record_action(action.tool_name, action.arguments)
 
@@ -853,6 +970,10 @@ class ReActLoop:
                 result = await tool.async_execute(**action.arguments)
             else:
                 result = tool.execute(**action.arguments)
+            if not isinstance(result, ToolResult):
+                raise TypeError(
+                    f"Tool '{action.tool_name}' returned {type(result).__name__}, expected ToolResult"
+                )
             if checkpoint_metadata:
                 result.metadata.update(checkpoint_metadata)
 
@@ -869,8 +990,15 @@ class ReActLoop:
                 )
                 if isinstance(hook_result, ToolResult):
                     result = hook_result
-                elif isinstance(hook_result, dict) and isinstance(hook_result.get("result"), ToolResult):
+                elif isinstance(hook_result, dict) and isinstance(
+                    hook_result.get("result"), ToolResult
+                ):
                     result = hook_result["result"]
+            if not isinstance(result, ToolResult):
+                raise TypeError(
+                    f"Post-tool hook for '{action.tool_name}' returned an invalid result"
+                )
+            result = self._redact_tool_result_for_observation(result)
             if self.working_memory and action_record:
                 status = ActionStatus.SUCCESS if result.success else ActionStatus.FAILED
                 self.working_memory.update_action(
@@ -910,6 +1038,8 @@ class ReActLoop:
                 started_at=started_at,
             )
             return error_result
+        finally:
+            reset_current_tool_context(context_token)
 
     def _audit_tool_action(
         self,
@@ -977,7 +1107,10 @@ class ReActLoop:
 
     def _check_tool_guard(self, action: ParsedAction) -> GuardResult:
         """Run guardrails for a pending tool action."""
-        if self._active_skill_allowed_tools is not None and action.tool_name not in self._active_skill_allowed_tools:
+        if (
+            self._active_skill_allowed_tools is not None
+            and action.tool_name not in self._active_skill_allowed_tools
+        ):
             return GuardResult(
                 allowed=False,
                 risk_level=RiskLevel.BLOCK,
@@ -1023,7 +1156,9 @@ class ReActLoop:
                 requires_confirmation=False,
                 metadata={"workflow_decision": WorkflowDecision.PLAN.value},
             )
-        plan_mode = getattr(getattr(self.state, "mode", None), "value", getattr(self.state, "mode", ""))
+        plan_mode = getattr(
+            getattr(self.state, "mode", None), "value", getattr(self.state, "mode", "")
+        )
         if plan_mode == "plan" and action.tool_name in PLAN_MODE_IMPLEMENTATION_TOOLS:
             return GuardResult(
                 allowed=False,
@@ -1057,7 +1192,9 @@ class ReActLoop:
             tool_context=tool_context,
         )
 
-    async def _confirm_warn_action(self, action: ParsedAction, guard_result: GuardResult) -> ToolResult:
+    async def _confirm_warn_action(
+        self, action: ParsedAction, guard_result: GuardResult
+    ) -> ToolResult:
         """Request user confirmation for WARN-level operations."""
         prompt_result = ToolResult(
             success=True,
@@ -1095,14 +1232,16 @@ class ReActLoop:
                 ],
                 "prompt_payload": {
                     "question": (
-                        f"{guard_result.reason}\n"
-                        f"Tool: {action.tool_name}\n"
-                        "Do you want to proceed?"
+                        f"{guard_result.reason}\nTool: {action.tool_name}\nDo you want to proceed?"
                     ),
                     "header": "Confirm",
                     "options": [
                         {"index": 1, "label": "Proceed", "description": "Execute this action now."},
-                        {"index": 2, "label": "Cancel", "description": "Skip this action and continue safely."},
+                        {
+                            "index": 2,
+                            "label": "Cancel",
+                            "description": "Skip this action and continue safely.",
+                        },
                     ],
                     "multi_select": False,
                     "free_text": False,
@@ -1149,6 +1288,7 @@ class ReActLoop:
             )
 
         return ToolResult(success=True, output="User confirmed action")
+
     async def _resolve_interaction(self, result: ToolResult) -> ToolResult:
         """Resolve an interactive tool result through the registered runtime callback."""
         self.state.begin_interaction("tool_confirmation")
@@ -1195,7 +1335,7 @@ class ReActLoop:
                 return ToolResult(
                     success=True,
                     output=f"Question: {question}\n"
-                           "User did not provide an answer. Please make the best decision.",
+                    "User did not provide an answer. Please make the best decision.",
                     metadata={
                         **result.metadata,
                         "interaction_required": False,
@@ -1222,7 +1362,7 @@ class ReActLoop:
             return ToolResult(
                 success=True,
                 output=f"Question: {first_q}\n"
-                       "User did not provide an answer. Please make the best decision.",
+                "User did not provide an answer. Please make the best decision.",
                 metadata={
                     **result.metadata,
                     "interaction_required": False,
@@ -1233,8 +1373,7 @@ class ReActLoop:
 
         # Build Claude Code-style output: 'User has answered your questions: "q"="a". ...'
         answer_parts = [
-            f'"{a.get("question", "")}"="{a.get("answer", "(skipped)")}"'
-            for a in all_answers
+            f'"{a.get("question", "")}"="{a.get("answer", "(skipped)")}"' for a in all_answers
         ]
         output = (
             f"User has answered your questions: {'; '.join(answer_parts)}. "
@@ -1253,7 +1392,9 @@ class ReActLoop:
             },
         )
 
-    async def _observe(self, action: ParsedAction, result: ToolResult, reasoning_content: str | None = None) -> None:
+    async def _observe(
+        self, action: ParsedAction, result: ToolResult, reasoning_content: str | None = None
+    ) -> None:
         """Observe one tool result while preserving the legacy helper API."""
         await self._observe_many([action], [result], reasoning_content)
 
@@ -1278,7 +1419,7 @@ class ReActLoop:
             ToolCall(
                 id=getattr(action, "tool_call_id", None) or f"call_{self.state.iteration}_{index}",
                 name=action.tool_name,
-                arguments=action.arguments,
+                arguments=self._redacted_arguments(action.arguments),
             )
             for index, action in enumerate(actions, start=1)
         ]
@@ -1288,24 +1429,28 @@ class ReActLoop:
             tool_calls=tool_calls,
             reasoning_content=reasoning_content,
         )
-        self.add_message(assistant_msg)
-
-        # Add the complete tool-result group before any follow-up user messages.
-        # Providers require every assistant tool call to be paired with a tool
-        # result before skill prompts or interaction follow-ups are injected.
-        for index, (action, result, tool_call) in enumerate(
-            zip(actions, results, tool_calls, strict=True)
-        ):
-            tool_message = Message(
-                role="tool",
-                content=result.to_string(),
-                tool_call_id=tool_call.id,
-                name=action.tool_name,
+        protocol_messages = [assistant_msg]
+        for action, result, tool_call in zip(actions, results, tool_calls, strict=True):
+            protocol_messages.append(
+                Message(
+                    role="tool",
+                    content=result.to_string(),
+                    tool_call_id=tool_call.id,
+                    name=action.tool_name,
+                )
             )
-            if index == len(actions) - 1:
-                await self.context_manager.add_message_and_compress(tool_message)
-            else:
+
+        add_group = getattr(self.context_manager, "add_messages_and_compress", None)
+        if callable(add_group):
+            insertion = await add_group(protocol_messages)
+            if isinstance(insertion, MessageAddResult) and not insertion:
+                raise ContextCapacityError(insertion.reason or "Tool protocol group did not fit")
+        else:
+            # Compatibility path for lightweight context doubles.
+            self.add_message(assistant_msg)
+            for tool_message in protocol_messages[1:-1]:
                 self.add_message(tool_message)
+            await self.context_manager.add_message_and_compress(protocol_messages[-1])
 
         for action, result in zip(actions, results, strict=True):
             if not result.metadata.get("batch_deferred"):
@@ -1339,7 +1484,9 @@ class ReActLoop:
         # For skill invocations, add the skill prompt as a user message
         # AFTER the tool result, matching Claude Code's message ordering.
         if action.tool_name == "skill" and result.success and "skill_prompt" in result.metadata:
-            skill_name = result.metadata.get("resolved_skill") or result.metadata.get("skill", "unknown")
+            skill_name = result.metadata.get("resolved_skill") or result.metadata.get(
+                "skill", "unknown"
+            )
             skill_prompt = result.metadata["skill_prompt"]
             if self.skill_registry:
                 self.skill_registry.record_skill_usage(skill_name)

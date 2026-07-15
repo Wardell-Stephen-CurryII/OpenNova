@@ -80,7 +80,7 @@ hooks:
 """.strip(),
         encoding="utf-8",
     )
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.load_enabled_plugins(config={})
     handle_plugin_command(manager, "lock")
 

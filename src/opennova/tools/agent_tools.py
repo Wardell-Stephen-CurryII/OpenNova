@@ -14,10 +14,10 @@ from datetime import datetime
 from typing import Any
 
 from opennova.providers.base import Message
-from opennova.tasks import Task, TaskStatus, TaskType
+from opennova.runtime.events import current_tool_context
+from opennova.tasks import Task, TaskManager, TaskStatus, TaskType
 from opennova.tasks.task import generate_message_id
 from opennova.tools.base import BaseTool, ToolResult
-from opennova.tools.task_tools import get_global_task_manager
 
 
 class AgentTool(BaseTool):
@@ -30,10 +30,17 @@ class AgentTool(BaseTool):
         """Initialize the agent tool with optional runtime context."""
         super().__init__(config)
         self.runtime = self.config.get("runtime")
+        configured_manager = self.config.get("task_manager") or getattr(
+            self.runtime, "task_manager", None
+        )
+        if not isinstance(configured_manager, TaskManager):
+            raise ValueError("AgentTool requires a runtime-owned TaskManager")
+        self.task_manager = configured_manager
+        self._cancellation_unsubscribers: dict[str, Any] = {}
 
     def _apply_result_to_task(self, task: Task, result: dict[str, Any], status: TaskStatus) -> None:
         """Persist final task state consistently for foreground and background agents."""
-        manager = get_global_task_manager()
+        manager = self.task_manager
         manager.update_task_status(task.id, status)
 
         pending_messages = len(task.message_queue)
@@ -91,7 +98,7 @@ class AgentTool(BaseTool):
             ToolResult with agent ID or task information
         """
         try:
-            manager = get_global_task_manager()
+            manager = self.task_manager
             full_description = f"Agent: {description}"
 
             # Create task for this agent
@@ -121,7 +128,17 @@ class AgentTool(BaseTool):
                 manager.update_task_status(task.id, TaskStatus.RUNNING)
 
                 # Start background execution
-                asyncio.create_task(self._run_agent_background(task, prompt))
+                handle = asyncio.create_task(self._run_agent_background(task, prompt))
+                manager.set_async_handle(task.id, handle)
+                context = current_tool_context()
+                if context and context.abort_signal:
+
+                    def cancel_background(reason: str) -> None:
+                        handle.cancel(reason)
+
+                    self._cancellation_unsubscribers[task.id] = context.abort_signal.add_callback(
+                        cancel_background
+                    )
 
                 return ToolResult(
                     success=True,
@@ -172,7 +189,8 @@ class AgentTool(BaseTool):
     ) -> dict[str, Any]:
         """Run agent synchronously and return result."""
         start_time = datetime.now()
-        manager = get_global_task_manager()
+        manager = self.task_manager
+        agent_runtime: Any = None
 
         def on_progress(progress: dict[str, Any]) -> None:
             manager.update_task_progress(
@@ -225,8 +243,7 @@ class AgentTool(BaseTool):
 
                 combined_followup = "\n\n".join(followups)
                 rendered_followup = (
-                    "Additional instruction from the parent conversation:\n"
-                    f"{combined_followup}"
+                    f"Additional instruction from the parent conversation:\n{combined_followup}"
                 )
                 loop_messages.append(
                     Message(
@@ -235,13 +252,15 @@ class AgentTool(BaseTool):
                     )
                 )
                 manager.mark_messages_delivered(task.id, queued_messages)
-                for delivered_message in task.delivered_messages[-len(queued_messages):]:
+                for delivered_message in task.delivered_messages[-len(queued_messages) :]:
                     delivered_message["delivery_state"] = "delivered"
                     delivered_message["delivered_at"] = datetime.now().isoformat()
                 batch = manager.record_follow_up_batch(task.id, queued_messages, rendered_followup)
                 batch_id = batch.get("batch_id") if batch else None
                 delivered_message_ids = [
-                    message.get("message_id") for message in queued_messages if message.get("message_id")
+                    message.get("message_id")
+                    for message in queued_messages
+                    if message.get("message_id")
                 ]
                 manager.set_session_state(
                     task.id,
@@ -257,7 +276,9 @@ class AgentTool(BaseTool):
             agent_runtime.register_callback("iteration_start", on_iteration_start)
 
             # Run the agent with progress reporting
-            result = await agent_runtime.run(prompt, mode="act", stream=False, progress_callback=on_progress)
+            result = await agent_runtime.run(
+                prompt, mode="act", stream=False, progress_callback=on_progress
+            )
 
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             usage = getattr(task, "usage", None)
@@ -285,6 +306,11 @@ class AgentTool(BaseTool):
                 "delivered_messages": len(task.delivered_messages),
                 "delivered_follow_up_batches": len(task.follow_up_batches),
             }
+        finally:
+            if agent_runtime is not None:
+                closer = getattr(agent_runtime, "aclose", None)
+                if callable(closer):
+                    await closer()
 
     async def _run_agent_background(
         self,
@@ -293,14 +319,12 @@ class AgentTool(BaseTool):
     ) -> None:
         """Run agent in background and handle completion."""
         start_time = datetime.now()
-        manager = get_global_task_manager()
+        manager = self.task_manager
 
         try:
             # Write task notification to output file
-            from opennova.utils.task_output import write_task_output
-            write_task_output(
-                task.id,
-                f"<task_notification>\n<task-id>{task.id}</task-id>\n"
+            manager.write_task_output(
+                task.id, f"<task_notification>\n<task-id>{task.id}</task-id>\n"
             )
 
             # Run the agent
@@ -322,11 +346,13 @@ class AgentTool(BaseTool):
                     result.get("delivered_messages", 0),
                     result.get("delivered_follow_up_batches", 0),
                 )
-                write_task_output(task.id, notification)
+                manager.write_task_output(task.id, notification)
 
                 # Mark as notified
                 task.notified = True
-                manager.update_task_progress(task.id, activity="Agent completed", mark_complete=True)
+                manager.update_task_progress(
+                    task.id, activity="Agent completed", mark_complete=True
+                )
 
             else:
                 self._apply_result_to_task(task, result, TaskStatus.FAILED)
@@ -341,7 +367,7 @@ class AgentTool(BaseTool):
                     result.get("delivered_messages", 0),
                     result.get("delivered_follow_up_batches", 0),
                 )
-                write_task_output(task.id, notification)
+                manager.write_task_output(task.id, notification)
 
                 task.notified = True
                 manager.update_task_progress(task.id, activity="Agent failed")
@@ -356,7 +382,7 @@ class AgentTool(BaseTool):
                 delivered_messages=len(task.delivered_messages),
                 delivered_follow_up_batches=len(task.follow_up_batches),
             )
-            write_task_output(
+            manager.write_task_output(
                 task.id,
                 f"<task_notification>\n<task-id>{task.id}</task-id>\n<status>killed</status>\n<summary>Agent was stopped</summary>\n<pending_messages>{len(task.message_queue)}</pending_messages>\n<delivered_messages>{len(task.delivered_messages)}</delivered_messages>\n<delivered_follow_up_batches>{len(task.follow_up_batches)}</delivered_follow_up_batches>\n</task_notification>\n",
             )
@@ -373,7 +399,7 @@ class AgentTool(BaseTool):
                 TaskStatus.FAILED,
             )
             manager.update_task_progress(task.id, activity="Agent failed", mark_complete=True)
-            write_task_output(
+            manager.write_task_output(
                 task.id,
                 self._format_failure_notification(
                     task.id,
@@ -385,6 +411,13 @@ class AgentTool(BaseTool):
                     len(task.follow_up_batches),
                 ),
             )
+        finally:
+            unsubscribe = self._cancellation_unsubscribers.pop(task.id, None)
+            if callable(unsubscribe):
+                unsubscribe()
+            current = asyncio.current_task()
+            if current is not None:
+                manager.release_async_handle(task.id, current)
 
     def _format_completion_notification(
         self,
@@ -403,7 +436,7 @@ class AgentTool(BaseTool):
 <task-id>{agent_id}</task-id>
 <status>completed</status>
 <summary>Agent \"{description}\" completed</summary>
-<result>{result[:5000]}{'...' if len(result) > 5000 else ''}</result>
+<result>{result[:5000]}{"..." if len(result) > 5000 else ""}</result>
 <usage>
   <total_tokens>{token_count}</total_tokens>
   <tool_uses>{tool_count}</tool_uses>
@@ -447,6 +480,13 @@ class SendMessageTool(BaseTool):
     name = "send_message"
     description = "Send a follow-up message to an existing agent. Use this to continue a worker's work or send additional instructions."
 
+    def __init__(self, config: dict[str, Any] | None = None):
+        super().__init__(config)
+        configured_manager = self.config.get("task_manager")
+        if not isinstance(configured_manager, TaskManager):
+            raise ValueError("SendMessageTool requires a runtime-owned TaskManager")
+        self.task_manager = configured_manager
+
     def execute(
         self,
         to: str,
@@ -464,7 +504,7 @@ class SendMessageTool(BaseTool):
             ToolResult with response or error
         """
         try:
-            manager = get_global_task_manager()
+            manager = self.task_manager
             task = manager.get_task(to)
 
             if not task:
@@ -486,7 +526,9 @@ class SendMessageTool(BaseTool):
                 "content": message,
                 "timestamp": datetime.now().isoformat(),
             }
-            message_record["message_id"] = generate_message_id(message_record["content"], message_record["timestamp"])
+            message_record["message_id"] = generate_message_id(
+                message_record["content"], message_record["timestamp"]
+            )
             message_record["delivery_state"] = "queued"
 
             manager.add_message(to, message_record.copy())

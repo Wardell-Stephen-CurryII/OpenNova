@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from opennova.runtime.cancellation import CancellationToken
 
 ToolEventType = Literal[
     "tool_start",
@@ -24,7 +27,7 @@ class ToolUseContext:
     session_id: str | None = None
     permission_context: dict[str, Any] = field(default_factory=dict)
     read_file_cache: dict[str, str] = field(default_factory=dict)
-    abort_signal: Any | None = None
+    abort_signal: CancellationToken | None = None
     risk_level: str = "safe"
     diff: str | None = None
     max_result_chars: int | None = None
@@ -68,3 +71,24 @@ class ToolEvent:
             "collapsible": self.collapsible,
             "metadata": self.metadata,
         }
+
+
+_CURRENT_TOOL_CONTEXT: ContextVar[ToolUseContext | None] = ContextVar(
+    "opennova_tool_use_context",
+    default=None,
+)
+
+
+def set_current_tool_context(context: ToolUseContext | None) -> Token[ToolUseContext | None]:
+    """Bind a tool context to the current async execution flow."""
+    return _CURRENT_TOOL_CONTEXT.set(context)
+
+
+def reset_current_tool_context(token: Token[ToolUseContext | None]) -> None:
+    """Restore the prior tool context after execution."""
+    _CURRENT_TOOL_CONTEXT.reset(token)
+
+
+def current_tool_context() -> ToolUseContext | None:
+    """Return the active tool context for cancellation-aware tools."""
+    return _CURRENT_TOOL_CONTEXT.get()

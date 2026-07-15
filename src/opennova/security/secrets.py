@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any
+
+SENSITIVE_CONFIG_KEY = re.compile(
+    r"(^|[_-])(api[_-]?key|token|password|passwd|secret|authorization|private[_-]?key)$",
+    re.IGNORECASE,
+)
+REDACTED_VALUE = "[REDACTED_SECRET]"
 
 
 @dataclass
@@ -27,7 +35,9 @@ class SecretScanner:
         self._patterns: list[tuple[str, re.Pattern[str]]] = [
             (
                 "private-key",
-                re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+                re.compile(
+                    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+                ),
             ),
             ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
             ("openai-key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
@@ -44,9 +54,11 @@ class SecretScanner:
     @classmethod
     def from_config(cls, config: dict[str, object] | None) -> SecretScanner:
         data = config or {}
+        raw_limit = data.get("max_scan_chars", 200_000)
+        max_scan_chars = int(raw_limit) if isinstance(raw_limit, (str, int, float)) else 200_000
         return cls(
             enabled=bool(data.get("enabled", True)),
-            max_scan_chars=int(data.get("max_scan_chars", 200_000)),
+            max_scan_chars=max_scan_chars,
         )
 
     def scan(self, text: str) -> list[SecretFinding]:
@@ -71,6 +83,31 @@ class SecretScanner:
             cursor = finding.end
         redacted.append(text[cursor:])
         return "".join(redacted)
+
+
+def redact_sensitive_data(value: Any, *, scanner: SecretScanner | None = None) -> Any:
+    """Return a deep redacted copy suitable for config, logs, and diagnostics."""
+    active_scanner = scanner or SecretScanner()
+
+    def redact(item: Any, key: str | None = None) -> Any:
+        if key and SENSITIVE_CONFIG_KEY.search(key):
+            if item in (None, "", [], {}):
+                return deepcopy(item)
+            return REDACTED_VALUE
+        if isinstance(item, dict):
+            return {
+                str(child_key): redact(child_value, str(child_key))
+                for child_key, child_value in item.items()
+            }
+        if isinstance(item, list):
+            return [redact(child) for child in item]
+        if isinstance(item, tuple):
+            return tuple(redact(child) for child in item)
+        if isinstance(item, str):
+            return active_scanner.redact(item)
+        return deepcopy(item)
+
+    return redact(value)
 
 
 def _dedupe_findings(findings: list[SecretFinding]) -> list[SecretFinding]:
