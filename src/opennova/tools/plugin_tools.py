@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shlex
+import subprocess
 from typing import Any
 
 from opennova.tools.base import BaseTool, ToolResult
@@ -32,15 +34,26 @@ class PluginCommandTool(BaseTool):
         self._command_tool = ExecuteCommandTool(self.config)
 
     @property
+    def command_argv(self) -> list[str]:
+        return [self.command, *self.args]
+
+    @property
     def command_line(self) -> str:
-        return shlex.join([self.command, *self.args])
+        """Display form of the command, quoted for the current platform."""
+        if os.name == "nt":
+            return subprocess.list2cmdline(self.command_argv)
+        return shlex.join(self.command_argv)
 
     def execute(self) -> ToolResult:
-        return self._decorate_result(self._command_tool.execute(self.command_line))
+        # Pass argv explicitly: joining to a string and re-splitting is lossy on
+        # Windows (POSIX quoting is not understood by non-POSIX shlex.split).
+        return self._decorate_result(
+            self._command_tool.execute(self.command_line, argv=self.command_argv)
+        )
 
     async def async_execute(self) -> ToolResult:
         """Execute through the shared cancellable process-sandbox path."""
-        result = await self._command_tool.async_execute(self.command_line)
+        result = await self._command_tool.async_execute(self.command_line, argv=self.command_argv)
         return self._decorate_result(result)
 
     def _decorate_result(self, result: ToolResult) -> ToolResult:

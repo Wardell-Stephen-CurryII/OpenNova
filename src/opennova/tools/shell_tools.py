@@ -161,6 +161,7 @@ class ExecuteCommandTool(BaseTool):
         command: str,
         timeout: int | float | None,
         working_dir: str | None,
+        argv: list[str] | None = None,
     ) -> PreparedCommand | ToolResult:
         """Validate guardrails, cwd, timeout, and shell mode before execution."""
         resolved_timeout = timeout if timeout is not None else self.default_timeout
@@ -197,7 +198,7 @@ class ExecuteCommandTool(BaseTool):
             )
 
         uses_shell_features = Guardrails.command_uses_shell_features(command)
-        if uses_shell_features and self.strict_shell_parsing:
+        if argv is None and uses_shell_features and self.strict_shell_parsing:
             return ToolResult(
                 success=False,
                 output="",
@@ -251,13 +252,15 @@ class ExecuteCommandTool(BaseTool):
                 error=f"Invalid working directory: {e}",
             )
 
-        run_with_shell = uses_shell_features and not self.strict_shell_parsing
-        argv: list[str] | None = None
+        run_with_shell = argv is None and uses_shell_features and not self.strict_shell_parsing
         if not run_with_shell:
-            try:
-                argv = shlex.split(command, posix=(os.name != "nt"))
-            except ValueError as e:
-                return ToolResult(success=False, output="", error=f"Invalid command syntax: {e}")
+            if argv is None:
+                try:
+                    argv = shlex.split(command, posix=(os.name != "nt"))
+                except ValueError as e:
+                    return ToolResult(
+                        success=False, output="", error=f"Invalid command syntax: {e}"
+                    )
             if not argv:
                 return ToolResult(success=False, output="", error="Empty command")
 
@@ -309,6 +312,7 @@ class ExecuteCommandTool(BaseTool):
         timeout: int | None = None,
         working_dir: str | None = None,
         capture_stderr: bool = True,
+        argv: list[str] | None = None,
     ) -> ToolResult:
         """
         Execute a shell command.
@@ -318,11 +322,14 @@ class ExecuteCommandTool(BaseTool):
             timeout: Timeout in seconds (default: 30)
             working_dir: Working directory for command execution
             capture_stderr: Whether to capture stderr output
+            argv: Explicit argument vector; when given it is executed directly
+                (no shell parsing of ``command``, which is kept for guardrail
+                checks and metadata only)
 
         Returns:
             ToolResult with command output
         """
-        prepared = self._prepare_command_execution(command, timeout, working_dir)
+        prepared = self._prepare_command_execution(command, timeout, working_dir, argv=argv)
         if isinstance(prepared, ToolResult):
             return prepared
 
@@ -405,6 +412,7 @@ class ExecuteCommandTool(BaseTool):
         timeout: int | None = None,
         working_dir: str | None = None,
         capture_stderr: bool = True,
+        argv: list[str] | None = None,
     ) -> ToolResult:
         """
         Execute a shell command asynchronously.
@@ -413,11 +421,13 @@ class ExecuteCommandTool(BaseTool):
             command: Shell command to execute
             timeout: Timeout in seconds
             working_dir: Working directory
+            argv: Explicit argument vector; when given it is executed directly
+                (no shell parsing of ``command``)
 
         Returns:
             ToolResult with command output
         """
-        prepared = self._prepare_command_execution(command, timeout, working_dir)
+        prepared = self._prepare_command_execution(command, timeout, working_dir, argv=argv)
         if isinstance(prepared, ToolResult):
             return prepared
 
@@ -518,6 +528,7 @@ class ExecuteCommandTool(BaseTool):
         timeout: int | None = None,
         working_dir: str | None = None,
         capture_stderr: bool = True,
+        argv: list[str] | None = None,
     ) -> ToolResult:
         """Backward-compatible alias for the runtime async tool protocol."""
         return await self.async_execute(
@@ -525,6 +536,7 @@ class ExecuteCommandTool(BaseTool):
             timeout=timeout,
             working_dir=working_dir,
             capture_stderr=capture_stderr,
+            argv=argv,
         )
 
     @staticmethod
