@@ -18,7 +18,11 @@ class Completed:
 
 
 def test_process_sandbox_auto_selects_seatbelt_on_darwin(tmp_path: Path):
-    from opennova.security.process_sandbox import ProcessSandbox, ProcessSandboxConfig
+    from opennova.security.process_sandbox import (
+        ProcessSandbox,
+        ProcessSandboxConfig,
+        _escape_seatbelt_path,
+    )
 
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -52,8 +56,8 @@ def test_process_sandbox_auto_selects_seatbelt_on_darwin(tmp_path: Path):
     profile_text = Path(plan.argv[2]).read_text(encoding="utf-8")
     assert "(deny network*)" in profile_text
     assert "signal*" not in profile_text
-    assert f"(subpath \"{workdir}\")" in profile_text
-    assert f"(subpath \"{allowed}\")" in profile_text
+    assert f'(subpath "{_escape_seatbelt_path(str(workdir))}")' in profile_text
+    assert f'(subpath "{_escape_seatbelt_path(str(allowed))}")' in profile_text
     assert plan.metadata["backend"] == "seatbelt"
     assert plan.metadata["applied"] is True
     assert plan.metadata["network_allowed"] is False

@@ -188,7 +188,10 @@ class TestSkills:
             skill_file = root / "frontend" / "review" / "SKILL.md"
             skill_file.write_text("---\ndescription: Review UI\n---\nBody\n")
             alias_root = root / "alias-root"
-            alias_root.symlink_to(root / "frontend", target_is_directory=True)
+            try:
+                alias_root.symlink_to(root / "frontend", target_is_directory=True)
+            except OSError:
+                pytest.skip("symlinks require elevated privileges on this platform")
 
             loaded = SkillLoader.load_all_skills([root, alias_root])
 

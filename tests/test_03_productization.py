@@ -632,7 +632,10 @@ def test_cli_rejects_removed_no_tui_option(monkeypatch):
     result = CliRunner().invoke(main, ["run", "--no-tui"])
 
     assert result.exit_code != 0
-    assert "No such option: --no-tui" in result.output
+    # Click 8.4 changed the wording from "No such option: --no-tui" to
+    # "No such option '--no-tui'" — assert version-agnostically.
+    assert "No such option" in result.output
+    assert "--no-tui" in result.output
 
 
 def test_cli_resume_flag_launches_tui_in_picker_mode(monkeypatch):

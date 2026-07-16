@@ -320,6 +320,8 @@ def test_verified_legacy_session_is_atomically_migrated(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
+    # Path.home() resolves via USERPROFILE on Windows, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(home))
     project = tmp_path / "中文项目"
     project.mkdir()
     session_id = str(uuid.uuid4())
@@ -348,6 +350,8 @@ def test_headerless_legacy_session_is_copied_only_when_resumed(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
+    # Path.home() resolves via USERPROFILE on Windows, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(home))
     project = tmp_path / "中文项目"
     project.mkdir()
     session_id = str(uuid.uuid4())
@@ -786,7 +790,11 @@ async def test_cancelled_tool_emits_exactly_one_terminal_event(tmp_path: Path) -
 
 
 def test_seatbelt_profile_has_no_global_file_read_and_cleans_up(tmp_path: Path) -> None:
-    from opennova.security.process_sandbox import ProcessSandbox, ProcessSandboxConfig
+    from opennova.security.process_sandbox import (
+        ProcessSandbox,
+        ProcessSandboxConfig,
+        _escape_seatbelt_path,
+    )
 
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -811,7 +819,7 @@ def test_seatbelt_profile_has_no_global_file_read_and_cleans_up(tmp_path: Path) 
     profile = profile_path.read_text(encoding="utf-8")
 
     assert "(allow file-read*)" not in profile.splitlines()
-    assert f'(allow file-read* (subpath "{workdir}"))' in profile
+    assert f'(allow file-read* (subpath "{_escape_seatbelt_path(str(workdir))}"))' in profile
     plan.cleanup()
     assert not profile_path.exists()
 
