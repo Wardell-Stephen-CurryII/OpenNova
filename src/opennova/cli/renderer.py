@@ -59,7 +59,7 @@ class Renderer:
         self.console.print(
             Panel.fit(
                 "[bold cyan]OpenNova[/bold cyan] - AI Coding Agent\n\n"
-                "[dim]A lightweight CLI AI Coding Agent built from scratch[/dim]\n\n"
+                "[dim]A terminal AI coding agent with a Textual TUI[/dim]\n\n"
                 "Type [bold]/help[/bold] for commands, [bold]Ctrl+D[/bold] to exit",
                 title="🌟 Welcome",
                 border_style="blue",

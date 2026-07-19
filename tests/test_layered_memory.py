@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -35,17 +36,22 @@ def test_layered_memory_truncates_to_context_budget(tmp_path: Path):
     assert "[... .opennova/memory content truncated for context budget ...]" in content
 
 
-def test_runtime_memory_includes_layered_memory_context():
+def test_runtime_memory_includes_layered_memory_context(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
+        monkeypatch.setattr(Path, "home", lambda: root)
         memory_dir = root / ".opennova" / "memory"
         memory_dir.mkdir(parents=True)
-        (memory_dir / "workflow.md").write_text("Always run targeted tests first.\n", encoding="utf-8")
+        (memory_dir / "workflow.md").write_text(
+            "Always run targeted tests first.\n", encoding="utf-8"
+        )
 
         runtime = AgentRuntime(
             {
                 "default_provider": "deepseek",
-                "providers": {"deepseek": {"api_key": "test-key", "default_model": "deepseek-v4-pro"}},
+                "providers": {
+                    "deepseek": {"api_key": "test-key", "default_model": "deepseek-v4-pro"}
+                },
                 "mcp": {"enabled": False, "servers": []},
                 "skills": {"enabled": False, "dirs": []},
             },
@@ -58,3 +64,4 @@ def test_runtime_memory_includes_layered_memory_context():
 
         assert "Layered project memory (.opennova/memory)" in messages[0].content
         assert "Always run targeted tests first." in messages[0].content
+        asyncio.run(runtime.aclose())

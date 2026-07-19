@@ -10,8 +10,12 @@ Manages the agent lifecycle:
 - Skill loading
 """
 
+from __future__ import annotations
+
+import asyncio
 import copy
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -20,8 +24,10 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
+from opennova.config import Config
 from opennova.hooks import HookManager
 from opennova.memory.context import ContextManager
 from opennova.memory.project import ProjectMemory
@@ -30,6 +36,7 @@ from opennova.planning.planner import Planner
 from opennova.plugins import PluginManager
 from opennova.providers.base import Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
+from opennova.runtime.cancellation import CancellationToken, RunHandle
 from opennova.runtime.event_bus import RuntimeEventBus
 from opennova.runtime.events import ToolEvent
 from opennova.runtime.loop import ReActLoop
@@ -43,8 +50,14 @@ from opennova.runtime.state import (
 )
 from opennova.runtime.store import RuntimeAction, RuntimeStateStore, StateChanged
 from opennova.security.guardrails import PermissionMode
+from opennova.security.workspace_trust import WorkspaceTrustStore
 from opennova.tasks import TaskManager
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
+
+if TYPE_CHECKING:
+    from opennova.mcp.connector import MCPManager
+    from opennova.mcp.types import MCPServerConfig
+    from opennova.skills.registry import SkillRegistry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +77,7 @@ class AgentRuntime:
 
     def __init__(
         self,
-        config: dict[str, Any],
+        config: Config | dict[str, Any],
         register_default_tools: bool = True,
         enable_mcp: bool = True,
         enable_skills: bool = True,
@@ -78,27 +91,49 @@ class AgentRuntime:
             enable_mcp: Whether to enable MCP server connections
             enable_skills: Whether to load skills
         """
-        self.config = config
+        self.config = config.to_dict() if isinstance(config, Config) else copy.deepcopy(config)
         self.state = AgentState()
+        self._closed = False
+        self._active_run_handle: RunHandle | None = None
         self.tool_registry = ToolRegistry()
+        self._plugin_tool_names: set[str] = set()
+        self._plugin_mcp_server_names: set[str] = set()
         self.task_manager = TaskManager()
         self.register_default_tools = register_default_tools
         self.enable_mcp = enable_mcp
         self.enable_skills = enable_skills
 
-        agent_config = config.get("agent", {})
+        agent_config = self.config.get("agent", {})
         self.max_iterations = agent_config.get("max_iterations", 20)
         self.show_thinking = agent_config.get("show_thinking", True)
         self.auto_confirm = agent_config.get("auto_confirm", False)
-        self.security_config = config.get("security", {})
+        self.security_config = self.config.get("security", {})
 
-        self.llm = ProviderFactory.create_provider(config)
-        self.project_memory = ProjectMemory(project_path=os.getcwd())
+        self.project_path = Path.cwd().resolve()
+        self.llm = ProviderFactory.create_provider(self.config)
+        self.project_memory = ProjectMemory(project_path=str(self.project_path))
         self.working_memory = WorkingMemory()
-        self.hook_manager = HookManager(project_path=os.getcwd())
-        self.hook_manager.load_project_hooks()
-        self.plugin_manager = PluginManager(project_path=os.getcwd())
+        self.hook_manager = HookManager(project_path=self.project_path)
+        self.workspace_trust_store = WorkspaceTrustStore()
+        self.workspace_hook_digest = self.hook_manager.project_hooks_digest()
+        self.workspace_hooks_trusted = self.workspace_trust_store.hooks_are_trusted(
+            self.project_path,
+            self.workspace_hook_digest,
+        )
+        self.extension_warnings: list[str] = []
+        if self.workspace_hooks_trusted:
+            self.hook_manager.load_project_hooks()
+        elif self.workspace_hook_digest:
+            self.extension_warnings.append(
+                "Project hooks are present but were not loaded because this workspace digest "
+                "is not trusted. Use /hooks trust to enable them."
+            )
+        self.plugin_manager = PluginManager(
+            project_path=self.project_path,
+            trust_path=self.workspace_trust_store.path,
+        )
         self.plugin_manager.load_enabled_plugins(config=self.config, hook_manager=self.hook_manager)
+        self._plugin_mcp_server_names = self.plugin_manager.get_active_mcp_server_names()
 
         # Read compression config
         compression_config = agent_config.get("compression", {})
@@ -106,20 +141,18 @@ class AgentRuntime:
             model=self.llm.model,
             max_tool_result_tokens=compression_config.get("max_tool_result_tokens", 8000),
         )
-        self.context_manager.compression_threshold = compression_config.get(
-            "threshold", 0.55
-        )
-        self.context_manager.keep_last_pairs = compression_config.get(
-            "keep_last_pairs", 6
-        )
+        self.context_manager.compression_threshold = compression_config.get("threshold", 0.55)
+        self.context_manager.keep_last_pairs = compression_config.get("keep_last_pairs", 6)
 
         # Wire up context compressor
         from opennova.memory.compressor import ContextCompressor
+
         self.context_manager.set_compressor(ContextCompressor(llm_provider=self.llm))
 
         from opennova.session import SessionManager
+
         self.session_manager = SessionManager(
-            project_path=os.getcwd(),
+            project_path=str(self.project_path),
             persistence_config=self.config.get("session", {}).get("persistence", {}),
         )
         self.session_manager.start_session()
@@ -135,14 +168,18 @@ class AgentRuntime:
         self.tool_events: list[dict[str, Any]] = []
         self.planner = Planner(self.llm)
 
-        self.mcp_manager = None
-        self._mcp_server_configs = []
-        self.skill_registry = None
+        self.mcp_manager: MCPManager | None = None
+        self._mcp_server_configs: list[MCPServerConfig] = []
+        self._mcp_config_errors: dict[str, str] = {}
+        self._mcp_connection_results: dict[str, bool] = {}
+        self.skill_registry: SkillRegistry | None = None
         from opennova.security.audit import SecurityAuditLogger
         from opennova.security.guardrails import Guardrails
         from opennova.security.permissions import PermissionStore
 
-        self.permission_store = PermissionStore(Path(os.getcwd()) / ".opennova" / "permissions.json")
+        self.permission_store = PermissionStore(
+            Path(os.getcwd()) / ".opennova" / "permissions.json"
+        )
         audit_config = self.security_config.get("audit", {})
         self.security_audit_logger = SecurityAuditLogger(
             path=audit_config.get("path", ".opennova/audit/security.jsonl"),
@@ -168,10 +205,6 @@ class AgentRuntime:
             permission_store=self.permission_store,
         )
         self.security_audit_logger.permission_mode = self.get_permission_mode().value
-
-        # Set global task manager for task tools
-        from opennova.tools.task_tools import set_global_task_manager
-        set_global_task_manager(self.task_manager)
 
         if register_default_tools:
             self._register_builtin_tools()
@@ -302,24 +335,28 @@ class AgentRuntime:
         self.tool_registry.register(PythonReferencesTool(config=tool_config))
 
         # Task management tools (Claude Code-style)
-        self.tool_registry.register(TaskCreateTool())
-        self.tool_registry.register(TaskListTool())
-        self.tool_registry.register(TaskGetTool())
-        self.tool_registry.register(TaskUpdateTool())
-        self.tool_registry.register(TaskStopTool())
-        self.tool_registry.register(TaskOutputTool())
+        self.tool_registry.register(TaskCreateTool(self.task_manager))
+        self.tool_registry.register(TaskListTool(self.task_manager))
+        self.tool_registry.register(TaskGetTool(self.task_manager))
+        self.tool_registry.register(TaskUpdateTool(self.task_manager))
+        self.tool_registry.register(TaskStopTool(self.task_manager))
+        self.tool_registry.register(TaskOutputTool(self.task_manager))
         self.tool_registry.register(TodoWriteTool(config={"state_store": self.state_store}))
 
         # Agent tools (Claude Code-style)
-        self.tool_registry.register(AgentTool(config={"runtime": self}))
-        self.tool_registry.register(SendMessageTool())
+        self.tool_registry.register(
+            AgentTool(config={"runtime": self, "task_manager": self.task_manager})
+        )
+        self.tool_registry.register(SendMessageTool(config={"task_manager": self.task_manager}))
 
         # User interaction tools
         self.tool_registry.register(AskUserQuestionTool())
         self.tool_registry.register(SkillTool(config={"runtime": self}))
 
         # Plan mode tools
-        self.tool_registry.register(EnterPlanModeTool(config={"state": self.state, "runtime": self}))
+        self.tool_registry.register(
+            EnterPlanModeTool(config={"state": self.state, "runtime": self})
+        )
         self.tool_registry.register(ExitPlanModeTool(config={"state": self.state, "runtime": self}))
 
         # Web tools
@@ -341,14 +378,32 @@ class AgentRuntime:
         self.tool_registry.register(ExitWorktreeTool(config=tool_config))
 
     def _register_plugin_tools(self) -> None:
-        """Register trusted project plugin tools."""
+        """Replace tools from the previous plugin trust snapshot."""
+        for name in self._plugin_tool_names:
+            self.tool_registry.unregister(name)
+        self._plugin_tool_names.clear()
+
         security_config = self.config.get("security", {})
         tool_config = {
+            "command_timeout": security_config.get("command_timeout", 30),
             "working_dir": os.getcwd(),
+            "sandbox_mode": security_config.get("sandbox_mode", True),
             "allowed_paths": security_config.get("allowed_paths", []),
+            "blocked_commands": security_config.get("blocked_commands", []),
+            "allow_network": security_config.get("allow_network", True),
+            "strict_shell_parsing": security_config.get("strict_shell_parsing", False),
+            "permission_mode": security_config.get("permission_mode", "default"),
+            "process_sandbox": security_config.get("process_sandbox", {}),
+            "temp_dir": security_config.get("process_sandbox", {}).get("tmp_dir"),
         }
         for tool in self.plugin_manager.build_tools(config=tool_config):
+            if self.tool_registry.has_tool(tool.name):
+                self.plugin_manager.errors[f"tool:{tool.name}"] = (
+                    f"Plugin tool conflicts with an existing tool: {tool.name}"
+                )
+                continue
             self.tool_registry.register(tool)
+            self._plugin_tool_names.add(tool.name)
 
     def _init_skills(self) -> None:
         """Initialize markdown skill loading."""
@@ -359,13 +414,14 @@ class AgentRuntime:
         if not skills_config.get("enabled", True):
             return
 
-        self.skill_registry = SkillRegistry()
+        registry = SkillRegistry()
+        self.skill_registry = registry
 
         configured_dirs = [Path(path) for path in skills_config.get("dirs", [])]
-        skill_dirs = [*get_builtin_skill_dirs(), *configured_dirs]
+        skill_dirs: list[str | Path] = [*get_builtin_skill_dirs(), *configured_dirs]
         excluded = skills_config.get("exclude", [])
 
-        self.skill_registry.load_all(
+        registry.load_all(
             directories=skill_dirs,
             sources=self.plugin_manager.get_skill_sources(),
             excluded=excluded,
@@ -374,25 +430,58 @@ class AgentRuntime:
     def _init_mcp(self) -> None:
         """Initialize MCP server connections."""
         from opennova.mcp.connector import MCPManager
-        from opennova.mcp.types import MCPServerConfig
 
         mcp_config = self.config.get("mcp", {})
         if not mcp_config.get("enabled", True):
             return
 
         self.mcp_manager = MCPManager(self.tool_registry)
-        self._mcp_server_configs: list[MCPServerConfig] = []
-        self._mcp_config_errors: dict[str, str] = {}
-        self._mcp_connection_results: dict[str, bool] = {}
+        self._reload_mcp_server_configs()
 
+    def _reload_mcp_server_configs(self) -> None:
+        """Rebuild validated MCP configs after extension contributions change."""
+        from opennova.mcp.types import MCPServerConfig
+
+        self._mcp_server_configs = []
+        self._mcp_config_errors = {}
+        self._mcp_connection_results = {}
+
+        mcp_config = self.config.get("mcp", {})
         servers = mcp_config.get("servers", [])
         for index, server_data in enumerate(servers):
+            if not isinstance(server_data, dict):
+                self._mcp_config_errors[f"server[{index}]"] = "MCP server config must be a mapping"
+                continue
             server_name = server_data.get("name", f"server[{index}]")
             try:
                 server_config = MCPServerConfig.from_dict(server_data)
                 self._mcp_server_configs.append(server_config)
             except Exception as exc:
                 self._mcp_config_errors[server_name] = str(exc)
+
+    async def refresh_plugin_contributions(self) -> None:
+        """Apply the current plugin trust snapshot to every active runtime surface."""
+        previous_mcp_names = set(self._plugin_mcp_server_names)
+        self.plugin_manager.load_enabled_plugins(
+            config=self.config,
+            hook_manager=self.hook_manager,
+        )
+        self._plugin_mcp_server_names = self.plugin_manager.get_active_mcp_server_names()
+
+        if self.register_default_tools:
+            self._register_plugin_tools()
+        else:
+            for name in self._plugin_tool_names:
+                self.tool_registry.unregister(name)
+            self._plugin_tool_names.clear()
+
+        if self.enable_skills:
+            self._init_skills()
+
+        if self.mcp_manager is not None:
+            for server_name in previous_mcp_names:
+                await self.mcp_manager.remove_server(server_name)
+            self._reload_mcp_server_configs()
 
     async def connect_mcp_servers(self) -> dict[str, bool]:
         """
@@ -426,7 +515,50 @@ class AgentRuntime:
         if self.mcp_manager:
             await self.mcp_manager.disconnect_all()
 
-    def create_child_runtime(self) -> "AgentRuntime":
+    async def aclose(self) -> None:
+        """Release all resources owned by this runtime exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+
+        active_handle = getattr(self, "_active_run_handle", None)
+        if (
+            active_handle is not None
+            and not active_handle.done
+            and active_handle.task is not asyncio.current_task()
+        ):
+            active_handle.cancel("Runtime closed")
+            with suppress(asyncio.CancelledError):
+                await active_handle.wait()
+
+        with suppress(Exception):
+            await self.task_manager.aclose()
+        with suppress(Exception):
+            await self.disconnect_mcp_servers()
+        with suppress(Exception):
+            self.flush_session()
+
+        close_target: Any = self.llm
+        closer = getattr(close_target, "aclose", None)
+        if not callable(closer):
+            close_target = getattr(self.llm, "client", None)
+            closer = getattr(close_target, "close", None)
+        if callable(closer):
+            with suppress(Exception):
+                result = closer()
+                if inspect.isawaitable(result):
+                    await result
+
+        self.events.clear()
+
+    def cancel_run(self, reason: str = "Run cancelled") -> bool:
+        """Cancel the currently active runtime run, if any."""
+        handle: RunHandle | None = getattr(self, "_active_run_handle", None)
+        if handle is None or handle.done:
+            return False
+        return bool(handle.cancel(reason))
+
+    def create_child_runtime(self) -> AgentRuntime:
         """Create a child runtime that inherits this runtime's configuration."""
         child = AgentRuntime(
             config=copy.deepcopy(self.config),
@@ -444,7 +576,7 @@ class AgentRuntime:
         guardrails = getattr(self, "guardrails", None)
         if guardrails is None:
             return PermissionMode.AUTO
-        return guardrails.effective_permission_mode
+        return PermissionMode.normalize(guardrails.effective_permission_mode)
 
     def set_permission_mode(self, mode: str | PermissionMode) -> PermissionMode:
         """Switch approval mode for this runtime and its command tool."""
@@ -478,7 +610,11 @@ class AgentRuntime:
         """
         self.tool_registry.register(tool)
 
-    def register_callback(self, event: str, callback: Callable) -> Callable[[], None]:
+    def register_callback(
+        self,
+        event: str,
+        callback: Callable[..., Any],
+    ) -> Callable[[], None]:
         """
         Register an event callback.
 
@@ -487,7 +623,7 @@ class AgentRuntime:
             callback: Callback function
         """
         event_bus = getattr(self, "events", None)
-        if event_bus is not None:
+        if isinstance(event_bus, RuntimeEventBus):
             return event_bus.subscribe(event, callback)
         callbacks = getattr(self, "_callbacks", None)
         if callbacks is None:
@@ -501,7 +637,7 @@ class AgentRuntime:
 
         return unsubscribe
 
-    def _emit(self, event: str, *args, **kwargs) -> None:
+    def _emit(self, event: str, *args: Any, **kwargs: Any) -> None:
         """Emit an event to registered callback."""
         event_bus = getattr(self, "events", None)
         if event_bus is not None:
@@ -514,7 +650,7 @@ class AgentRuntime:
     async def run(
         self,
         task: str,
-        mode: str = "act",
+        mode: Literal["plan", "act"] = "act",
         stream: bool = True,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
@@ -529,17 +665,36 @@ class AgentRuntime:
         Returns:
             Final result string
         """
-        if mode != "plan" and self._is_plan_execution_approval(task):
-            self.state.mark_plan_approved()
-            return await self.execute_approved_plan(stream=stream)
+        if getattr(self, "_closed", False):
+            raise RuntimeError("AgentRuntime is closed")
+        current_task = asyncio.current_task()
+        active_handle = getattr(self, "_active_run_handle", None)
+        if active_handle is not None and not active_handle.done:
+            raise RuntimeError("AgentRuntime already has an active run")
+        handle = RunHandle(run_id=uuid4().hex, task=current_task)
+        self._active_run_handle = handle
+        try:
+            if mode != "plan" and self._is_plan_execution_approval(task):
+                self.state.mark_plan_approved()
+                return await self.execute_approved_plan(stream=stream)
 
-        self.state.reset(task)
-        self.state.set_mode(mode)
+            self.state.reset(task)
+            self.state.set_mode(mode)
 
-        if mode == "plan":
-            return await self._run_plan_mode(task, stream=stream)
-        else:
-            return await self._run_act_mode(task, stream=stream, progress_callback=progress_callback)
+            if mode == "plan":
+                return await self._run_plan_mode(task, stream=stream)
+            return await self._run_act_mode(
+                task,
+                stream=stream,
+                progress_callback=progress_callback,
+            )
+        except asyncio.CancelledError:
+            handle.token.cancel("Run cancelled")
+            self.state.cancel_run(self.state.run_id)
+            raise
+        finally:
+            if getattr(self, "_active_run_handle", None) is handle:
+                self._active_run_handle = None
 
     async def _run_plan_mode(self, task: str, stream: bool = True) -> str:
         """
@@ -594,8 +749,7 @@ class AgentRuntime:
 
         if relevant_decisions:
             decision_lines = [
-                f"- {decision.description}: {decision.reasoning}"
-                for decision in relevant_decisions
+                f"- {decision.description}: {decision.reasoning}" for decision in relevant_decisions
             ]
             memory_parts.append("Relevant prior decisions:\n" + "\n".join(decision_lines))
 
@@ -634,6 +788,7 @@ class AgentRuntime:
                 role="system",
                 content="Use this project memory when it is relevant to the current task:\n\n"
                 + memory_text,
+                name="opennova_project_memory",
             )
         ]
 
@@ -695,11 +850,7 @@ class AgentRuntime:
             if refreshed_after_execution is not None:
                 plan = refreshed_after_execution
                 refreshed_step = next(
-                    (
-                        item
-                        for item in plan.steps
-                        if item.uid == step.uid or item.id == step.id
-                    ),
+                    (item for item in plan.steps if item.uid == step.uid or item.id == step.id),
                     None,
                 )
                 if refreshed_step is not None:
@@ -783,7 +934,9 @@ class AgentRuntime:
         if not normalized:
             return False
         rejection_tokens = {"n", "no", "cancel", "取消", "不要", "别", "先不要", "不执行", "暂不"}
-        if normalized in rejection_tokens or any(token in normalized for token in ("不要", "先不要", "别")):
+        if normalized in rejection_tokens or any(
+            token in normalized for token in ("不要", "先不要", "别")
+        ):
             return False
         approval_tokens = {
             "y",
@@ -991,7 +1144,9 @@ class AgentRuntime:
             if step_match:
                 if current_step is not None:
                     steps.append(current_step)
-                current_step = PlanStep(id=step_match.group(1).strip(), description=step_match.group(2).strip())
+                current_step = PlanStep(
+                    id=step_match.group(1).strip(), description=step_match.group(2).strip()
+                )
                 continue
             if current_step is None:
                 continue
@@ -1108,7 +1263,7 @@ class AgentRuntime:
             else getattr(self, "_callbacks", {}).get("plan_confirm")
         )
         if plan_confirm:
-            return plan_confirm(plan)
+            return bool(plan_confirm(plan))
         return True
 
     def _should_continue_on_failure(self) -> bool:
@@ -1122,6 +1277,7 @@ class AgentRuntime:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         preserve_plan_state: bool = False,
         preserve_context: bool = False,
+        route_workflow: bool = True,
     ) -> str:
         """
         Run in act mode: execute directly without planning.
@@ -1137,6 +1293,10 @@ class AgentRuntime:
         """
         await self._ensure_mcp_ready()
 
+        active_handle = getattr(self, "_active_run_handle", None)
+        cancellation_token = (
+            active_handle.token if active_handle is not None else CancellationToken()
+        )
         self.loop = ReActLoop(
             llm=self.llm,
             tool_registry=self.tool_registry,
@@ -1157,6 +1317,7 @@ class AgentRuntime:
             working_dir=os.getcwd(),
             hook_manager=getattr(self, "hook_manager", None),
             audit_logger=getattr(self, "security_audit_logger", None),
+            cancellation_token=cancellation_token,
         )
         started_at = perf_counter()
         if not preserve_context:
@@ -1197,6 +1358,7 @@ class AgentRuntime:
                 on_tool_event=on_tool_event,
                 preserve_plan_state=preserve_plan_state,
                 preserve_context=preserve_context,
+                route_workflow=route_workflow and not preserve_plan_state,
             )
         except Exception:
             self.working_memory.complete_task(success=False, error="Act mode execution failed")
@@ -1343,8 +1505,7 @@ class AgentRuntime:
                     or (
                         snapshot.plan.plan is not None
                         and any(
-                            step.status == StepStatus.RUNNING
-                            for step in snapshot.plan.plan.steps
+                            step.status == StepStatus.RUNNING for step in snapshot.plan.plan.steps
                         )
                     )
                 ):
@@ -1362,9 +1523,15 @@ class AgentRuntime:
         if state is None:
             return {}
         return {
-            "current_plan": state.current_plan.to_dict() if getattr(state, "current_plan", None) else None,
-            "plan_file_path": str(state.plan_file_path) if getattr(state, "plan_file_path", None) else None,
-            "plan_approval_status": getattr(getattr(state, "plan_approval_status", None), "value", None),
+            "current_plan": state.current_plan.to_dict()
+            if getattr(state, "current_plan", None)
+            else None,
+            "plan_file_path": str(state.plan_file_path)
+            if getattr(state, "plan_file_path", None)
+            else None,
+            "plan_approval_status": getattr(
+                getattr(state, "plan_approval_status", None), "value", None
+            ),
         }
 
     def _restore_plan_state(self, plan_state: dict[str, Any] | None) -> None:
@@ -1514,7 +1681,9 @@ class AgentRuntime:
         activated = self.skill_registry.activate_for_paths(paths, cwd)
         return {"activated": activated, "discovered": discovered}
 
-    def invoke_skill(self, skill_name: str, skill_args: str = "", caller: str = "user") -> ToolResult:
+    def invoke_skill(
+        self, skill_name: str, skill_args: str = "", caller: str = "user"
+    ) -> ToolResult:
         """Invoke a loaded skill for either the user or the model."""
         if not self.skill_registry:
             return ToolResult(success=False, output="", error="Skill registry is not available")
@@ -1530,19 +1699,31 @@ class AgentRuntime:
                 error=f"Ambiguous skill '{normalized_name}'. Use one of: {matches}",
             )
         if not resolution.resolved_name:
-            return ToolResult(success=False, output="", error=f"Skill '{normalized_name}' is unavailable")
+            return ToolResult(
+                success=False, output="", error=f"Skill '{normalized_name}' is unavailable"
+            )
         resolved_name = resolution.resolved_name
 
         if caller == "model":
             if not self.skill_registry.can_model_invoke(resolved_name):
-                return ToolResult(success=False, output="", error=f"Skill '{resolved_name}' cannot be invoked by the model")
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Skill '{resolved_name}' cannot be invoked by the model",
+                )
         else:
             if not self.skill_registry.can_user_invoke(resolved_name):
-                return ToolResult(success=False, output="", error=f"Skill '{resolved_name}' cannot be invoked directly by the user")
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Skill '{resolved_name}' cannot be invoked directly by the user",
+                )
 
         prompt = self.skill_registry.materialize_skill_prompt(resolved_name, normalized_args)
         if prompt is None:
-            return ToolResult(success=False, output="", error=f"Skill '{resolved_name}' is unavailable")
+            return ToolResult(
+                success=False, output="", error=f"Skill '{resolved_name}' is unavailable"
+            )
 
         return ToolResult(
             success=True,
@@ -1587,13 +1768,14 @@ class AgentRuntime:
 
         if not self.skill_registry:
             self.skill_registry = SkillRegistry()
+        registry = self.skill_registry
 
         configured_dirs = [Path(path) for path in skills_config.get("dirs", [])]
         excluded = skills_config.get("exclude", [])
 
-        self.skill_registry.load_all(
+        registry.load_all(
             directories=[*get_builtin_skill_dirs(), *configured_dirs],
             sources=self.plugin_manager.get_skill_sources(),
             excluded=excluded,
         )
-        return len(self.skill_registry)
+        return len(registry)

@@ -1,5 +1,7 @@
 # OpenNova 11 计划：Tool Card Action Bindings、Checkpoint Transcript Diff、插件 Policy、Automation Backoff 与 Analysis Events
 
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+
 ## Summary
 11 计划接续 `10_plan.md` 的后续建议，把 keymap、transcript lookup、插件审计、automation archive 和 diagnostics event 继续推进一步。本轮继续保持低风险、可测试的本地实现：提供 Tool Card action binding 描述、`/checkpoint diff --from-transcript`、插件 trusted policy 和 drift warning、automation archive summary/backoff，以及 hover/definition/references 统一 analysis event 工厂。
 

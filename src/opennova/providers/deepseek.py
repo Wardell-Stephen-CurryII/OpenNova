@@ -9,6 +9,7 @@ Supports deepseek-chat, deepseek-reasoner, and other DeepSeek models.
 
 from typing import Any
 
+from opennova.providers.models import get_model_profile, model_capabilities_for_provider
 from opennova.providers.openai import OpenAIProvider
 
 
@@ -28,12 +29,8 @@ class DeepSeekProvider(OpenAIProvider):
 
     DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 
-    SUPPORTED_MODELS = {
-        "deepseek-chat": {"context_window": 64000, "supports_vision": False},
-        "deepseek-reasoner": {"context_window": 64000, "supports_vision": False},
-        "deepseek-v4-pro": {"context_window": 131072, "supports_vision": False},
-        "deepseek-v4-flash": {"context_window": 131072, "supports_vision": False},
-    }
+    provider_name = "deepseek"
+    SUPPORTED_MODELS = model_capabilities_for_provider(provider_name)
 
     def __init__(
         self,
@@ -56,12 +53,4 @@ class DeepSeekProvider(OpenAIProvider):
 
     def get_model_info(self) -> dict[str, Any]:
         """Get information about the current model."""
-        info = self.SUPPORTED_MODELS.get(
-            self.model,
-            {"context_window": 64000, "supports_vision": False},
-        )
-        return {
-            "provider": "deepseek",
-            "model": self.model,
-            **info,
-        }
+        return get_model_profile(self.provider_name, self.model).to_dict()

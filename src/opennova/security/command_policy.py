@@ -157,12 +157,20 @@ class CommandPolicy:
             return
 
         if subcommand == "reset" and "--hard" in args:
-            analysis.risk_level = "warn"
+            analysis.risk_level = "danger"
             analysis.reason = "Destructive git hard reset"
             return
-        if subcommand == "push" and any(arg in {"--force", "-f", "--force-with-lease"} for arg in args):
-            analysis.risk_level = "warn"
+        if subcommand == "push" and any(
+            arg == "-f" or arg.startswith("--force") for arg in args
+        ):
+            analysis.risk_level = "danger"
             analysis.reason = "Destructive git force push"
+            return
+        if subcommand == "clean" and any(
+            arg == "--force" or (arg.startswith("-") and "f" in arg[1:]) for arg in args
+        ):
+            analysis.risk_level = "danger"
+            analysis.reason = "Destructive git clean"
             return
         if subcommand in {"clone", "fetch", "pull", "push"} and not self.allow_network:
             analysis.risk_level = "block"
@@ -218,7 +226,7 @@ class CommandPolicy:
     def _classify_file_mutation(self, analysis: CommandAnalysis) -> None:
         analysis.family = "file-mutation"
         analysis.operation = analysis.executable
-        analysis.risk_level = "warn"
+        analysis.risk_level = "danger" if analysis.executable in {"rm", "rmdir"} else "warn"
         analysis.reason = f"File mutation command: {analysis.executable}"
 
     def _classify_network(self, analysis: CommandAnalysis) -> None:
@@ -241,7 +249,8 @@ class CommandPolicy:
         url = _extract_network_target(analysis.argv)
         if not url:
             return
-        network_analysis = self.network_policy.evaluate(url).to_dict()
+        method = _extract_network_method(analysis.argv, analysis.executable)
+        network_analysis = self.network_policy.evaluate(url, method).to_dict()
         analysis.network_analysis = network_analysis
         network_risk = str(network_analysis.get("risk_level") or "safe")
         if self._risk_rank(network_risk) > self._risk_rank(analysis.risk_level):
@@ -264,3 +273,26 @@ def _extract_network_target(argv: list[str]) -> str:
         if "@" in arg and ":" in arg and not arg.startswith("-"):
             return "ssh://" + arg.split(":", 1)[0]
     return ""
+
+
+def _extract_network_method(argv: list[str], executable: str) -> str:
+    args = argv[1:]
+    if executable == "curl":
+        for index, arg in enumerate(args):
+            if arg in {"-X", "--request"} and index + 1 < len(args):
+                return args[index + 1].upper()
+            if arg.startswith("--request="):
+                return arg.split("=", 1)[1].upper()
+        if any(arg in {"-d", "--data", "--data-raw", "--data-binary", "-F", "--form"} for arg in args):
+            return "POST"
+        if any(arg in {"-T", "--upload-file"} for arg in args):
+            return "PUT"
+    if executable == "wget":
+        for index, arg in enumerate(args):
+            if arg == "--method" and index + 1 < len(args):
+                return args[index + 1].upper()
+            if arg.startswith("--method="):
+                return arg.split("=", 1)[1].upper()
+        if any(arg.startswith(("--post-data", "--post-file")) for arg in args):
+            return "POST"
+    return "GET"

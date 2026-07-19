@@ -1,6 +1,6 @@
 """Tool system implementations."""
 
-from opennova.tools.base import BaseTool, ToolResult, ToolRegistry, ToolParameter
+from opennova.tools.base import BaseTool, ToolParameter, ToolRegistry, ToolResult
 
 __all__ = [
     "BaseTool",

@@ -11,11 +11,13 @@ Implements safe command execution with:
 import asyncio
 import os
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opennova.runtime.events import current_tool_context
 from opennova.security.guardrails import Guardrails, GuardResult
 from opennova.security.process_sandbox import (
     ProcessSandbox,
@@ -38,6 +40,7 @@ class PreparedCommand:
     argv: list[str]
     guard_result: GuardResult
     sandbox_metadata: dict[str, Any]
+    cleanup_paths: list[str]
 
 
 class ExecuteCommandTool(BaseTool):
@@ -168,6 +171,13 @@ class ExecuteCommandTool(BaseTool):
                 error="timeout must be a number of seconds",
                 metadata={"guard_blocked": True, "risk_level": "block"},
             )
+        if resolved_timeout <= 0:
+            return ToolResult(
+                success=False,
+                output="",
+                error="timeout must be greater than zero",
+                metadata={"guard_blocked": True, "risk_level": "block"},
+            )
 
         work_dir = working_dir or self.working_dir
 
@@ -217,6 +227,22 @@ class ExecuteCommandTool(BaseTool):
                     output="",
                     error=f"Working directory is not a directory: {work_dir}",
                 )
+            path_result = self.guardrails.check_file_path(
+                str(work_path),
+                "read",
+                self.working_dir,
+            )
+            if not path_result.allowed:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=path_result.reason,
+                    metadata={
+                        "guard_blocked": True,
+                        "requires_confirmation": path_result.requires_confirmation,
+                        "risk_level": path_result.risk_level.value,
+                    },
+                )
             work_dir = str(work_path)
         except Exception as e:
             return ToolResult(
@@ -253,7 +279,7 @@ class ExecuteCommandTool(BaseTool):
                 env=utf8_environment(),
             )
             final_run_with_shell = run_with_shell and not sandbox_plan.metadata.get("applied")
-        except ProcessSandboxError as e:
+        except (ProcessSandboxError, ValueError) as e:
             return ToolResult(
                 success=False,
                 output="",
@@ -274,6 +300,7 @@ class ExecuteCommandTool(BaseTool):
             argv=sandbox_plan.argv,
             guard_result=guard_result,
             sandbox_metadata=sandbox_plan.metadata,
+            cleanup_paths=sandbox_plan.cleanup_paths,
         )
 
     def execute(
@@ -308,6 +335,7 @@ class ExecuteCommandTool(BaseTool):
                 text=True,
                 timeout=prepared.timeout,
                 env=utf8_environment(),
+                **self._process_group_kwargs(),
             )
 
             stdout = result.stdout or ""
@@ -320,6 +348,10 @@ class ExecuteCommandTool(BaseTool):
                 output_parts.append(f"stderr:\n{stderr}")
 
             combined_output = "\n\n".join(output_parts) if output_parts else "(no output)"
+            combined_output = self._with_sandbox_warning(
+                combined_output,
+                prepared.sandbox_metadata,
+            )
 
             truncated_output = self._truncate_output(combined_output)
 
@@ -364,12 +396,15 @@ class ExecuteCommandTool(BaseTool):
                 output="",
                 error=f"Failed to execute command: {e}",
             )
+        finally:
+            self._cleanup_paths(prepared.cleanup_paths)
 
-    async def execute_async(
+    async def async_execute(
         self,
         command: str,
         timeout: int | None = None,
         working_dir: str | None = None,
+        capture_stderr: bool = True,
     ) -> ToolResult:
         """
         Execute a shell command asynchronously.
@@ -386,7 +421,12 @@ class ExecuteCommandTool(BaseTool):
         if isinstance(prepared, ToolResult):
             return prepared
 
+        process: asyncio.subprocess.Process | None = None
         try:
+            context = current_tool_context()
+            if context and context.abort_signal:
+                context.abort_signal.raise_if_cancelled()
+            group_kwargs = self._process_group_kwargs()
             if prepared.run_with_shell:
                 process = await asyncio.create_subprocess_shell(
                     prepared.command,
@@ -394,6 +434,7 @@ class ExecuteCommandTool(BaseTool):
                     stderr=asyncio.subprocess.PIPE,
                     cwd=prepared.working_dir,
                     env=utf8_environment(),
+                    **group_kwargs,
                 )
             else:
                 process = await asyncio.create_subprocess_exec(
@@ -402,6 +443,7 @@ class ExecuteCommandTool(BaseTool):
                     stderr=asyncio.subprocess.PIPE,
                     cwd=prepared.working_dir,
                     env=utf8_environment(),
+                    **group_kwargs,
                 )
 
             try:
@@ -410,8 +452,7 @@ class ExecuteCommandTool(BaseTool):
                     timeout=prepared.timeout,
                 )
             except TimeoutError:
-                process.kill()
-                await process.wait()
+                await self._terminate_process_tree(process)
                 return ToolResult(
                     success=False,
                     output="",
@@ -424,10 +465,14 @@ class ExecuteCommandTool(BaseTool):
             output_parts = []
             if stdout_str:
                 output_parts.append(f"stdout:\n{stdout_str}")
-            if stderr_str:
+            if capture_stderr and stderr_str:
                 output_parts.append(f"stderr:\n{stderr_str}")
 
             combined_output = "\n\n".join(output_parts) if output_parts else "(no output)"
+            combined_output = self._with_sandbox_warning(
+                combined_output,
+                prepared.sandbox_metadata,
+            )
             truncated_output = self._truncate_output(combined_output)
 
             success = process.returncode == 0
@@ -454,12 +499,92 @@ class ExecuteCommandTool(BaseTool):
                 },
             )
 
+        except asyncio.CancelledError:
+            if process is not None:
+                await self._terminate_process_tree(process)
+            raise
         except Exception as e:
             return ToolResult(
                 success=False,
                 output="",
                 error=f"Failed to execute command: {e}",
             )
+        finally:
+            self._cleanup_paths(prepared.cleanup_paths)
+
+    async def execute_async(
+        self,
+        command: str,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+        capture_stderr: bool = True,
+    ) -> ToolResult:
+        """Backward-compatible alias for the runtime async tool protocol."""
+        return await self.async_execute(
+            command,
+            timeout=timeout,
+            working_dir=working_dir,
+            capture_stderr=capture_stderr,
+        )
+
+    @staticmethod
+    def _process_group_kwargs() -> dict[str, Any]:
+        """Start each command in an independently terminable process group."""
+        if os.name == "nt":
+            flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            return {"creationflags": flag} if flag else {}
+        return {"start_new_session": True}
+
+    @staticmethod
+    async def _terminate_process_tree(
+        process: asyncio.subprocess.Process,
+        grace_seconds: float = 1.0,
+    ) -> None:
+        """Terminate a command group, then force-kill it after a short grace period."""
+        if process.returncode is not None:
+            return
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+        except (LookupError, ProcessLookupError):
+            return
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace_seconds)
+            return
+        except TimeoutError:
+            pass
+
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except (LookupError, ProcessLookupError):
+            return
+        await process.wait()
+
+    @staticmethod
+    def _cleanup_paths(paths: list[str]) -> None:
+        for value in paths:
+            try:
+                Path(value).unlink(missing_ok=True)
+            except OSError:
+                continue
+
+    @staticmethod
+    def _with_sandbox_warning(output: str, metadata: dict[str, Any]) -> str:
+        reason = metadata.get("fallback_reason")
+        if (
+            metadata.get("enabled")
+            and not metadata.get("applied")
+            and reason
+            and "disabled" not in str(reason)
+        ):
+            return f"[process sandbox fallback: {reason}]\n\n{output}"
+        return output
 
     def _truncate_output(self, output: str) -> str:
         """Truncate output if too large."""

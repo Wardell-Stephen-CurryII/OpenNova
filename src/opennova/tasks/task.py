@@ -8,18 +8,22 @@ Implements Claude Code-style task management:
 - Progress tracking and notifications
 """
 
+import asyncio
+import contextlib
 import hashlib
 import os
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, Callable
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
-from opennova.utils.task_output import get_task_output_path
+from opennova.utils.task_output import get_task_output_dir, get_task_output_path
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     """Types of tasks that can be executed."""
 
     LOCAL_BASH = "local_bash"
@@ -28,7 +32,7 @@ class TaskType(str, Enum):
     MONITOR_MCP = "monitor_mcp"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Status of a task."""
 
     PENDING = "pending"
@@ -65,7 +69,7 @@ def generate_task_id(task_type: TaskType) -> str:
 
 def generate_message_id(content: str, timestamp: str) -> str:
     """Generate a stable message identifier from content and timestamp."""
-    digest = hashlib.sha1(f"{timestamp}:{content}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(f"{timestamp}:{content}".encode()).hexdigest()
     return f"msg_{digest[:12]}"
 
 
@@ -124,7 +128,7 @@ class Task:
     retain: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Initialize output file path."""
         self.output_file = get_task_output_path(self.id)
 
@@ -185,7 +189,9 @@ class Task:
             description=data["description"],
             status=TaskStatus(data.get("status", "pending")),
             tool_use_id=data.get("tool_use_id"),
-            start_time=datetime.fromisoformat(data["start_time"]) if data.get("start_time") else datetime.now(),
+            start_time=datetime.fromisoformat(data["start_time"])
+            if data.get("start_time")
+            else datetime.now(),
             end_time=datetime.fromisoformat(data["end_time"]) if data.get("end_time") else None,
             output_offset=data.get("output_offset", 0),
             notified=data.get("notified", False),
@@ -211,7 +217,9 @@ class Task:
             return self.progress.last_activity
         return f"{self.type.value}: {self.description[:50]}..."
 
-    def update_progress(self, activity: str | None = None, token_count: int = 0, tool_use_count: int = 0) -> None:
+    def update_progress(
+        self, activity: str | None = None, token_count: int = 0, tool_use_count: int = 0
+    ) -> None:
         """Update progress data."""
         if activity:
             self.progress.last_activity = activity
@@ -241,7 +249,7 @@ class Task:
             return ""
 
         try:
-            with open(self.output_file, "r", encoding="utf-8") as f:
+            with open(self.output_file, encoding="utf-8") as f:
                 f.seek(self.output_offset)
                 content = f.read(max_length)
             return content
@@ -272,7 +280,9 @@ class TaskResult:
                 "total_tokens": self.usage.total_tokens if self.usage else 0,
                 "tool_uses": self.usage.tool_uses if self.usage else 0,
                 "duration_ms": self.usage.duration_ms if self.usage else 0,
-            } if self.usage else None,
+            }
+            if self.usage
+            else None,
             "worktree_path": self.worktree_path,
             "worktree_branch": self.worktree_branch,
         }
@@ -302,10 +312,19 @@ class TaskManager:
     - Task lifecycle management
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        output_dir: str | Path | None = None,
+        namespace: str | None = None,
+    ) -> None:
         """Initialize task manager."""
         self._tasks: dict[str, Task] = {}
         self._cleanup_callbacks: dict[str, Callable[[], None]] = {}
+        self._async_handles: dict[str, asyncio.Task[Any]] = {}
+        base_output_dir = Path(output_dir) if output_dir is not None else get_task_output_dir()
+        self.namespace = namespace or secrets.token_hex(8)
+        self.output_dir = (base_output_dir / self.namespace).resolve()
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def create_task(
         self,
@@ -337,8 +356,42 @@ class TaskManager:
             retain=retain,
             metadata=metadata or {},
         )
+        task.output_file = str(self.output_dir / f"{task_id}.txt")
         self._tasks[task_id] = task
         return task
+
+    def write_task_output(self, task_id: str, content: str, offset: int = 0) -> int:
+        """Write output only inside this manager's runtime namespace."""
+        task = self._tasks.get(task_id)
+        if task is None:
+            return offset
+        mode = "a" if offset == 0 else "r+"
+        try:
+            with open(task.output_file, mode, encoding="utf-8") as stream:
+                if offset > 0:
+                    stream.seek(offset)
+                stream.write(content)
+                return stream.tell()
+        except OSError:
+            return offset
+
+    def read_task_output(
+        self,
+        task_id: str,
+        max_length: int = 10_000,
+        offset: int = 0,
+    ) -> tuple[str, int]:
+        """Read output only for a task owned by this manager."""
+        task = self._tasks.get(task_id)
+        if task is None or not Path(task.output_file).exists():
+            return "", offset
+        try:
+            with open(task.output_file, encoding="utf-8") as stream:
+                stream.seek(offset)
+                content = stream.read(max_length)
+                return content, stream.tell()
+        except OSError:
+            return "", offset
 
     def get_task(self, task_id: str) -> Task | None:
         """Get a task by ID."""
@@ -449,7 +502,9 @@ class TaskManager:
         task.delivered_messages.extend(messages)
         return True
 
-    def record_follow_up_batch(self, task_id: str, messages: list[dict[str, Any]], rendered_content: str) -> dict[str, Any] | None:
+    def record_follow_up_batch(
+        self, task_id: str, messages: list[dict[str, Any]], rendered_content: str
+    ) -> dict[str, Any] | None:
         """Record a delivered follow-up batch and its rendered user-facing content."""
         task = self._tasks.get(task_id)
         if not task:
@@ -460,7 +515,9 @@ class TaskManager:
             "batch_id": generate_follow_up_batch_id(task_id, len(task.follow_up_batches)),
             "delivered_at": delivered_at,
             "message_count": len(messages),
-            "message_ids": [message.get("message_id") for message in messages if message.get("message_id")],
+            "message_ids": [
+                message.get("message_id") for message in messages if message.get("message_id")
+            ],
             "messages": [message.copy() for message in messages],
             "rendered_content": rendered_content,
         }
@@ -494,7 +551,9 @@ class TaskManager:
 
         return False
 
-    def add_dependency(self, prerequisite_task_id: str, dependent_task_id: str) -> tuple[bool, str | None]:
+    def add_dependency(
+        self, prerequisite_task_id: str, dependent_task_id: str
+    ) -> tuple[bool, str | None]:
         """Make dependent_task_id wait for prerequisite_task_id to complete."""
         prerequisite_task = self._tasks.get(prerequisite_task_id)
         dependent_task = self._tasks.get(dependent_task_id)
@@ -544,6 +603,17 @@ class TaskManager:
         """Set cleanup callback for a task."""
         self._cleanup_callbacks[task_id] = callback
 
+    def set_async_handle(self, task_id: str, handle: asyncio.Task[Any]) -> None:
+        """Register an asyncio task owned by this manager."""
+        if task_id not in self._tasks:
+            raise KeyError(f"Task '{task_id}' not found")
+        self._async_handles[task_id] = handle
+
+    def release_async_handle(self, task_id: str, handle: asyncio.Task[Any]) -> None:
+        """Drop a completed handle without disturbing a replacement."""
+        if self._async_handles.get(task_id) is handle:
+            self._async_handles.pop(task_id, None)
+
     async def stop_task(self, task_id: str) -> bool:
         """
         Stop a running task.
@@ -561,20 +631,42 @@ class TaskManager:
         # Update status first
         self.update_task_status(task_id, TaskStatus.KILLED)
 
+        handle = self._async_handles.pop(task_id, None)
+        if handle is not None and not handle.done():
+            handle.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await handle
+
         # Call cleanup if registered
         if task_id in self._cleanup_callbacks:
-            try:
+            with contextlib.suppress(Exception):
                 self._cleanup_callbacks[task_id]()
-            except Exception:
-                pass
             del self._cleanup_callbacks[task_id]
 
         return True
+
+    async def aclose(self) -> None:
+        """Cancel every owned async task and run remaining cleanup callbacks."""
+        handles = list(self._async_handles.items())
+        self._async_handles.clear()
+        for task_id, handle in handles:
+            if not handle.done():
+                self.update_task_status(task_id, TaskStatus.KILLED)
+                handle.cancel()
+        if handles:
+            await asyncio.gather(*(handle for _, handle in handles), return_exceptions=True)
+
+        callbacks = list(self._cleanup_callbacks.values())
+        self._cleanup_callbacks.clear()
+        for callback in callbacks:
+            with contextlib.suppress(Exception):
+                callback()
 
     def remove_task(self, task_id: str) -> bool:
         """Remove a task from tracking."""
         if task_id in self._tasks:
             del self._tasks[task_id]
+            self._async_handles.pop(task_id, None)
             if task_id in self._cleanup_callbacks:
                 del self._cleanup_callbacks[task_id]
             return True

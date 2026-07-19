@@ -78,7 +78,7 @@ class NetworkPolicy:
             return analysis
 
         if analysis.is_internal and not self.allow_localhost:
-            analysis.risk_level = "warn"
+            analysis.risk_level = "danger"
             analysis.reason = "Network request targets localhost or a private address"
 
         blocked_match = self._match_domain(hostname, self.blocked_domains)
@@ -99,9 +99,9 @@ class NetworkPolicy:
         if (
             self.mutating_methods_require_confirmation
             and method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
-            and analysis.risk_level == "safe"
+            and analysis.risk_level in {"safe", "warn"}
         ):
-            analysis.risk_level = "warn"
+            analysis.risk_level = "danger"
             analysis.reason = f"Mutating HTTP request: {method.upper()}"
 
         return analysis

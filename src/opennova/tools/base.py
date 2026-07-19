@@ -3,7 +3,7 @@ Base Tool System - Abstract base class and registry for all tools.
 
 This module provides the foundation for OpenNova's tool system:
 - BaseTool: Abstract base class all tools must inherit from
-- ToolRegistry: Singleton registry for tool management
+- ToolRegistry: Runtime-owned registry for isolated tool management
 - ToolResult: Standard return structure for tool execution
 """
 
@@ -209,7 +209,9 @@ class BaseTool(ABC):
         if origin is not None:
             if origin in (list, tuple, set):
                 args = get_args(python_type)
-                item_schema = BaseTool._python_type_to_schema(args[0]) if args else {"type": "string"}
+                item_schema = (
+                    BaseTool._python_type_to_schema(args[0]) if args else {"type": "string"}
+                )
                 return {"type": "array", "items": item_schema}
             if origin is dict:
                 return {"type": "object"}
@@ -231,9 +233,13 @@ class BaseTool(ABC):
         """Infer a scalar JSON type from enum or literal values."""
         if values and all(isinstance(value, bool) for value in values):
             return "boolean"
-        if values and all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+        if values and all(
+            isinstance(value, int) and not isinstance(value, bool) for value in values
+        ):
             return "integer"
-        if values and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+        if values and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) for value in values
+        ):
             return "number"
         return "string"
 

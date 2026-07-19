@@ -9,13 +9,10 @@ Provides safe code modification through:
 """
 
 import difflib
-import os
 import re
-import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 
 @dataclass
@@ -280,9 +277,7 @@ class DiffEngine:
             for line in hunk.lines:
                 if line.startswith("-"):
                     old_lines_to_remove += 1
-                elif line.startswith("+"):
-                    new_lines.append(line[1:])
-                elif line.startswith(" "):
+                elif line.startswith("+") or line.startswith(" "):
                     new_lines.append(line[1:])
                 elif line.startswith("\\"):
                     pass

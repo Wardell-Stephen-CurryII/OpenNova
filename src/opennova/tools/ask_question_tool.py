@@ -173,12 +173,12 @@ class AskUserQuestionTool(BaseTool):
 
                 normalized_options = []
                 if is_free_text:
-                    output_lines.append(f"     (Free-text answer, Enter to skip)")
+                    output_lines.append("     (Free-text answer, Enter to skip)")
                 else:
                     if multi_select:
-                        output_lines.append(f"     (Select multiple options, comma-separated)")
+                        output_lines.append("     (Select multiple options, comma-separated)")
                     else:
-                        output_lines.append(f"     (Select one option)")
+                        output_lines.append("     (Select one option)")
                     for i, option in enumerate(raw_options, 1):
                         if isinstance(option, str):
                             label = option
@@ -212,6 +212,7 @@ class AskUserQuestionTool(BaseTool):
                     "options": normalized_options,
                     "multiSelect": multi_select,
                     "free_text": is_free_text,
+                    "allow_custom_answer": True,
                 })
 
             # Build prompt_payload for the interaction handler
@@ -226,6 +227,9 @@ class AskUserQuestionTool(BaseTool):
                 prompt_payload["options"] = first.get("options", [])
                 prompt_payload["multi_select"] = first.get("multiSelect", False)
                 prompt_payload["free_text"] = first.get("free_text", False)
+                prompt_payload["allow_custom_answer"] = first.get(
+                    "allow_custom_answer", True
+                )
 
             return ToolResult(
                 success=True,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from contextlib import suppress
 from threading import RLock
 from typing import Any
 
@@ -34,7 +35,8 @@ class RuntimeEventBus:
         with self._lock:
             listeners = tuple(self._listeners.get(event_type, ()))
         for listener in listeners:
-            listener(*args, **kwargs)
+            with suppress(Exception):
+                listener(*args, **kwargs)
 
     def clear(self) -> None:
         with self._lock:

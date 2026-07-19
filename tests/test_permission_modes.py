@@ -40,11 +40,101 @@ def test_permission_mode_matrix_and_hard_blocks():
     assert request_read.requires_confirmation is True
     assert auto_write.requires_confirmation is False
     assert auto_delete.risk_level == RiskLevel.WARN
-    assert auto_delete.requires_confirmation is True
-    assert auto_warn.requires_confirmation is True
+    assert auto_delete.requires_confirmation is False
+    assert auto_warn.requires_confirmation is False
+    assert auto_warn.metadata["auto_approved"] is True
     assert full_warn.requires_confirmation is False
     assert full_warn.metadata["approval_bypassed"] is True
     assert full_block.allowed is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pwd",
+        "ls -la",
+        "rg TODO src | head",
+        "git status --short",
+        "git diff --stat",
+        "git add src",
+        "git commit -m test",
+        "git push",
+        "uv run pytest -q",
+        "uv run ruff check src && uv run pytest -q",
+        "python -c 'print(1)'",
+        "uv sync",
+        "npm install",
+        "curl https://example.com",
+        "mv old.txt new.txt",
+    ],
+)
+def test_auto_mode_approves_routine_development_commands(command: str):
+    result = Guardrails(permission_mode="auto").check_tool_call(
+        "execute_command",
+        {"command": command},
+        ".",
+    )
+
+    assert result.allowed is True
+    assert result.risk_level in {RiskLevel.SAFE, RiskLevel.WARN}
+    assert result.requires_confirmation is False
+    assert result.metadata["auto_approved"] is True
+    assert result.metadata["approval_source"] is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm generated.txt",
+        "rmdir build",
+        "git reset --hard HEAD",
+        "git push --force origin main",
+        "git push --force-with-lease=main origin main",
+        "git clean -fd",
+        "curl http://127.0.0.1:8000/health",
+        "curl -X POST https://api.example.com/items",
+    ],
+)
+def test_auto_mode_still_requests_approval_for_dangerous_commands(command: str):
+    result = Guardrails(permission_mode="auto").check_tool_call(
+        "execute_command",
+        {"command": command},
+        ".",
+    )
+
+    assert result.allowed is True
+    assert result.risk_level == RiskLevel.DANGER
+    assert result.requires_confirmation is True
+    assert result.metadata["auto_approved"] is False
+    assert result.metadata["approval_source"] == "danger"
+
+
+def test_request_and_full_modes_handle_danger_without_bypassing_hard_blocks():
+    request = Guardrails(permission_mode="request").check_tool_call(
+        "execute_command", {"command": "rm generated.txt"}, "."
+    )
+    full = Guardrails(permission_mode="full").check_tool_call(
+        "execute_command", {"command": "rm generated.txt"}, "."
+    )
+
+    assert request.risk_level == RiskLevel.DANGER
+    assert request.requires_confirmation is True
+    assert request.metadata["approval_source"] == "request_mode"
+    assert full.risk_level == RiskLevel.DANGER
+    assert full.requires_confirmation is False
+    assert full.metadata["approval_bypassed"] is True
+
+
+def test_auto_mode_preserves_explicit_ask_rules():
+    result = Guardrails(
+        permission_mode="auto",
+        always_ask_tools=["execute_command"],
+    ).check_tool_call("execute_command", {"command": "git status"}, ".")
+
+    assert result.risk_level == RiskLevel.SAFE
+    assert result.requires_confirmation is True
+    assert result.metadata["approval_source"] == "explicit_ask"
+    assert result.metadata["auto_approved"] is False
 
 
 def test_request_mode_does_not_wrap_plan_or_question_interactions_in_approval():
@@ -74,6 +164,8 @@ async def test_react_loop_requests_approval_for_safe_action_in_request_mode():
 
     async def approve(metadata):
         approvals.append(metadata)
+        assert metadata["questions"][0]["allow_custom_answer"] is False
+        assert metadata["prompt_payload"]["allow_custom_answer"] is False
         question = metadata["questions"][0]["question"]
         return {
             "answers": {question: "Proceed"},
@@ -98,6 +190,42 @@ async def test_react_loop_requests_approval_for_safe_action_in_request_mode():
     assert result.success is True
     assert tool.calls == 1
     assert len(approvals) == 1
+
+
+@pytest.mark.asyncio
+async def test_react_loop_auto_executes_warn_action_without_approval():
+    class CommandTool(BaseTool):
+        name = "execute_command"
+        description = "command"
+
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def execute(self, command: str) -> ToolResult:
+            self.calls += 1
+            return ToolResult(success=True, output=command)
+
+    async def unexpected_approval(_metadata):
+        raise AssertionError("auto mode should not request approval for WARN commands")
+
+    tool = CommandTool()
+    loop = ReActLoop(
+        llm=SimpleNamespace(model="test-model"),
+        tool_registry=ToolRegistry([tool]),
+        state=AgentState(),
+        stream=False,
+        guardrails=Guardrails(permission_mode="auto"),
+        working_dir=".",
+        interaction_callback=unexpected_approval,
+    )
+
+    result = await loop._act(
+        ParsedAction(tool_name="execute_command", arguments={"command": "echo hi | cat"})
+    )
+
+    assert result.success is True
+    assert tool.calls == 1
 
 
 def test_full_mode_keeps_explicit_deny_and_mcp_restrictions():
@@ -244,4 +372,28 @@ def test_security_audit_records_permission_decision_metadata(tmp_path):
     event = json.loads(path.read_text(encoding="utf-8").strip())
     assert event["permission_mode"] == "full"
     assert event["guard"]["approval_required"] is False
+    assert event["guard"]["auto_approved"] is False
     assert event["guard"]["approval_bypassed"] is True
+
+
+def test_security_audit_records_auto_approval_metadata(tmp_path):
+    path = tmp_path / "security.jsonl"
+    logger = SecurityAuditLogger(path=path)
+    logger.permission_mode = "auto"
+    result = Guardrails(permission_mode="auto").check_tool_call(
+        "execute_command",
+        {"command": "uv run ruff check src && uv run pytest -q"},
+        ".",
+    )
+
+    logger.log_tool_event(
+        tool_name="execute_command",
+        arguments={"command": "uv run ruff check src && uv run pytest -q"},
+        guard_result=result,
+    )
+
+    event = json.loads(path.read_text(encoding="utf-8").strip())
+    assert event["guard"]["risk_level"] == "warn"
+    assert event["guard"]["approval_required"] is False
+    assert event["guard"]["approval_source"] is None
+    assert event["guard"]["auto_approved"] is True

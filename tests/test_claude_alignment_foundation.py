@@ -56,7 +56,10 @@ def test_tool_registry_instances_do_not_share_tools():
     assert not second.has_tool("dummy")
 
 
-def test_child_runtime_has_isolated_mutable_state_and_security_policy():
+def test_child_runtime_has_isolated_mutable_state_and_security_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     runtime = AgentRuntime(
         {
             "default_provider": "deepseek",
@@ -191,7 +194,9 @@ def test_glob_and_grep_tools_respect_gitignore_and_max_results(tmp_path: Path):
     (tmp_path / "ignored.py").write_text("needle ignored\n", encoding="utf-8")
     config = {"working_dir": str(tmp_path)}
 
-    glob_result = GlobFilesTool(config=config).execute("*.py", directory=str(tmp_path), max_results=1)
+    glob_result = GlobFilesTool(config=config).execute(
+        "*.py", directory=str(tmp_path), max_results=1
+    )
     grep_result = GrepCodeTool(config=config).execute(
         "needle",
         directory=str(tmp_path),
@@ -215,6 +220,67 @@ def test_grep_code_returns_error_for_invalid_regex(tmp_path: Path):
 
     assert result.success is False
     assert "invalid regex" in (result.error or "").lower()
+
+
+def test_grep_code_can_include_context_lines(tmp_path: Path):
+    target = tmp_path / "snippet.py"
+    target.write_text("one\ntwo\nneedle\nfour\nfive\n", encoding="utf-8")
+
+    result = GrepCodeTool(config={"working_dir": str(tmp_path)}).execute(
+        "needle",
+        directory=str(tmp_path),
+        file_glob="*.py",
+        context_lines=1,
+    )
+
+    assert result.success is True
+    assert "snippet.py:3: needle" in result.output
+    assert "snippet.py:2: two" in result.output
+    assert "snippet.py:4: four" in result.output
+    assert result.metadata["count"] == 1
+
+
+def test_grep_code_context_lines_keep_source_order_without_duplicates(tmp_path: Path):
+    target = tmp_path / "snippet.py"
+    target.write_text("one\nneedle two\nneedle three\nfour\n", encoding="utf-8")
+
+    result = GrepCodeTool(config={"working_dir": str(tmp_path)}).execute(
+        "needle",
+        directory=str(tmp_path),
+        file_glob="*.py",
+        context_lines=1,
+    )
+
+    assert result.success is True
+    assert result.metadata["count"] == 2
+    assert result.output.splitlines() == [
+        "  snippet.py:1: one",
+        "snippet.py:2: needle two",
+        "snippet.py:3: needle three",
+        "  snippet.py:4: four",
+    ]
+
+
+def test_grep_code_preserves_existing_positional_arguments(tmp_path: Path):
+    visible = tmp_path / "visible.py"
+    hidden = tmp_path / ".hidden.py"
+    visible.write_text("needle\n", encoding="utf-8")
+    hidden.write_text("needle\n", encoding="utf-8")
+
+    result = GrepCodeTool(config={"working_dir": str(tmp_path)}).execute(
+        "needle",
+        str(tmp_path),
+        "*.py",
+        False,
+        False,
+        10,
+        True,
+        True,
+    )
+
+    assert result.success is True
+    assert "visible.py:1: needle" in result.output
+    assert ".hidden.py:1: needle" in result.output
 
 
 def test_guardrails_permission_modes_and_tool_rules():

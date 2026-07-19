@@ -10,11 +10,13 @@ Provides:
 import asyncio
 import json
 import os
-import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import httpx
 
 from opennova.mcp.types import (
     MCPConnectionState,
@@ -54,9 +56,9 @@ class Transport(ABC):
         pass
 
     @abstractmethod
-    async def receive_stream(self) -> AsyncIterator[MCPMessage]:
+    def receive_stream(self) -> AsyncIterator[MCPMessage]:
         """Stream messages from the server."""
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def is_connected(self) -> bool:
@@ -74,9 +76,9 @@ class StdioTransport(Transport):
     def __init__(self, config: MCPServerConfig):
         """Initialize stdio transport."""
         self.config = config
-        self.process: subprocess.Popen | None = None
-        self._reader_task: asyncio.Task | None = None
-        self._response_queue: asyncio.Queue = asyncio.Queue()
+        self.process: asyncio.subprocess.Process | None = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._response_queue: asyncio.Queue[MCPMessage] = asyncio.Queue()
         self._request_id = 0
 
     async def connect(self) -> None:
@@ -186,7 +188,7 @@ class SSETransport(Transport):
         self.config = config
         self._connected = False
         self._request_id = 0
-        self._client = None
+        self._client: httpx.AsyncClient | None = None
 
     def _message_url(self) -> str:
         if not self.config.url:
@@ -215,11 +217,13 @@ class SSETransport(Transport):
         """Send a message via HTTP POST."""
         import httpx
 
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=self.config.timeout)
+        client = self._client
+        if client is None:
+            client = httpx.AsyncClient(timeout=self.config.timeout)
+            self._client = client
         data = message.to_dict()
 
-        response = await self._client.post(
+        response = await client.post(
             self._message_url(),
             json=data,
             timeout=self.config.timeout,
@@ -236,10 +240,12 @@ class SSETransport(Transport):
 
         if not self.config.url:
             raise RuntimeError("No URL configured")
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=self.config.timeout)
+        client = self._client
+        if client is None:
+            client = httpx.AsyncClient(timeout=self.config.timeout)
+            self._client = client
 
-        async with self._client.stream(
+        async with client.stream(
             "GET",
             self.config.url,
             timeout=self.config.timeout,
@@ -280,9 +286,9 @@ class MCPConnector:
         self.state = MCPConnectionState.DISCONNECTED
         self.server_info: MCPServerInfo | None = None
         self.tools: dict[str, MCPTool] = {}
-        self._pending_requests: dict[int, asyncio.Future] = {}
+        self._pending_requests: dict[int, asyncio.Future[Any]] = {}
         self._request_id = 0
-        self._listener_task: asyncio.Task | None = None
+        self._listener_task: asyncio.Task[None] | None = None
         self._initialized = asyncio.Event()
         self.last_error: str | None = None
 
@@ -297,13 +303,14 @@ class MCPConnector:
 
         try:
             if self.config.transport == TransportType.STDIO:
-                self.transport = StdioTransport(self.config)
+                transport: Transport = StdioTransport(self.config)
             elif self.config.transport == TransportType.SSE:
-                self.transport = SSETransport(self.config)
+                transport = SSETransport(self.config)
             else:
                 raise ValueError(f"Unsupported transport: {self.config.transport}")
+            self.transport = transport
 
-            await self.transport.connect()
+            await transport.connect()
 
             self._listener_task = asyncio.create_task(self._listen_loop())
 
@@ -348,11 +355,12 @@ class MCPConnector:
 
     async def _listen_loop(self) -> None:
         """Listen for incoming messages."""
-        if not self.transport:
+        transport = self.transport
+        if transport is None:
             return
 
         try:
-            async for message in self.transport.receive_stream():
+            async for message in transport.receive_stream():
                 if message.id is not None and message.id in self._pending_requests:
                     future = self._pending_requests.pop(message.id)
                     if future.done():
@@ -391,7 +399,8 @@ class MCPConnector:
         timeout: float = 30.0,
     ) -> Any:
         """Send a request and wait for response."""
-        if not self.transport:
+        transport = self.transport
+        if transport is None:
             raise RuntimeError("Not connected to MCP server")
 
         request_id = self._get_next_id()
@@ -401,18 +410,31 @@ class MCPConnector:
             params=params,
         )
 
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending_requests[request_id] = future
 
         try:
-            await self.transport.send(message)
+            await transport.send(message)
             return await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self._pending_requests.pop(request_id, None)
-            raise RuntimeError(f"Request {method} timed out") from None
-        except Exception:
-            self._pending_requests.pop(request_id, None)
+        except asyncio.CancelledError:
+            if not future.done():
+                future.cancel()
+            with suppress(Exception):
+                await asyncio.shield(
+                    transport.send(
+                        MCPMessage(
+                            method="notifications/cancelled",
+                            params={"requestId": request_id, "reason": "OpenNova run cancelled"},
+                        )
+                    )
+                )
             raise
+        except TimeoutError:
+            if not future.done():
+                future.cancel()
+            raise RuntimeError(f"Request {method} timed out") from None
+        finally:
+            self._pending_requests.pop(request_id, None)
 
     async def _initialize(self) -> MCPServerInfo:
         """Initialize connection with the server."""
@@ -427,7 +449,10 @@ class MCPConnector:
                 "capabilities": {},
             },
         )
-        await self.transport.send(MCPMessage(method="notifications/initialized", params={}))
+        transport = self.transport
+        if transport is None:
+            raise RuntimeError("MCP transport disconnected during initialization")
+        await transport.send(MCPMessage(method="notifications/initialized", params={}))
         self._initialized.set()
         return MCPServerInfo.from_dict(result, self.config.name)
 
@@ -600,6 +625,11 @@ class MCPToolWrapper(BaseTool):
 
     async def async_execute(self, **kwargs: Any) -> ToolResult:
         """Async execution."""
+        from opennova.runtime.events import current_tool_context
+
+        context = current_tool_context()
+        if context and context.abort_signal:
+            context.abort_signal.raise_if_cancelled()
         original_name = self.mcp_tool.name
         result = await self.connector.call_tool(original_name, kwargs)
 
@@ -733,7 +763,9 @@ class MCPManager:
         if server_name:
             connector = self.connectors.get(server_name)
             if not connector:
-                return MCPResourceContent(False, "", error=f"MCP server not connected: {server_name}")
+                return MCPResourceContent(
+                    False, "", error=f"MCP server not connected: {server_name}"
+                )
             return await connector.read_resource(uri)
 
         last_error = ""

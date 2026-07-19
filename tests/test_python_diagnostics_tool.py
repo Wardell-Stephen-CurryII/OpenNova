@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 
@@ -18,9 +19,10 @@ def test_python_diagnostics_reports_syntax_error(tmp_path: Path):
     assert result.metadata["diagnostics"]
 
 
-def test_runtime_registers_python_diagnostics_tool():
+def test_runtime_registers_python_diagnostics_tool(tmp_path: Path, monkeypatch):
     from opennova.runtime.agent import AgentRuntime
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     runtime = AgentRuntime(
         {
             "default_provider": "deepseek",
@@ -33,3 +35,4 @@ def test_runtime_registers_python_diagnostics_tool():
     )
 
     assert "python_diagnostics" in runtime.get_tools()
+    asyncio.run(runtime.aclose())

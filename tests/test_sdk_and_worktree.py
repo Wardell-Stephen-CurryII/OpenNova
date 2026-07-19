@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -23,14 +24,28 @@ class FakeRuntime:
             (),
             {"session_id": "session-1", "list_sessions": lambda self: []},
         )()
+        self.closed = False
 
     def register_callback(self, event: str, callback):
-        self.callbacks[event] = callback
+        self.callbacks.setdefault(event, []).append(callback)
+
+        def unsubscribe():
+            listeners = self.callbacks.get(event, [])
+            if callback in listeners:
+                listeners.remove(callback)
+            if not listeners:
+                self.callbacks.pop(event, None)
+
+        return unsubscribe
+
+    def emit(self, event: str, *args):
+        for callback in tuple(self.callbacks.get(event, [])):
+            callback(*args)
 
     async def run(self, task: str, mode: str = "act", stream: bool = True) -> str:
-        self.callbacks["action"]("read_file", {"file_path": "README.md"})
-        self.callbacks["result"](ToolResult(success=True, output="read ok"))
-        self.callbacks["stream"](StreamChunk(content="final text"))
+        self.emit("action", "read_file", {"file_path": "README.md"})
+        self.emit("result", ToolResult(success=True, output="read ok"))
+        self.emit("stream", StreamChunk(content="final text"))
         return f"completed: {task}"
 
     def resume_session(self, session_id: str):
@@ -38,6 +53,27 @@ class FakeRuntime:
 
     def get_sessions(self):
         return []
+
+    async def aclose(self):
+        self.closed = True
+
+
+class BlockingRuntime(FakeRuntime):
+    """Runtime double that remains active until the SDK cancels it."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def run(self, task: str, mode: str = "act", stream: bool = True) -> str:
+        del task, mode, stream
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
 
 
 @pytest.mark.asyncio
@@ -71,6 +107,63 @@ async def test_sdk_stream_message_emits_headless_event_contract():
     assert events[2].data["duration_ms"] >= 0
     assert events[3].data["content"] == "final text"
     assert events[-1].data["result"] == "completed: inspect repository"
+    assert client.get_runtime(session_id).callbacks == {}
+
+
+@pytest.mark.asyncio
+async def test_sdk_callbacks_remain_stable_across_one_hundred_turns():
+    from opennova.sdk import OpenNovaClient
+
+    client = OpenNovaClient({"default_provider": "deepseek"}, runtime_factory=FakeRuntime)
+    session_id = client.create_session()
+    runtime = client.get_runtime(session_id)
+
+    for turn in range(100):
+        result = await client.submit_message(session_id, f"turn {turn}", stream=False)
+        assert result == f"completed: turn {turn}"
+        assert runtime.callbacks == {}
+
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_cancel_and_close_release_the_session_runtime():
+    from opennova.sdk import OpenNovaClient
+
+    client = OpenNovaClient({}, runtime_factory=BlockingRuntime)
+    session_id = client.create_session()
+    runtime = client.get_runtime(session_id)
+
+    async def collect_events():
+        return [event async for event in client.stream_message(session_id, "wait")]
+
+    consumer = asyncio.create_task(collect_events())
+    await runtime.started.wait()
+    assert await client.cancel_run(session_id) is True
+    events = await consumer
+
+    assert [event.type for event in events] == ["run_start", "run_cancelled"]
+    assert runtime.cancelled is True
+    assert runtime.callbacks == {}
+    assert await client.close_session(session_id) is True
+    assert runtime.closed is True
+    assert client.list_sessions() == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_aclose_is_idempotent_and_rejects_new_sessions():
+    from opennova.sdk import OpenNovaClient
+
+    client = OpenNovaClient({}, runtime_factory=FakeRuntime)
+    session_id = client.create_session()
+    runtime = client.get_runtime(session_id)
+
+    await client.aclose()
+    await client.aclose()
+
+    assert runtime.closed is True
+    with pytest.raises(RuntimeError, match="closed"):
+        client.create_session()
 
 
 @dataclass
@@ -106,9 +199,13 @@ def test_worktree_tools_create_and_remove_worktree(tmp_path: Path):
     assert enter_result.metadata["path"] == str(target.resolve())
 
 
-def test_runtime_registers_sdk_alignment_tools():
+def test_runtime_registers_sdk_alignment_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     from opennova.runtime.agent import AgentRuntime
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     runtime = AgentRuntime(
         {
             "default_provider": "deepseek",

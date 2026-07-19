@@ -1,23 +1,23 @@
 """Tests for Phase 2 modules."""
 
-import pytest
-from pathlib import Path
-import tempfile
 import os
+import tempfile
 
-from opennova.diff.engine import DiffEngine, ApplyResult
-from opennova.diff.parser import DiffParser, FileChange, ChangeType
-from opennova.diff.changeset import ChangeSet, ChangeResult
+import pytest
+
+from opennova.diff.changeset import ChangeSet
+from opennova.diff.engine import DiffEngine
+from opennova.diff.parser import ChangeType, DiffParser, FileChange
 from opennova.memory.context import ContextManager
-from opennova.memory.working import WorkingMemory, ActionStatus
 from opennova.memory.project import ProjectMemory
+from opennova.memory.working import ActionStatus, WorkingMemory
 from opennova.providers.base import FinishReason, LLMResponse, Message, ToolCall, Usage
 from opennova.runtime.agent import AgentRuntime
 from opennova.runtime.loop import ReActLoop
 from opennova.runtime.state import AgentState
-from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 from opennova.security.guardrails import Guardrails, RiskLevel
 from opennova.security.sandbox import Sandbox, SandboxConfig
+from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
 
 
 class TestDiffEngine:
@@ -259,7 +259,9 @@ class TestMemoryRuntimeIntegration:
 
         assert result == "done"
         assert provider.seen_messages is not None
-        assert provider.seen_messages[0].content == "Memory context"
+        assert provider.seen_messages[0].name == "opennova_runtime"
+        assert "You are an AI coding assistant" in provider.seen_messages[0].content
+        assert any(message.content == "Memory context" for message in provider.seen_messages)
         assert provider.seen_messages[-1].content == "Task: Use memory"
 
     @pytest.mark.asyncio

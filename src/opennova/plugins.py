@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,6 +9,7 @@ from typing import Any
 import yaml
 
 from opennova.hooks import HookManager
+from opennova.security.workspace_trust import WorkspaceTrustStore, digest_paths
 from opennova.skills.base import SkillSource
 
 
@@ -45,6 +45,8 @@ class PluginManifest:
     description: str = ""
     enabled: bool = True
     signature: str = ""
+    signature_verified: bool = False
+    digest: str = ""
     commands: list[dict[str, Any]] = field(default_factory=list)
     tools: list[dict[str, Any]] = field(default_factory=list)
     skills: list[Path] = field(default_factory=list)
@@ -72,7 +74,7 @@ class PluginManifest:
             for item in data.get("hooks", [])
         ]
 
-        return cls(
+        manifest = cls(
             name=name,
             root=plugin_root,
             description=str(data.get("description", "")),
@@ -84,6 +86,22 @@ class PluginManifest:
             mcp_servers=list(data.get("mcp_servers", []) or []),
             hooks=hooks,
         )
+        manifest.digest = manifest.content_digest()
+        return manifest
+
+    def content_digest(self) -> str:
+        """Hash all plugin files so active trust expires on any content drift."""
+        paths: list[Path] = []
+        for path in self.root.rglob("*"):
+            if path.is_dir():
+                continue
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(self.root)
+            except ValueError as exc:
+                raise ValueError(f"Plugin content is outside plugin directory: {path}") from exc
+            paths.append(resolved)
+        return digest_paths(self.root, paths)
 
     @staticmethod
     def _resolve_inside_plugin(plugin_root: Path, value: str, label: str) -> Path:
@@ -98,29 +116,51 @@ class PluginManifest:
 class PluginManager:
     """Discover and apply project-local plugins."""
 
-    def __init__(self, project_path: str | Path = "."):
+    def __init__(
+        self,
+        project_path: str | Path = ".",
+        *,
+        trust_path: str | Path | None = None,
+    ):
         self.project_path = Path(project_path).resolve()
         self.plugins_dir = self.project_path / ".opennova" / "plugins"
-        self.trust_path = self.plugins_dir / "trusted.json"
+        self.legacy_trust_path = self.plugins_dir / "trusted.json"
+        self.trust_store = WorkspaceTrustStore(trust_path)
+        self.trust_path = self.trust_store.path
         self.plugins: list[PluginManifest] = []
         self.errors: dict[str, str] = {}
+        self.trust_warnings: dict[str, str] = {}
         self.commands: list[dict[str, Any]] = []
-        self.trusted_plugins: set[str] = self._load_trusted_plugins()
+        self.trusted_plugins: set[str] = set()
         self.skill_sources: list[SkillSource] = []
+        self._applied_mcp_entries: list[tuple[list[Any], dict[str, Any]]] = []
+        self._active_mcp_server_names: set[str] = set()
 
     def trust_plugin(self, name: str) -> None:
         """Persist trust for a local plugin so active contributions can load."""
+        manifest = next((item for item in self.plugins if item.name == name), None)
+        if manifest is None:
+            for manifest_path in self.discover_manifests():
+                candidate = PluginManifest.from_file(manifest_path, project_path=self.project_path)
+                if candidate.name == name:
+                    manifest = candidate
+                    break
+        if manifest is None:
+            raise ValueError(f"Plugin not found: {name}")
+        self.trust_store.trust_plugin(self.project_path, name, manifest.digest)
         self.trusted_plugins.add(name)
-        self._save_trusted_plugins()
 
     def untrust_plugin(self, name: str) -> None:
         """Remove persisted trust for a local plugin."""
+        self.trust_store.untrust_plugin(self.project_path, name)
         self.trusted_plugins.discard(name)
-        self._save_trusted_plugins()
 
-    def is_trusted(self, name: str) -> bool:
+    def is_trusted(self, name: str, digest: str | None = None) -> bool:
         """Return whether a plugin may apply active contributions."""
-        return name in self.trusted_plugins
+        if digest is None:
+            manifest = next((item for item in self.plugins if item.name == name), None)
+            digest = manifest.digest if manifest else ""
+        return self.trust_store.plugin_is_trusted(self.project_path, name, digest)
 
     def discover_manifests(self) -> list[Path]:
         """Find plugin.yaml files under .opennova/plugins/*/."""
@@ -134,11 +174,16 @@ class PluginManager:
         hook_manager: HookManager | None = None,
     ) -> list[PluginManifest]:
         """Load enabled plugins and merge their declarative contributions."""
+        self._remove_mcp_contributions()
         self.plugins = []
         self.errors = {}
+        self.trust_warnings = {}
         self.commands = []
         self.skill_sources = []
-        self.trusted_plugins = self._load_trusted_plugins()
+        self.trusted_plugins = set()
+        self._active_mcp_server_names = set()
+        if hook_manager:
+            hook_manager.clear_source("plugin:", prefix=True)
 
         for manifest_path in self.discover_manifests():
             plugin_name = manifest_path.parent.name
@@ -146,7 +191,13 @@ class PluginManager:
                 manifest = PluginManifest.from_file(manifest_path, project_path=self.project_path)
                 if not manifest.enabled:
                     continue
-                if self.is_trusted(manifest.name):
+                trust_record = self.trust_store.plugin_record(self.project_path, manifest.name)
+                if trust_record and trust_record.get("digest") != manifest.digest:
+                    self.trust_warnings[manifest.name] = (
+                        "Plugin content changed after trust was granted; active contributions disabled"
+                    )
+                if self.is_trusted(manifest.name, manifest.digest):
+                    self.trusted_plugins.add(manifest.name)
                     self._apply_manifest(manifest, config=config, hook_manager=hook_manager)
                 self.plugins.append(manifest)
             except Exception as exc:
@@ -160,7 +211,7 @@ class PluginManager:
 
         tools: list[Any] = []
         for manifest in self.plugins:
-            if not self.is_trusted(manifest.name):
+            if not self.is_trusted(manifest.name, manifest.digest):
                 continue
             for tool_data in manifest.tools:
                 name = str(tool_data.get("name", "")).strip()
@@ -188,6 +239,10 @@ class PluginManager:
         """Return trusted plugin skill roots as first-class skill sources."""
         return list(self.skill_sources)
 
+    def get_active_mcp_server_names(self) -> set[str]:
+        """Return MCP server names contributed by the current trusted snapshot."""
+        return set(self._active_mcp_server_names)
+
     def build_lockfile(self) -> dict[str, Any]:
         """Build a local trust snapshot for discovered plugins."""
         plugins: list[dict[str, Any]] = []
@@ -199,7 +254,9 @@ class PluginManager:
                     "path": str(manifest.root.relative_to(self.project_path)),
                     "enabled": manifest.enabled,
                     "signature": manifest.signature,
-                    "trusted": self.is_trusted(manifest.name),
+                    "signature_verified": manifest.signature_verified,
+                    "digest": manifest.digest,
+                    "trusted": self.is_trusted(manifest.name, manifest.digest),
                     "commands": [dict(command) for command in manifest.commands],
                     "tools": [
                         {
@@ -209,14 +266,8 @@ class PluginManager:
                         }
                         for tool in manifest.tools
                     ],
-                    "skills": [
-                        str(skill.relative_to(manifest.root))
-                        for skill in manifest.skills
-                    ],
-                    "hooks": [
-                        str(hook.relative_to(manifest.root))
-                        for hook in manifest.hooks
-                    ],
+                    "skills": [str(skill.relative_to(manifest.root)) for skill in manifest.skills],
+                    "hooks": [str(hook.relative_to(manifest.root)) for hook in manifest.hooks],
                     "mcp_servers": [
                         str(server.get("name", ""))
                         for server in manifest.mcp_servers
@@ -224,7 +275,7 @@ class PluginManager:
                     ],
                 }
             )
-        return {"version": 1, "plugins": plugins}
+        return {"version": 2, "plugins": plugins}
 
     def test_plugin(self, name: str) -> PluginTestReport:
         """Validate one discovered plugin without executing its hooks or tools."""
@@ -264,8 +315,10 @@ class PluginManager:
             audits.append(
                 {
                     "name": manifest.name,
-                    "trusted": self.is_trusted(manifest.name),
+                    "trusted": self.is_trusted(manifest.name, manifest.digest),
                     "signature": manifest.signature,
+                    "signature_verified": manifest.signature_verified,
+                    "digest": manifest.digest,
                     "risks": risks,
                 }
             )
@@ -276,8 +329,11 @@ class PluginManager:
         reports: list[dict[str, Any]] = []
         for manifest in self.plugins:
             violations: list[str] = []
-            if policy.require_signature and not manifest.signature:
-                violations.append("missing-signature")
+            if policy.require_signature:
+                if not manifest.signature:
+                    violations.append("missing-signature")
+                elif not manifest.signature_verified:
+                    violations.append("unverified-signature")
             if not policy.allow_hooks and manifest.hooks:
                 violations.append("hooks-disallowed")
             if not policy.allow_mcp and manifest.mcp_servers:
@@ -285,7 +341,7 @@ class PluginManager:
             reports.append(
                 {
                     "name": manifest.name,
-                    "trusted": self.is_trusted(manifest.name),
+                    "trusted": self.is_trusted(manifest.name, manifest.digest),
                     "violations": violations,
                 }
             )
@@ -298,6 +354,22 @@ class PluginManager:
     ) -> list[dict[str, str]]:
         """Return startup warning messages for drift and policy issues."""
         warnings: list[dict[str, str]] = []
+        if self.legacy_trust_path.exists():
+            warnings.append(
+                {
+                    "type": "trust",
+                    "plugin": "*",
+                    "message": "legacy name-only trust records are ignored; re-trust each plugin",
+                }
+            )
+        warnings.extend(
+            {
+                "type": "trust",
+                "plugin": name,
+                "message": message,
+            }
+            for name, message in sorted(self.trust_warnings.items())
+        )
         if lockfile:
             drift = self.compare_lockfile(lockfile)
             for item in drift["changed"]:
@@ -349,7 +421,7 @@ class PluginManager:
         current: dict[str, Any],
     ) -> list[str]:
         changes: list[str] = []
-        scalar_fields = ("description", "enabled", "signature", "trusted")
+        scalar_fields = ("description", "enabled", "signature")
         for field_name in scalar_fields:
             if locked.get(field_name) != current.get(field_name):
                 changes.append(f"{field_name} changed")
@@ -368,8 +440,13 @@ class PluginManager:
             if tool_name not in current_tools:
                 changes.append(f"tool removed: {tool_name}")
                 continue
-            if locked_tools[tool_name].get("permission") != current_tools[tool_name].get("permission"):
+            if locked_tools[tool_name].get("permission") != current_tools[tool_name].get(
+                "permission"
+            ):
                 changes.append(f"tool {tool_name} permission changed")
+        for field_name in ("digest", "trusted", "signature_verified"):
+            if locked.get(field_name) != current.get(field_name):
+                changes.append(f"{field_name} changed")
         return changes
 
     def _validate_tool_manifest(self, tool_data: dict[str, Any]) -> str | None:
@@ -413,14 +490,20 @@ class PluginManager:
         mcp_servers = mcp_config.setdefault("servers", [])
         existing_names = {server.get("name") for server in mcp_servers if isinstance(server, dict)}
         for server in manifest.mcp_servers:
-            if server.get("name") not in existing_names:
-                mcp_servers.append(server)
+            server_name = str(server.get("name", "")).strip()
+            if server_name and server_name not in existing_names:
+                contribution = dict(server)
+                mcp_servers.append(contribution)
+                self._applied_mcp_entries.append((mcp_servers, contribution))
+                self._active_mcp_server_names.add(server_name)
+                existing_names.add(server_name)
 
         if hook_manager:
             for hook_path in manifest.hooks:
                 hook_manager.load_hook_file(
                     hook_path,
                     module_prefix=f"opennova_plugin_hook_{manifest.name}",
+                    source=f"plugin:{manifest.name}",
                 )
 
         for command in manifest.commands:
@@ -428,13 +511,8 @@ class PluginManager:
             command_entry.setdefault("plugin", manifest.name)
             self.commands.append(command_entry)
 
-    def _load_trusted_plugins(self) -> set[str]:
-        if not self.trust_path.exists():
-            return set()
-        payload = json.loads(self.trust_path.read_text(encoding="utf-8"))
-        return {str(name) for name in payload.get("trusted", [])}
-
-    def _save_trusted_plugins(self) -> None:
-        self.trust_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"trusted": sorted(self.trusted_plugins)}
-        self.trust_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    def _remove_mcp_contributions(self) -> None:
+        """Remove only MCP entries previously injected by this manager."""
+        for servers, contribution in self._applied_mcp_entries:
+            servers[:] = [server for server in servers if server is not contribution]
+        self._applied_mcp_entries = []

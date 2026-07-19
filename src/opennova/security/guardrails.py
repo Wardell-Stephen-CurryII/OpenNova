@@ -305,14 +305,20 @@ class Guardrails:
 
         mode = self.effective_permission_mode
         prior_confirmation = safety_result.requires_confirmation or explicitly_ask
+        approval_source: str | None = None
         if tool_name in APPROVAL_EXEMPT_TOOLS:
             requires_confirmation = False
         elif mode == PermissionMode.REQUEST:
             requires_confirmation = True
+            approval_source = "request_mode"
         elif mode == PermissionMode.FULL:
             requires_confirmation = False
         else:
-            requires_confirmation = safety_result.risk_level == RiskLevel.WARN or explicitly_ask
+            requires_confirmation = safety_result.risk_level == RiskLevel.DANGER or explicitly_ask
+            if explicitly_ask:
+                approval_source = "explicit_ask"
+            elif safety_result.risk_level == RiskLevel.DANGER:
+                approval_source = "danger"
             if explicitly_allow and safety_result.risk_level == RiskLevel.SAFE:
                 requires_confirmation = False
 
@@ -321,9 +327,13 @@ class Guardrails:
             {
                 "permission_mode": mode.value,
                 "approval_required": requires_confirmation,
-                "approval_bypassed": bool(
-                    mode == PermissionMode.FULL and prior_confirmation
+                "approval_source": approval_source,
+                "auto_approved": bool(
+                    mode == PermissionMode.AUTO
+                    and not requires_confirmation
+                    and safety_result.risk_level in {RiskLevel.SAFE, RiskLevel.WARN}
                 ),
+                "approval_bypassed": bool(mode == PermissionMode.FULL and prior_confirmation),
             }
         )
         return safety_result
@@ -380,6 +390,19 @@ class Guardrails:
                 metadata=metadata,
             )
 
+        if analysis.risk_level == "danger":
+            return GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.DANGER,
+                reason=analysis.reason,
+                requires_confirmation=True,
+                suggestions=[
+                    "Review the target and irreversible effects before executing",
+                    "Prefer a reversible or narrowly scoped alternative where possible",
+                ],
+                metadata=metadata,
+            )
+
         if analysis.risk_level == "warn":
             return GuardResult(
                 allowed=True,
@@ -418,7 +441,7 @@ class Guardrails:
             if re.search(pattern, command_stripped, re.IGNORECASE):
                 return GuardResult(
                     allowed=True,
-                    risk_level=RiskLevel.WARN,
+                    risk_level=RiskLevel.DANGER,
                     reason=f"Destructive operation detected: {description}",
                     requires_confirmation=True,
                     suggestions=[
@@ -464,7 +487,7 @@ class Guardrails:
         )
         if not rule:
             return None
-        metadata = {"rule_id": rule.id, "rule_reason": rule.reason}
+        metadata: dict[str, Any] = {"rule_id": rule.id, "rule_reason": rule.reason}
         if command_analysis:
             metadata["command_analysis"] = command_analysis
         reason = rule.reason or f"Permission rule matched: {rule.id}"
@@ -509,14 +532,18 @@ class Guardrails:
         ):
             return GuardResult(
                 True,
-                RiskLevel.WARN,
+                RiskLevel.DANGER,
                 f"MCP tool requires confirmation: {mcp_server}.{mcp_tool}",
                 True,
                 metadata=metadata,
             )
-        return GuardResult(True, RiskLevel.SAFE, f"MCP tool trusted: {mcp_server}.{mcp_tool}", metadata=metadata)
+        return GuardResult(
+            True, RiskLevel.SAFE, f"MCP tool trusted: {mcp_server}.{mcp_tool}", metadata=metadata
+        )
 
-    def _check_secret_content(self, tool_name: str, arguments: dict[str, Any]) -> GuardResult | None:
+    def _check_secret_content(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> GuardResult | None:
         if tool_name not in {"write_file", "create_file", "edit_file", "multi_edit_file"}:
             return None
         content = _extract_write_content(arguments)
@@ -537,7 +564,7 @@ class Guardrails:
         if bool(self.secrets_policy.get("warn_on_write", True)):
             return GuardResult(
                 True,
-                RiskLevel.WARN,
+                RiskLevel.DANGER,
                 "Write content appears to contain secrets",
                 True,
                 metadata=metadata,
@@ -598,9 +625,7 @@ class Guardrails:
             try:
                 path.relative_to(work_path)
             except ValueError:
-                if not any(
-                    path.is_relative_to(Path(p).resolve()) for p in self.allowed_paths
-                ):
+                if not any(path.is_relative_to(Path(p).resolve()) for p in self.allowed_paths):
                     return GuardResult(
                         allowed=False,
                         risk_level=RiskLevel.DANGER,
@@ -658,6 +683,14 @@ class Guardrails:
                 allowed=False,
                 risk_level=RiskLevel.BLOCK,
                 reason=analysis.reason,
+                metadata=metadata,
+            )
+        if analysis.risk_level == "danger":
+            return GuardResult(
+                allowed=True,
+                risk_level=RiskLevel.DANGER,
+                reason=analysis.reason,
+                requires_confirmation=True,
                 metadata=metadata,
             )
         if analysis.risk_level == "warn":
@@ -737,6 +770,15 @@ class Guardrails:
             return permission_result
 
         if tool_name == "execute_command":
+            command_working_dir = arguments.get("working_dir")
+            if command_working_dir:
+                path_result = self.check_file_path(
+                    str(command_working_dir),
+                    "read",
+                    working_dir,
+                )
+                if not path_result.allowed:
+                    return path_result
             command = arguments.get("command", "")
             result = self.check_command(command)
 
@@ -787,7 +829,7 @@ class Guardrails:
         if secret_result is not None:
             if not secret_result.allowed:
                 return secret_result
-            result.risk_level = RiskLevel.WARN
+            result.risk_level = secret_result.risk_level
             result.reason = secret_result.reason
             result.requires_confirmation = True
             result.metadata.update(secret_result.metadata)
@@ -795,7 +837,7 @@ class Guardrails:
         if mcp_context_result and mcp_context_result.allowed:
             result.metadata.update(mcp_context_result.metadata)
             if mcp_context_result.requires_confirmation and result.allowed:
-                result.risk_level = RiskLevel.WARN
+                result.risk_level = mcp_context_result.risk_level
                 result.reason = mcp_context_result.reason
                 result.requires_confirmation = True
         return self._apply_approval_policy(tool_name, result, rule_result)

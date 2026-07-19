@@ -6,7 +6,6 @@ Fully supports streaming and tool/function calling.
 """
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -21,7 +20,10 @@ from opennova.providers.base import (
     ToolCall,
     ToolSchema,
     Usage,
+    normalize_provider_error,
+    parse_tool_arguments,
 )
+from opennova.providers.models import get_model_profile, model_capabilities_for_provider
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -32,14 +34,8 @@ class OpenAIProvider(BaseLLMProvider):
     Supports all OpenAI models including GPT-4, GPT-4o, and o1 series.
     """
 
-    SUPPORTED_MODELS = {
-        "gpt-4o": {"context_window": 128000, "supports_vision": True},
-        "gpt-4o-mini": {"context_window": 128000, "supports_vision": True},
-        "gpt-4-turbo": {"context_window": 128000, "supports_vision": True},
-        "gpt-4": {"context_window": 8192, "supports_vision": False},
-        "o1-preview": {"context_window": 128000, "supports_vision": False},
-        "o1-mini": {"context_window": 128000, "supports_vision": False},
-    }
+    provider_name = "openai"
+    SUPPORTED_MODELS = model_capabilities_for_provider(provider_name)
 
     def __init__(
         self,
@@ -101,7 +97,12 @@ class OpenAIProvider(BaseLLMProvider):
         if "top_p" in kwargs:
             request_params["top_p"] = kwargs["top_p"]
 
-        response = await self.client.chat.completions.create(**request_params)
+        try:
+            response = await self.client.chat.completions.create(**request_params)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise normalize_provider_error(exc, provider=self.provider_name) from exc
 
         choice = response.choices[0]
 
@@ -111,7 +112,11 @@ class OpenAIProvider(BaseLLMProvider):
                 ToolCall(
                     id=tc.id,
                     name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
+                    arguments=parse_tool_arguments(
+                        tc.function.arguments,
+                        tool_name=tc.function.name,
+                        tool_call_id=tc.id,
+                    ),
                     call_type="function",
                 )
                 for tc in choice.message.tool_calls
@@ -184,92 +189,95 @@ class OpenAIProvider(BaseLLMProvider):
         if "temperature" in kwargs:
             request_params["temperature"] = kwargs["temperature"]
 
-        stream = await self.client.chat.completions.create(**request_params)
+        try:
+            stream = await self.client.chat.completions.create(**request_params)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise normalize_provider_error(exc, provider=self.provider_name) from exc
 
         tool_call_accumulator: dict[int, dict[str, Any]] = {}
         accumulated_reasoning: str = ""
 
-        async for chunk in stream:
-            if not chunk.choices:
-                if hasattr(chunk, "usage") and chunk.usage:
+        try:
+            async for chunk in stream:
+                if not chunk.choices:
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        yield StreamChunk(
+                            usage=Usage(
+                                prompt_tokens=chunk.usage.prompt_tokens,
+                                completion_tokens=chunk.usage.completion_tokens,
+                                total_tokens=chunk.usage.total_tokens,
+                            ),
+                            delta=False,
+                        )
+                    continue
+
+                choice = chunk.choices[0]
+
+                # Capture reasoning_content from deltas (DeepSeek thinking mode)
+                delta_reasoning = getattr(choice.delta, "reasoning_content", None) or ""
+                if delta_reasoning:
+                    accumulated_reasoning += delta_reasoning
+
+                if choice.delta.content:
+                    yield StreamChunk(content=choice.delta.content, delta=True)
+
+                if choice.delta.tool_calls:
+                    for tc in choice.delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_call_accumulator:
+                            tool_call_accumulator[idx] = {
+                                "id": tc.id,
+                                "name": tc.function.name if tc.function else None,
+                                "arguments": "",
+                            }
+
+                        if tc.function:
+                            if tc.function.name:
+                                tool_call_accumulator[idx]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                tool_call_accumulator[idx]["arguments"] += tc.function.arguments
+
+                if choice.finish_reason:
+                    for idx, tc_data in tool_call_accumulator.items():
+                        args = parse_tool_arguments(
+                            tc_data["arguments"],
+                            tool_name=tc_data["name"] or "unknown",
+                            tool_call_id=tc_data["id"] or f"call_{idx}",
+                        )
+
+                        yield StreamChunk(
+                            tool_call=ToolCall(
+                                id=tc_data["id"] or f"call_{idx}",
+                                name=tc_data["name"] or "unknown",
+                                arguments=args,
+                                call_type="function",
+                            ),
+                            delta=False,
+                        )
+
+                    finish_reason_map = {
+                        "stop": FinishReason.STOP,
+                        "tool_calls": FinishReason.TOOL_CALL,
+                        "length": FinishReason.LENGTH,
+                    }
+                    finish_reason_raw = choice.finish_reason
+                    if finish_reason_raw and hasattr(finish_reason_raw, "value"):
+                        finish_reason_raw = finish_reason_raw.value
                     yield StreamChunk(
-                        usage=Usage(
-                            prompt_tokens=chunk.usage.prompt_tokens,
-                            completion_tokens=chunk.usage.completion_tokens,
-                            total_tokens=chunk.usage.total_tokens,
+                        finish_reason=finish_reason_map.get(
+                            finish_reason_raw or "stop",
+                            FinishReason.STOP,
                         ),
                         delta=False,
+                        reasoning_content=accumulated_reasoning or None,
                     )
-                continue
-
-            choice = chunk.choices[0]
-
-            # Capture reasoning_content from deltas (DeepSeek thinking mode)
-            delta_reasoning = getattr(choice.delta, "reasoning_content", None) or ""
-            if delta_reasoning:
-                accumulated_reasoning += delta_reasoning
-
-            if choice.delta.content:
-                yield StreamChunk(content=choice.delta.content, delta=True)
-
-            if choice.delta.tool_calls:
-                for tc in choice.delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_call_accumulator:
-                        tool_call_accumulator[idx] = {
-                            "id": tc.id,
-                            "name": tc.function.name if tc.function else None,
-                            "arguments": "",
-                        }
-
-                    if tc.function:
-                        if tc.function.name:
-                            tool_call_accumulator[idx]["name"] = tc.function.name
-                        if tc.function.arguments:
-                            tool_call_accumulator[idx]["arguments"] += tc.function.arguments
-
-            if choice.finish_reason:
-                for idx, tc_data in tool_call_accumulator.items():
-                    try:
-                        args = json.loads(tc_data["arguments"])
-                    except json.JSONDecodeError:
-                        args = {"raw": tc_data["arguments"]}
-
-                    yield StreamChunk(
-                        tool_call=ToolCall(
-                            id=tc_data["id"] or f"call_{idx}",
-                            name=tc_data["name"] or "unknown",
-                            arguments=args,
-                            call_type="function",
-                        ),
-                        delta=False,
-                    )
-
-                finish_reason_map = {
-                    "stop": FinishReason.STOP,
-                    "tool_calls": FinishReason.TOOL_CALL,
-                    "length": FinishReason.LENGTH,
-                }
-                finish_reason_raw = choice.finish_reason
-                if finish_reason_raw and hasattr(finish_reason_raw, "value"):
-                    finish_reason_raw = finish_reason_raw.value
-                yield StreamChunk(
-                    finish_reason=finish_reason_map.get(
-                        finish_reason_raw or "stop",
-                        FinishReason.STOP,
-                    ),
-                    delta=False,
-                    reasoning_content=accumulated_reasoning or None,
-                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise normalize_provider_error(exc, provider=self.provider_name) from exc
 
     def get_model_info(self) -> dict[str, Any]:
         """Get information about the current model."""
-        info = self.SUPPORTED_MODELS.get(
-            self.model,
-            {"context_window": 8192, "supports_vision": False},
-        )
-        return {
-            "provider": "openai",
-            "model": self.model,
-            **info,
-        }
+        return get_model_profile(self.provider_name, self.model).to_dict()

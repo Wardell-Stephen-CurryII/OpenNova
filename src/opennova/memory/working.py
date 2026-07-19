@@ -10,12 +10,11 @@ Manages memory within a single task:
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from pathlib import Path
+from enum import StrEnum
 from typing import Any
 
 
-class ActionStatus(str, Enum):
+class ActionStatus(StrEnum):
     """Status of an action."""
 
     PENDING = "pending"

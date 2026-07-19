@@ -1,11 +1,12 @@
 """Reference Memory - Stores external resource references."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from opennova.memory.types.user_memory import UserMemory
 
 
+@dataclass
 class ReferenceMemory(UserMemory):
     """External resource reference memory entry."""
 

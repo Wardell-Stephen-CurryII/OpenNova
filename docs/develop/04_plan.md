@@ -1,5 +1,7 @@
 # OpenNova 04 计划：Checkpoint 自动化、导出、自动化命令与代码理解深化
 
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+
 ## Summary
 04 计划接续 `03_plan.md` 的后续建议，把已有基础模块接到真实工作流里。目标是让 checkpoint、transcript、automations、plugin tools 和 Python symbol graph 从“可测试模块”升级为用户和模型都能使用的能力。
 

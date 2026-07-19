@@ -1,12 +1,9 @@
 """Memory Retrieval - Search and rank memories."""
 
-import re
 from datetime import datetime
-from typing import Any
 
 from opennova.memory.storage import MemoryStorage
 from opennova.memory.types.user_memory import UserMemory
-
 
 
 class MemoryRetriever:

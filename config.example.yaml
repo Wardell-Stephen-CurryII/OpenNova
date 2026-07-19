@@ -60,3 +60,20 @@ security:
 
   # Maximum readable/writable file size (bytes)
   max_file_size: 104857600
+
+  # Detect secrets in writes and redact them from tool output/events/transcripts
+  secrets:
+    enabled: true
+    redact_tool_outputs: true
+    warn_on_write: true
+    block_on_write: false
+    max_scan_chars: 200000
+
+  # Optional OS-level process sandbox. Set enforce=true to fail closed when unavailable.
+  process_sandbox:
+    enabled: true
+    backend: auto  # auto, seatbelt, bubblewrap, or none
+    enforce: false
+    tmp_dir: null
+    extra_read_roots: []
+    extra_writable_roots: []

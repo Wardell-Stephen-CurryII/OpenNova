@@ -1,5 +1,7 @@
 # OpenNova 07 计划：Tool Card UI Adapter、Checkpoint 写入绑定、插件 Drift 与 Automation 控制入口
 
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+
 ## Summary
 07 计划接续 `06_plan.md` 的后续建议，把 06 已经完成的数据层能力继续推进为更接近 Claude Code 的可操作体验。本轮仍保持本地优先和低风险增量，不重写 Textual 布局、不引入常驻 LSP 进程，而是实现：Tool Card UI adapter、文件写入前 checkpoint 绑定、Python 外部分析命令基础、插件 lockfile drift 检测与 `/plugins test` 支撑、automation daemon 命令入口。
 

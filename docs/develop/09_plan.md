@@ -1,5 +1,7 @@
 # OpenNova 09 计划：Tool Card 操作状态、Transcript Checkpoints、插件 Trust 命令与 Automation Retry/Archive
 
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+
 ## Summary
 09 计划接续 `08_plan.md` 的后续建议，把 08 已有的 UI-ready state、checkpoint metadata、插件 lock/drift 和 automation run-loop 串成更完整的产品链路。本轮仍不重写完整 Textual UI、不引入常驻远程服务，而是实现可测试的面板导航/动作状态、checkpoint/diff transcript 导出、插件 trust/untrust 共享命令，以及 automation retry/archive 基础。
 

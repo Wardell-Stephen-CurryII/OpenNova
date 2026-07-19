@@ -152,7 +152,7 @@ class ProjectMemory:
         """Load memory from disk."""
         if self.memory_path.exists():
             try:
-                with open(self.memory_path, "r", encoding="utf-8") as f:
+                with open(self.memory_path, encoding="utf-8") as f:
                     data = json.load(f)
 
                 self.structure = ProjectStructure.from_dict(

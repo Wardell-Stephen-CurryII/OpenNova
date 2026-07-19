@@ -130,6 +130,7 @@ class GrepCodeTool(BaseTool):
         max_results: int = 100,
         include_hidden: bool = False,
         respect_gitignore: bool = True,
+        context_lines: int = 0,
     ) -> ToolResult:
         root = Path(directory).resolve()
         allowed, reason = self.sandbox.is_path_allowed(root)
@@ -144,11 +145,13 @@ class GrepCodeTool(BaseTool):
         except re.error as e:
             return ToolResult(success=False, output="", error=f"Invalid regex pattern: {e}")
         needle = pattern if case_sensitive else pattern.lower()
+        context_lines = max(0, context_lines)
         ignore_patterns = _load_gitignore_patterns(root, respect_gitignore)
 
         matches: list[str] = []
+        match_count = 0
         for path in root.rglob(file_glob):
-            if len(matches) >= max_results:
+            if match_count >= max_results:
                 break
             if not path.is_file() or any(part in DEFAULT_EXCLUDED_DIRS for part in path.parts):
                 continue
@@ -164,20 +167,29 @@ class GrepCodeTool(BaseTool):
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             except Exception:
                 continue
+            rel = path.relative_to(root).as_posix()
+            emitted_lines: set[int] = set()
+            matched_lines: set[int] = set()
             for line_number, line in enumerate(lines, 1):
                 haystack = line if case_sensitive else line.lower()
                 found = bool(compiled.search(line)) if compiled else needle in haystack
                 if found:
-                    rel = path.relative_to(root).as_posix()
-                    matches.append(f"{rel}:{line_number}: {line.strip()}")
-                    if len(matches) >= max_results:
+                    matched_lines.add(line_number)
+                    start = max(1, line_number - context_lines)
+                    end = min(len(lines), line_number + context_lines)
+                    emitted_lines.update(range(start, end + 1))
+                    match_count += 1
+                    if match_count >= max_results:
                         break
+            for line_number in sorted(emitted_lines):
+                prefix = "" if line_number in matched_lines else "  "
+                matches.append(f"{prefix}{rel}:{line_number}: {lines[line_number - 1].strip()}")
 
         output = "\n".join(matches) if matches else "(no matches)"
         return ToolResult(
             success=True,
             output=output,
-            metadata={"count": len(matches), "directory": str(root), "pattern": pattern},
+            metadata={"count": match_count, "directory": str(root), "pattern": pattern},
         )
 
     def is_read_only(self, **kwargs: Any) -> bool:

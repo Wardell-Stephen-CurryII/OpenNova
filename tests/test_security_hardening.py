@@ -132,7 +132,7 @@ def test_structured_command_policy_classifies_core_commands():
 
     assert git_status.risk_level == RiskLevel.SAFE
     assert git_status.metadata["command_analysis"]["family"] == "git"
-    assert git_reset.risk_level == RiskLevel.WARN
+    assert git_reset.risk_level == RiskLevel.DANGER
     assert inline_python.risk_level == RiskLevel.WARN
 
 
@@ -165,13 +165,13 @@ def test_network_policy_allowlist_blocks_unlisted_domain():
     assert "not in allowed" in blocked.reason.lower()
 
 
-def test_network_policy_warns_for_localhost_by_default():
+def test_network_policy_requires_confirmation_for_localhost_by_default():
     guard = Guardrails()
 
     result = guard.check_tool_call("web_fetch", {"url": "http://127.0.0.1:8000/health"})
 
     assert result.allowed is True
-    assert result.risk_level == RiskLevel.WARN
+    assert result.risk_level == RiskLevel.DANGER
     assert result.requires_confirmation is True
     assert result.metadata["network_analysis"]["is_internal"] is True
 
@@ -196,7 +196,7 @@ def test_mcp_untrusted_tool_requires_confirmation():
     )
 
     assert result.allowed is True
-    assert result.risk_level == RiskLevel.WARN
+    assert result.risk_level == RiskLevel.DANGER
     assert result.requires_confirmation is True
     assert result.metadata["mcp_server"] == "demo"
 
@@ -247,7 +247,7 @@ def test_write_file_secret_content_warns_by_default(tmp_path: Path):
     )
 
     assert result.allowed is True
-    assert result.risk_level == RiskLevel.WARN
+    assert result.risk_level == RiskLevel.DANGER
     assert result.requires_confirmation is True
     assert result.metadata["secret_findings_count"] >= 1
 
@@ -312,7 +312,9 @@ async def test_react_loop_blocks_execute_command_before_tool_execution():
         working_dir=".",
     )
 
-    result = await loop._act(ParsedAction(tool_name="execute_command", arguments={"command": "rm -rf /"}))
+    result = await loop._act(
+        ParsedAction(tool_name="execute_command", arguments={"command": "rm -rf /"})
+    )
     assert result.success is False
     assert "dangerous" in (result.error or "").lower()
     assert tool.calls == 0
@@ -351,7 +353,7 @@ async def test_react_loop_warn_confirmation_executes_after_proceed():
         tool_registry=registry,
         state=AgentState(),
         stream=False,
-        guardrails=Guardrails(),
+        guardrails=Guardrails(permission_mode="request"),
         working_dir=".",
         interaction_callback=interaction_callback,
     )
@@ -396,7 +398,7 @@ async def test_react_loop_warn_confirmation_cancels_on_decline():
         tool_registry=registry,
         state=AgentState(),
         stream=False,
-        guardrails=Guardrails(),
+        guardrails=Guardrails(permission_mode="request"),
         working_dir=".",
         interaction_callback=interaction_callback,
     )
@@ -474,8 +476,14 @@ async def test_react_loop_normalizes_execute_command_model_aliases_before_guard(
         working_dir=str(tmp_path),
     )
 
-    with patch("opennova.tools.shell_tools.subprocess.run") as mock_run:
-        mock_run.return_value = Completed(returncode=0, stdout="ok\n")
+    class DummyProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    with patch("opennova.tools.shell_tools.asyncio.create_subprocess_exec") as mock_exec:
+        mock_exec.return_value = DummyProcess()
         result = await loop._act(
             ParsedAction(
                 tool_name="execute_command",
@@ -545,8 +553,14 @@ async def test_react_loop_normalizes_execute_command_array_commands(tmp_path: Pa
         working_dir=str(tmp_path),
     )
 
-    with patch("opennova.tools.shell_tools.subprocess.run") as mock_run:
-        mock_run.return_value = Completed(returncode=0, stdout="ok\n")
+    class DummyProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    with patch("opennova.tools.shell_tools.asyncio.create_subprocess_exec") as mock_exec:
+        mock_exec.return_value = DummyProcess()
         result = await loop._act(
             ParsedAction(
                 tool_name="execute_command",
@@ -556,7 +570,7 @@ async def test_react_loop_normalizes_execute_command_array_commands(tmp_path: Pa
 
     assert result.success is True
     assert result.metadata["command"] == "echo hi"
-    assert mock_run.call_args.args[0] == ["echo", "hi"]
+    assert mock_exec.call_args.args[:2] == ("echo", "hi")
 
 
 @pytest.mark.asyncio
@@ -578,8 +592,14 @@ async def test_react_loop_normalizes_execute_command_args_field(tmp_path: Path):
         working_dir=str(tmp_path),
     )
 
-    with patch("opennova.tools.shell_tools.subprocess.run") as mock_run:
-        mock_run.return_value = Completed(returncode=0, stdout="ok\n")
+    class DummyProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    with patch("opennova.tools.shell_tools.asyncio.create_subprocess_exec") as mock_exec:
+        mock_exec.return_value = DummyProcess()
         result = await loop._act(
             ParsedAction(
                 tool_name="execute_command",
@@ -589,7 +609,7 @@ async def test_react_loop_normalizes_execute_command_args_field(tmp_path: Path):
 
     assert result.success is True
     assert result.metadata["command"] == "echo hi"
-    assert mock_run.call_args.args[0] == ["echo", "hi"]
+    assert mock_exec.call_args.args[:2] == ("echo", "hi")
 
 
 @pytest.mark.asyncio

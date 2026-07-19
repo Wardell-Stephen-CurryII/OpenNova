@@ -5,7 +5,7 @@ Supports Claude 4 (Sonnet, Opus) and Claude 3.5 models.
 Fully supports streaming and tool use with Anthropic-specific format handling.
 """
 
-import json
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -20,6 +20,15 @@ from opennova.providers.base import (
     ToolCall,
     ToolSchema,
     Usage,
+    normalize_provider_error,
+    parse_tool_arguments,
+)
+from opennova.providers.models import (
+    MODEL_ALIASES as CANONICAL_MODEL_ALIASES,
+)
+from opennova.providers.models import (
+    get_model_profile,
+    model_capabilities_for_provider,
 )
 
 
@@ -36,23 +45,11 @@ class AnthropicProvider(BaseLLMProvider):
     - Streaming structure is different
     """
 
-    SUPPORTED_MODELS = {
-        "claude-sonnet-4-20250514": {"context_window": 200000, "supports_vision": True},
-        "claude-opus-4-20250514": {"context_window": 200000, "supports_vision": True},
-        "claude-3-5-sonnet-20241022": {"context_window": 200000, "supports_vision": True},
-        "claude-3-5-haiku-20241022": {"context_window": 200000, "supports_vision": True},
-        "claude-3-opus-20240229": {"context_window": 200000, "supports_vision": True},
-        "claude-3-sonnet-20240229": {"context_window": 200000, "supports_vision": True},
-        "claude-3-haiku-20240307": {"context_window": 200000, "supports_vision": True},
-    }
+    provider_name = "anthropic"
+    SUPPORTED_MODELS = model_capabilities_for_provider(provider_name)
 
     # Aliases for easier model selection
-    MODEL_ALIASES = {
-        "claude-sonnet-4": "claude-sonnet-4-20250514",
-        "claude-opus-4": "claude-opus-4-20250514",
-        "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
-        "claude-3.5-haiku": "claude-3-5-haiku-20241022",
-    }
+    MODEL_ALIASES = CANONICAL_MODEL_ALIASES
 
     def __init__(
         self,
@@ -92,6 +89,18 @@ class AnthropicProvider(BaseLLMProvider):
             for tool in tools
         ]
 
+    @staticmethod
+    def _anthropic_tool_choice(value: str) -> dict[str, str] | None:
+        """Map OpenNova's provider-neutral tool choice to Anthropic semantics."""
+        choices = {
+            "auto": {"type": "auto"},
+            "required": {"type": "any"},
+            "none": None,
+        }
+        if value not in choices:
+            raise ValueError(f"Unsupported tool_choice: {value}")
+        return choices[value]
+
     async def chat(
         self,
         messages: list[Message],
@@ -110,9 +119,7 @@ class AnthropicProvider(BaseLLMProvider):
             Complete LLM response
         """
         system_prompt = self._build_system_prompt(messages)
-        filtered_messages = self._filter_messages_for_anthropic(messages)
-
-        anthropic_messages = [msg.to_anthropic_format() for msg in filtered_messages]
+        anthropic_messages = self._messages_to_anthropic(messages)
 
         request_params: dict[str, Any] = {
             "model": self.model,
@@ -123,15 +130,22 @@ class AnthropicProvider(BaseLLMProvider):
         if system_prompt:
             request_params["system"] = system_prompt
 
-        if tools:
+        tool_choice = str(kwargs.get("tool_choice", "auto"))
+        if tools and tool_choice != "none":
             request_params["tools"] = self._convert_tools_to_anthropic(tools)
+            request_params["tool_choice"] = self._anthropic_tool_choice(tool_choice)
 
         if "temperature" in kwargs:
             request_params["temperature"] = kwargs["temperature"]
         if "top_p" in kwargs:
             request_params["top_p"] = kwargs["top_p"]
 
-        response = await self.client.messages.create(**request_params)
+        try:
+            response = await self.client.messages.create(**request_params)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise normalize_provider_error(exc, provider=self.provider_name) from exc
 
         text_content = ""
         tool_calls = []
@@ -190,9 +204,7 @@ class AnthropicProvider(BaseLLMProvider):
             Stream chunks as they arrive
         """
         system_prompt = self._build_system_prompt(messages)
-        filtered_messages = self._filter_messages_for_anthropic(messages)
-
-        anthropic_messages = [msg.to_anthropic_format() for msg in filtered_messages]
+        anthropic_messages = self._messages_to_anthropic(messages)
 
         request_params: dict[str, Any] = {
             "model": self.model,
@@ -203,86 +215,91 @@ class AnthropicProvider(BaseLLMProvider):
         if system_prompt:
             request_params["system"] = system_prompt
 
-        if tools:
+        tool_choice = str(kwargs.get("tool_choice", "auto"))
+        if tools and tool_choice != "none":
             request_params["tools"] = self._convert_tools_to_anthropic(tools)
+            request_params["tool_choice"] = self._anthropic_tool_choice(tool_choice)
 
         if "temperature" in kwargs:
             request_params["temperature"] = kwargs["temperature"]
 
         tool_call_accumulator: dict[str, dict[str, Any]] = {}
 
-        async with self.client.messages.stream(**request_params) as stream:
-            async for event in stream:
-                if event.type == "content_block_delta":
-                    if hasattr(event.delta, "text") and event.delta.text:
-                        yield StreamChunk(content=event.delta.text, delta=True)
+        try:
+            async with self.client.messages.stream(**request_params) as stream:
+                async for event in stream:
+                    if event.type == "content_block_delta":
+                        if hasattr(event.delta, "text") and event.delta.text:
+                            yield StreamChunk(content=event.delta.text, delta=True)
 
-                    if hasattr(event.delta, "partial_json"):
-                        block_id = event.index
-                        tool_id = f"toolu_{block_id}"
-                        if tool_id not in tool_call_accumulator:
+                        if hasattr(event.delta, "partial_json"):
+                            block_id = event.index
+                            tool_id = f"toolu_{block_id}"
+                            if tool_id not in tool_call_accumulator:
+                                tool_call_accumulator[tool_id] = {
+                                    "id": tool_id,
+                                    "name": "",
+                                    "arguments": "",
+                                }
+                            if event.delta.partial_json:
+                                tool_call_accumulator[tool_id]["arguments"] += (
+                                    event.delta.partial_json
+                                )
+
+                    elif event.type == "content_block_start":
+                        tool_name = getattr(event.content_block, "name", None)
+                        if tool_name:
+                            tool_id = str(
+                                getattr(event.content_block, "id", f"toolu_{event.index}")
+                            )
                             tool_call_accumulator[tool_id] = {
                                 "id": tool_id,
-                                "name": "",
+                                "name": str(tool_name),
                                 "arguments": "",
                             }
-                        if event.delta.partial_json:
-                            tool_call_accumulator[tool_id]["arguments"] += event.delta.partial_json
 
-                elif event.type == "content_block_start":
-                    if hasattr(event.content_block, "name"):
-                        tool_id = event.content_block.id
-                        tool_call_accumulator[tool_id] = {
-                            "id": tool_id,
-                            "name": event.content_block.name,
-                            "arguments": "",
-                        }
+                    elif event.type == "message_stop":
+                        for _tool_id, tc_data in tool_call_accumulator.items():
+                            args = parse_tool_arguments(
+                                tc_data["arguments"],
+                                tool_name=tc_data["name"] or "unknown",
+                                tool_call_id=tc_data["id"],
+                            )
 
-                elif event.type == "message_stop":
-                    for tool_id, tc_data in tool_call_accumulator.items():
-                        try:
-                            args = json.loads(tc_data["arguments"])
-                        except json.JSONDecodeError:
-                            args = {"raw": tc_data["arguments"]}
+                            yield StreamChunk(
+                                tool_call=ToolCall(
+                                    id=tc_data["id"],
+                                    name=tc_data["name"],
+                                    arguments=args,
+                                    call_type="function",
+                                ),
+                                delta=False,
+                            )
 
-                        yield StreamChunk(
-                            tool_call=ToolCall(
-                                id=tc_data["id"],
-                                name=tc_data["name"],
-                                arguments=args,
-                                call_type="function",
-                            ),
-                            delta=False,
+                        final_message = await stream.get_final_message()
+                        finish_reason = FinishReason.STOP
+                        if tool_call_accumulator:
+                            finish_reason = FinishReason.TOOL_CALL
+                        elif final_message.stop_reason == "max_tokens":
+                            finish_reason = FinishReason.LENGTH
+
+                        usage = Usage(
+                            prompt_tokens=final_message.usage.input_tokens,
+                            completion_tokens=final_message.usage.output_tokens,
+                            total_tokens=final_message.usage.input_tokens
+                            + final_message.usage.output_tokens,
                         )
 
-                    final_message = await stream.get_final_message()
-                    finish_reason = FinishReason.STOP
-                    if tool_call_accumulator:
-                        finish_reason = FinishReason.TOOL_CALL
-                    elif final_message.stop_reason == "max_tokens":
-                        finish_reason = FinishReason.LENGTH
-
-                    usage = Usage(
-                        prompt_tokens=final_message.usage.input_tokens,
-                        completion_tokens=final_message.usage.output_tokens,
-                        total_tokens=final_message.usage.input_tokens
-                        + final_message.usage.output_tokens,
-                    )
-
-                    yield StreamChunk(
-                        finish_reason=finish_reason,
-                        usage=usage,
-                        delta=False,
-                    )
+                        yield StreamChunk(
+                            finish_reason=finish_reason,
+                            usage=usage,
+                            delta=False,
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise normalize_provider_error(exc, provider=self.provider_name) from exc
 
     def get_model_info(self) -> dict[str, Any]:
         """Get information about the current model."""
-        info = self.SUPPORTED_MODELS.get(
-            self.model,
-            {"context_window": 200000, "supports_vision": True},
-        )
-        return {
-            "provider": "anthropic",
-            "model": self.model,
-            **info,
-        }
+        return get_model_profile(self.provider_name, self.model).to_dict()

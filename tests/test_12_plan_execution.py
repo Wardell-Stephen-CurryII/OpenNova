@@ -65,12 +65,14 @@ def test_plugin_startup_warnings_include_drift_and_policy(tmp_path: Path):
     (plugin_root / "hook.py").write_text("def noop():\n    return None\n", encoding="utf-8")
     manifest = {
         "name": "demo",
-        "tools": [{"name": "reader", "description": "Read", "command": "echo read", "permission": "read"}],
+        "tools": [
+            {"name": "reader", "description": "Read", "command": "echo read", "permission": "read"}
+        ],
         "hooks": ["hook.py"],
     }
     (plugin_root / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
 
-    manager = PluginManager(tmp_path)
+    manager = PluginManager(tmp_path, trust_path=tmp_path / "trust.json")
     manager.trust_plugin("demo")
     manager.load_enabled_plugins({})
     lockfile = manager.build_lockfile()
@@ -81,7 +83,9 @@ def test_plugin_startup_warnings_include_drift_and_policy(tmp_path: Path):
     warnings = manager.startup_warnings(lockfile=lockfile, policy=PluginPolicy.strict())
 
     assert any(item["type"] == "drift" for item in warnings)
-    assert any(item["type"] == "policy" and "missing-signature" in item["message"] for item in warnings)
+    assert any(
+        item["type"] == "policy" and "missing-signature" in item["message"] for item in warnings
+    )
 
 
 def test_daemon_status_includes_archive_summary(tmp_path: Path):

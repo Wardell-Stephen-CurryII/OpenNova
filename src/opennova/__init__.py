@@ -1,8 +1,8 @@
-"""OpenNova - A lightweight CLI AI Coding Agent."""
+"""OpenNova - A terminal AI coding agent with a Textual TUI."""
 
 from opennova.sdk import OpenNovaClient, SDKEvent
 
-__version__ = "0.4.0"
+__version__ = "0.4.2"
 __author__ = "Xingwang Lin"
 
 __all__ = ["OpenNovaClient", "SDKEvent", "__version__", "__author__"]

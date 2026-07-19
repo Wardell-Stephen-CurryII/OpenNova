@@ -1,7 +1,7 @@
 [project]
 name = "opennova"
-version = "0.4.0"
-description = "A lightweight CLI AI Coding Agent built from scratch in Python"
+version = "0.4.2"
+description = "A terminal AI coding agent with a Textual TUI"
 authors = [{ name = "Xingwang Lin", email = "wardell.stephen.curryii@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -72,6 +72,10 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

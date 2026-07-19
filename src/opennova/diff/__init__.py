@@ -7,9 +7,9 @@ This module provides:
 - ChangeSet: Track multiple file changes
 """
 
-from opennova.diff.engine import DiffEngine, ApplyResult, Hunk
-from opennova.diff.parser import DiffParser, FileChange, ChangeType
-from opennova.diff.changeset import ChangeSet, ChangeResult
+from opennova.diff.changeset import ChangeResult, ChangeSet
+from opennova.diff.engine import ApplyResult, DiffEngine, Hunk
+from opennova.diff.parser import ChangeType, DiffParser, FileChange
 
 __all__ = [
     "DiffEngine",
