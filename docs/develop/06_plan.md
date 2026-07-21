@@ -1,6 +1,6 @@
 # OpenNova 06 计划：Checkpoint Preview、Tool Card 渲染、插件 Lockfile 与本地 Automation Daemon
 
-> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.3 的当前命令或功能状态。
 
 ## Summary
 06 计划接续 `05_plan.md` 的后续建议，把已经存在的数据层能力推进到更可操作的产品基础。本轮目标不是一次性重写 TUI 或引入常驻 LSP，而是完成可测试、低风险、能继续向 Claude Code 体验靠近的增量：checkpoint 恢复预览、工具卡片渲染数据、Python 分析后端状态、插件 lockfile/test 基础，以及本地自动化 daemon 的单步运行循环。

@@ -1,6 +1,6 @@
 # OpenNova 后续开发计划：向 Claude Code 对齐
 
-> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.3 的当前命令或功能状态。
 
 ## Summary
 本轮只读审查覆盖了 OpenNova 当前 `master`、全量测试、重点 runtime/tool/security/session 代码，并抽样对照了 `/Users/linxiaohai/资料/北航/claude_code/claude_code_src` 的 Claude Code 架构与工具接口。当前 OpenNova 的基础能力已经跑通，`uv run pytest -q` 结果为 `130 passed`；主要差距集中在工具协议元信息、权限/审批模型、会话恢复、子代理隔离、搜索/编辑工具、TUI 体验和 SDK/headless 能力。

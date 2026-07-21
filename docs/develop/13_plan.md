@@ -1,6 +1,6 @@
 # OpenNova 13 计划：Tool Card Binding Help、Checkpoint Session CLI、Plugin Startup Warnings、Automation Archive Status 与 Diagnostics Server Lifecycle
 
-> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.3 的当前命令或功能状态。
 
 ## Summary
 13 计划接续 `12_plan.md` 的后续建议，把 12 中已经完成的轻量骨架接到可直接使用的命令与状态输出中。目标仍然是小步、兼容、可测试：让 TUI 可以渲染快捷键禁用原因，让 `/checkpoint` 能按 session 查询 transcript diff，让 `/plugins` 能展示启动警告，让 `/automations daemon status` 包含 archive 摘要，并让 diagnostics server manager 具备可测试的 pyright/ruff subprocess 生命周期元数据。

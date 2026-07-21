@@ -1,4 +1,4 @@
-# OpenNova 0.4.2 User Tutorial
+# OpenNova 0.4.3 User Tutorial
 
 This tutorial covers the current OpenNova user experience. Textual is the only interactive interface; the legacy interactive CLI and `opennova tui` subcommand have been removed.
 

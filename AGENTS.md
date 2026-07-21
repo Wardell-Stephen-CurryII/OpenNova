@@ -4,7 +4,7 @@ This file describes the current OpenNova repository for coding agents and contri
 
 ## Project
 
-OpenNova 0.4.2 is a Python 3.11+ terminal AI coding agent. Textual is the only interactive interface; the legacy interactive CLI and standalone `opennova tui` command have been removed. The Click entry point remains for launching the TUI, setup/inspection commands, and one-shot non-interactive tasks.
+OpenNova 0.4.3 is a Python 3.11+ terminal AI coding agent. Textual is the only interactive interface; the legacy interactive CLI and standalone `opennova tui` command have been removed. The Click entry point remains for launching the TUI, setup/inspection commands, and one-shot non-interactive tasks.
 
 Core capabilities include multi-provider LLM access, a ReAct runtime, 40 built-in tools, Plan/Act workflows, persistent sessions, transcript replay, context compression, layered memory, Skills, trusted plugins, hooks, MCP, worktrees, local automation, checkpoints, and security policies.
 

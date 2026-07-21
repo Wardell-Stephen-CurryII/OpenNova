@@ -40,7 +40,7 @@ def _client_version() -> str:
     try:
         return version("opennova")
     except PackageNotFoundError:
-        return "0.4.2"
+        return "0.4.3"
 
 
 class Transport(ABC):

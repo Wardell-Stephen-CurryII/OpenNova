@@ -1,4 +1,4 @@
-# OpenNova 0.4.2 Quickstart
+# OpenNova 0.4.3 Quickstart
 
 OpenNova's interactive interface is the Textual TUI. The legacy interactive CLI and standalone `opennova tui` command have been removed; run `opennova` directly to open the workbench.
 

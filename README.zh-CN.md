@@ -1,6 +1,6 @@
 # OpenNova
 
-OpenNova v0.4.2 是一个基于 Python 和 Textual TUI 构建的终端 AI 编码 Agent。
+OpenNova v0.4.3 是一个基于 Python 和 Textual TUI 构建的终端 AI 编码 Agent。
 
 **简体中文** | **[English](README.md)**
 
@@ -21,15 +21,15 @@ OpenNova 将 Agent 运行时和全屏终端工作台组合在一起：
 
 旧的交互式命令行界面和独立 `opennova tui` 命令已不再使用。直接运行 `opennova` 即可进入 Textual TUI；命令参数仍用于初始化、检查和单次非交互任务。
 
-## v0.4.2 更新
+## v0.4.3 更新
 
-0.4.2 针对长任务和多会话编码工作流强化了运行可靠性：
+0.4.3 针对仓库级编码工作流提升了运行效率与可靠性：
 
-- 上下文压缩以及 assistant/tool 消息组改为原子写入和可恢复处理
-- 每个 runtime 和 session 独立拥有任务、工具 ID、监听器与资源
-- shell 进程、MCP、网络、子 Agent 和自动化任务共享完整取消链路
-- 项目 Hooks 与插件贡献绑定 workspace 和内容摘要信任
-- 加强会话身份、敏感信息脱敏、进程沙箱、Provider 错误与 SDK 清理
+- 并发执行相互独立的只读工具，同时保持工具结果顺序稳定
+- 使用文件版本快照防止过期编辑，并将超长工具输出保存为可检索产物
+- 增加延迟工具发现、统一 gitignore 规则、启动配置和诊断能力
+- 完善 MCP 生命周期、Checkpoint 安全、会话分叉和分层记忆控制
+- 通过 Token 预算、重试、回退和熔断机制增强模型路由
 
 ## 安装
 

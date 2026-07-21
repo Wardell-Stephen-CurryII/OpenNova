@@ -5,6 +5,24 @@ the commits that changed the package version in `pyproject.toml` and `src/openno
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-21
+
+### Added
+
+- Added bounded parallel execution for independent read-only tools with deterministic result order.
+- Added stale-file edit protection, artifact-backed oversized results, and deferred tool discovery.
+- Added bootstrap profiles, richer diagnostics, session forking, and layered memory controls.
+- Expanded MCP support for pagination, list-change notifications, prompts, templates, roots,
+  elicitation, and cancellation.
+
+### Changed
+
+- Unified gitignore handling across search and diagnostics tools.
+- Improved checkpoint safety for created, modified, and deleted files.
+- Strengthened model routing with token budgets, retries, fallbacks, circuit breakers, and local
+  model selection.
+- Centralized slash-command dispatch and tool execution policy.
+
 ## [0.4.2] - 2026-07-15
 
 ### Added
@@ -203,7 +221,8 @@ the commits that changed the package version in `pyproject.toml` and `src/openno
 - Added the initial ReAct agent runtime, conversation context, tool registry, and streaming support.
 - Added the foundational file, shell, search, and editing tools.
 
-[Unreleased]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Wardell-Stephen-CurryII/OpenNova/releases/tag/v0.4.1
 [0.4.0]: https://github.com/Wardell-Stephen-CurryII/OpenNova/compare/075ab4b...6865b4b

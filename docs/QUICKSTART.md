@@ -1,4 +1,4 @@
-# OpenNova 0.4.2 快速开始
+# OpenNova 0.4.3 快速开始
 
 OpenNova 的交互界面是 Textual TUI。旧的交互式 CLI 和独立 `opennova tui` 命令已移除；直接运行 `opennova` 即可进入工作台。
 

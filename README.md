@@ -1,6 +1,6 @@
 # OpenNova
 
-OpenNova v0.4.2 is a terminal AI coding agent built in Python around a Textual TUI.
+OpenNova v0.4.3 is a terminal AI coding agent built in Python around a Textual TUI.
 
 **English** | **[简体中文](README.zh-CN.md)**
 
@@ -21,15 +21,15 @@ OpenNova combines a focused agent runtime with a full-screen terminal workbench:
 
 The legacy interactive command-line interface and standalone `opennova tui` command are not part of the current product. Run `opennova` with no subcommand to open the Textual TUI. Command options remain available for setup, automation, and one-shot tasks.
 
-## What is new in v0.4.2
+## What is new in v0.4.3
 
-Version 0.4.2 hardens the runtime for long-running and multi-session coding workflows:
+Version 0.4.3 improves runtime efficiency and reliability for repository-scale coding workflows:
 
-- makes context compression and assistant/tool message groups atomic and recoverable
-- isolates tasks, tool identifiers, listeners, and resources per runtime and session
-- propagates cancellation through shell processes, MCP, web, sub-agents, and automation
-- binds project hooks and plugin contributions to workspace and content-digest trust
-- strengthens session identity, secret redaction, process sandboxing, provider errors, and SDK cleanup
+- executes independent read-only tools concurrently while preserving deterministic result order
+- protects edits from stale file snapshots and stores oversized tool output as retrievable artifacts
+- adds deferred tool discovery, shared gitignore handling, bootstrap profiles, and diagnostics
+- expands MCP lifecycle support, checkpoint safety, session forking, and layered memory controls
+- improves model routing with token budgets, retries, fallbacks, and circuit breakers
 
 ## Installation
 

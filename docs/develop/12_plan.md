@@ -1,6 +1,6 @@
 # OpenNova 12 计划：Tool Card Binding Plan、Transcript Session Lookup、Plugin Startup Warnings、Automation Status Archive 与 Diagnostics Server Stub
 
-> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.2 的当前命令或功能状态。
+> 归档说明：这是历史实施计划，不代表 OpenNova 0.4.3 的当前命令或功能状态。
 
 ## Summary
 12 计划接续 `11_plan.md` 的后续建议，把已有 key binding、checkpoint transcript lookup、plugin policy、automation archive 和 diagnostics event 再推进一层。本轮仍保持低风险和可测试，不重写完整 TUI、不启动常驻 server，而是实现：Tool Card 绑定执行计划、按 session 自动定位 transcript checkpoint diff、插件启动警告、automation daemon status archive summary，以及 diagnostics server manager 占位。
