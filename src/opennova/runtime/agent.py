@@ -36,10 +36,14 @@ from opennova.planning.planner import Planner
 from opennova.plugins import PluginManager
 from opennova.providers.base import Message, StreamChunk
 from opennova.providers.factory import ProviderFactory
+from opennova.runtime.artifacts import ArtifactStore
+from opennova.runtime.bootstrap import RuntimeBootstrapProfile, bootstrap_policy
 from opennova.runtime.cancellation import CancellationToken, RunHandle
 from opennova.runtime.event_bus import RuntimeEventBus
 from opennova.runtime.events import ToolEvent
+from opennova.runtime.file_state import FileVersionCache
 from opennova.runtime.loop import ReActLoop
+from opennova.runtime.model_policy import ProviderCircuitBreaker
 from opennova.runtime.state import (
     AgentState,
     Plan,
@@ -81,6 +85,7 @@ class AgentRuntime:
         register_default_tools: bool = True,
         enable_mcp: bool = True,
         enable_skills: bool = True,
+        bootstrap_profile: RuntimeBootstrapProfile | str = RuntimeBootstrapProfile.INTERACTIVE,
     ):
         """
         Initialize the agent runtime.
@@ -91,6 +96,13 @@ class AgentRuntime:
             enable_mcp: Whether to enable MCP server connections
             enable_skills: Whether to load skills
         """
+        self.bootstrap_profile = RuntimeBootstrapProfile(bootstrap_profile)
+        policy = bootstrap_policy(self.bootstrap_profile)
+        if not policy.create_provider or not policy.create_session:
+            raise ValueError(
+                "The inspect profile is side-effect free; use inspect_runtime() instead of "
+                "constructing AgentRuntime."
+            )
         self.config = config.to_dict() if isinstance(config, Config) else copy.deepcopy(config)
         self.state = AgentState()
         self._closed = False
@@ -100,8 +112,9 @@ class AgentRuntime:
         self._plugin_mcp_server_names: set[str] = set()
         self.task_manager = TaskManager()
         self.register_default_tools = register_default_tools
-        self.enable_mcp = enable_mcp
-        self.enable_skills = enable_skills
+        self.enable_mcp = enable_mcp and policy.connect_mcp
+        self.enable_skills = enable_skills and policy.load_skills
+        self.enable_extensions = policy.load_extensions
 
         agent_config = self.config.get("agent", {})
         self.max_iterations = agent_config.get("max_iterations", 20)
@@ -111,11 +124,22 @@ class AgentRuntime:
 
         self.project_path = Path.cwd().resolve()
         self.llm = ProviderFactory.create_provider(self.config)
+        self.fallback_providers = [
+            ProviderFactory.create_provider(self.config, provider_name=str(provider_name))
+            for provider_name in agent_config.get("fallback_providers", [])
+            if str(provider_name) != self.config.get("default_provider")
+        ]
+        self.provider_circuit_breaker = ProviderCircuitBreaker(
+            failure_threshold=int(agent_config.get("provider_failure_threshold", 3)),
+            cooldown_seconds=float(agent_config.get("provider_cooldown_seconds", 30.0)),
+        )
         self.project_memory = ProjectMemory(project_path=str(self.project_path))
         self.working_memory = WorkingMemory()
         self.hook_manager = HookManager(project_path=self.project_path)
         self.workspace_trust_store = WorkspaceTrustStore()
-        self.workspace_hook_digest = self.hook_manager.project_hooks_digest()
+        self.workspace_hook_digest = (
+            self.hook_manager.project_hooks_digest() if self.enable_extensions else ""
+        )
         self.workspace_hooks_trusted = self.workspace_trust_store.hooks_are_trusted(
             self.project_path,
             self.workspace_hook_digest,
@@ -132,7 +156,11 @@ class AgentRuntime:
             project_path=self.project_path,
             trust_path=self.workspace_trust_store.path,
         )
-        self.plugin_manager.load_enabled_plugins(config=self.config, hook_manager=self.hook_manager)
+        if self.enable_extensions:
+            self.plugin_manager.load_enabled_plugins(
+                config=self.config,
+                hook_manager=self.hook_manager,
+            )
         self._plugin_mcp_server_names = self.plugin_manager.get_active_mcp_server_names()
 
         # Read compression config
@@ -156,6 +184,11 @@ class AgentRuntime:
             persistence_config=self.config.get("session", {}).get("persistence", {}),
         )
         self.session_manager.start_session()
+        self.file_version_cache = FileVersionCache()
+        self.artifact_store = ArtifactStore(
+            self.project_path,
+            str(self.session_manager.session_id or "session"),
+        )
         self.session_transcript: list[dict[str, Any]] = []
         self.state_store = RuntimeStateStore(
             self.state,
@@ -271,6 +304,7 @@ class AgentRuntime:
             "temp_dir": security_config.get("process_sandbox", {}).get("tmp_dir"),
             "read_only": security_config.get("read_only", False),
             "max_file_size": security_config.get("max_file_size", 100 * 1024 * 1024),
+            "checkpoint_writes": False,
         }
 
         from opennova.tools.agent_tools import AgentTool, SendMessageTool
@@ -315,6 +349,7 @@ class AgentRuntime:
             TaskUpdateTool,
         )
         from opennova.tools.todo_tools import TodoWriteTool
+        from opennova.tools.tool_search import ToolSearchTool
         from opennova.tools.web_tools import WebFetchTool, WebSearchTool
         from opennova.tools.worktree_tools import EnterWorktreeTool, ExitWorktreeTool
 
@@ -329,6 +364,7 @@ class AgentRuntime:
         self.tool_registry.register(ExecuteCommandTool(config=tool_config))
         self.tool_registry.register(GlobFilesTool(config=tool_config))
         self.tool_registry.register(GrepCodeTool(config=tool_config))
+        self.tool_registry.register(ToolSearchTool(self.tool_registry))
         self.tool_registry.register(PythonDiagnosticsTool(config=tool_config))
         self.tool_registry.register(PythonSymbolsTool(config=tool_config))
         self.tool_registry.register(PythonDefinitionTool(config=tool_config))
@@ -435,7 +471,16 @@ class AgentRuntime:
         if not mcp_config.get("enabled", True):
             return
 
-        self.mcp_manager = MCPManager(self.tool_registry)
+        project_path = getattr(self, "project_path", Path.cwd().resolve())
+        self.mcp_manager = MCPManager(
+            self.tool_registry,
+            roots=[
+                {
+                    "uri": project_path.as_uri(),
+                    "name": project_path.name,
+                }
+            ],
+        )
         self._reload_mcp_server_configs()
 
     def _reload_mcp_server_configs(self) -> None:
@@ -565,6 +610,7 @@ class AgentRuntime:
             register_default_tools=self.register_default_tools,
             enable_mcp=self.enable_mcp,
             enable_skills=self.enable_skills,
+            bootstrap_profile=self.bootstrap_profile,
         )
         child.auto_confirm = self.auto_confirm
         if child.get_permission_mode() != self.get_permission_mode():
@@ -759,17 +805,28 @@ class AgentRuntime:
 
             project_path = getattr(self.project_memory, "project_path", Path(os.getcwd()))
             guide_manager = ProjectGuideManager(project_path=project_path)
-            guide_text = guide_manager.load_for_context(max_chars=5000)
+            memory_budget = int(
+                getattr(self, "config", {}).get("agent", {}).get("memory", {}).get(
+                    "max_chars", 5000
+                )
+            )
+            guide_text = guide_manager.load_for_context(max_chars=memory_budget)
             exclude_hashes = set()
             if guide_text:
-                exclude_hashes.add(LayeredMemoryManager.content_hash(guide_text))
+                exclude_hashes.update(LayeredMemoryManager.paragraph_hashes(guide_text))
                 memory_parts.append(
                     "Project guide (OPENNOVA.md) — follow these project-specific conventions when relevant:\n"
                     + guide_text
                 )
+            compressed_summary = self.context_manager.get_compressed_summary()
+            if compressed_summary:
+                exclude_hashes.update(
+                    LayeredMemoryManager.paragraph_hashes(compressed_summary)
+                )
             layered_text = LayeredMemoryManager(project_path=project_path).load_for_context(
-                max_chars=5000,
+                max_chars=memory_budget,
                 exclude_hashes=exclude_hashes,
+                scopes={"project", "user"},
             )
             if layered_text:
                 memory_parts.append(
@@ -1297,6 +1354,16 @@ class AgentRuntime:
         cancellation_token = (
             active_handle.token if active_handle is not None else CancellationToken()
         )
+        runtime_config = getattr(self, "config", {})
+        agent_config = runtime_config.get("agent", {})
+        file_cache = getattr(self, "file_version_cache", None) or FileVersionCache()
+        self.file_version_cache = file_cache
+        session_manager = getattr(self, "session_manager", None)
+        session_id = str(getattr(session_manager, "session_id", "") or "")
+        artifact_store = getattr(self, "artifact_store", None) or ArtifactStore(
+            Path.cwd(), session_id or "session"
+        )
+        self.artifact_store = artifact_store
         self.loop = ReActLoop(
             llm=self.llm,
             tool_registry=self.tool_registry,
@@ -1318,6 +1385,30 @@ class AgentRuntime:
             hook_manager=getattr(self, "hook_manager", None),
             audit_logger=getattr(self, "security_audit_logger", None),
             cancellation_token=cancellation_token,
+            file_cache=file_cache,
+            artifact_store=artifact_store,
+            parallel_tool_limit=int(
+                agent_config.get("execution", {}).get("parallel_tool_limit", 4)
+            ),
+            per_turn_tool_result_chars=int(
+                agent_config.get("execution", {}).get("per_turn_tool_result_chars", 160_000)
+            ),
+            session_id=session_id,
+            deferred_tools_enabled=bool(
+                agent_config.get("deferred_tools", {}).get("enabled", True)
+            ),
+            token_budget=int(agent_config.get("token_budget", 0)),
+            cost_budget_usd=float(agent_config.get("cost_budget_usd", 0.0)),
+            max_output_tokens=int(agent_config.get("max_output_tokens", 0)),
+            input_cost_per_million=float(
+                agent_config.get("input_cost_per_million", 0.0)
+            ),
+            output_cost_per_million=float(
+                agent_config.get("output_cost_per_million", 0.0)
+            ),
+            fallback_providers=getattr(self, "fallback_providers", []),
+            provider_retry_attempts=int(agent_config.get("provider_retry_attempts", 1)),
+            provider_circuit_breaker=getattr(self, "provider_circuit_breaker", None),
         )
         started_at = perf_counter()
         if not preserve_context:
@@ -1424,6 +1515,8 @@ class AgentRuntime:
         if sm is not None:
             sm.clear_session()
             session_id = sm.start_session()
+            self.artifact_store = ArtifactStore(self.project_path, session_id)
+            self.file_version_cache.clear()
             state_store = getattr(self, "state_store", None)
             if state_store is not None:
                 state_store.bind_session(session_id)
@@ -1471,6 +1564,15 @@ class AgentRuntime:
             self.context_manager.add_message(msg)
         # Keep writing to the resumed session instead of spawning a duplicate file.
         self.session_manager.resume_session(session_id)
+        project_path = getattr(
+            self,
+            "project_path",
+            getattr(self.session_manager, "_project_root", Path.cwd()),
+        )
+        self.artifact_store = ArtifactStore(project_path, session_id)
+        file_cache = getattr(self, "file_version_cache", None) or FileVersionCache()
+        file_cache.clear()
+        self.file_version_cache = file_cache
         self.session_transcript = [dict(event.payload) for event in loaded.transcript_events]
         state_store = getattr(self, "state_store", None)
         persistence_was_ready = getattr(self, "_state_persistence_ready", False)
@@ -1516,6 +1618,16 @@ class AgentRuntime:
             self._state_persistence_ready = persistence_was_ready
         self._save_session_messages()
         return loaded
+
+    def fork_session(self, session_id: str | None = None) -> str:
+        """Fork a persisted timeline and bind this runtime to the new session."""
+        self.flush_session()
+        source_id = session_id or self.session_manager.session_id
+        if not source_id:
+            raise ValueError("No source session is available to fork")
+        fork_id = self.session_manager.fork_session(source_id)
+        self.resume_session(fork_id)
+        return fork_id
 
     def _serialize_plan_state(self) -> dict[str, Any]:
         """Return the minimal persisted plan-state payload for session resume."""

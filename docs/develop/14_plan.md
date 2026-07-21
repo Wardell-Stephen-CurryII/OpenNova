@@ -215,6 +215,25 @@ P0 验证结果：UTF-8 中文路径环境下全量 `540 passed`，`ruff check s
 
 14.4-14.6 仍是后续阶段，不包含在本次 P0 交付中。当前全仓 `ruff format --check` 仍有 42 个历史文件待格式化，全仓 mypy 为 193 errors / 26 files，主要集中在旧 `BaseTool.execute` override、TUI typing 和历史工具模块；需按 14.6 单独治理，不能把 targeted 检查误写成全仓门禁完成。
 
+## P1 实施状态（2026-07-21）
+
+- [x] 抽出 `ToolExecutionEngine`，hook、guardrails、permission、checkpoint、audit、redaction、working memory 和 canonical event 使用同一执行管道。
+- [x] 基于 `is_concurrency_safe()` 实现有界并行调度，写工具和 barrier 保持串行，observation 按原 tool-call 顺序回填。
+- [x] 引入 session-scoped `FileVersionCache`，读取后记录 path/mtime/size/hash，写入前阻止 stale edit 并返回重试建议。
+- [x] 引入 per-tool/per-turn 结果预算和 `.opennova/artifacts/<session>/` 原始结果落盘。
+- [x] 新增 `tool_search` 延迟工具发现，发现结果进入 transcript，resume 可从 tool observation 恢复暴露集合。
+- [x] Glob/Grep/Python indexer 复用 `GitIgnoreService`，支持 nested rules、negation、anchored/directory pattern，并统一 binary、size 和 cancellation 边界。
+- [x] 建立 `inspect/bare/interactive/headless` bootstrap policy，`list-tools` 和 `doctor` 不创建 provider/session，不加载项目扩展。
+- [x] MCP 补齐客户端版本、分页、tools list-changed 动态注册、resource templates、prompts、roots、elicitation 和请求取消。
+- [x] checkpoint 记录 create/modify/delete tombstone、before/after hash、run/user/tool identity；`rewind` 默认预览且冲突时拒绝覆盖。SessionManager、SDK 和 TUI 支持会话 fork。
+- [x] `ModelProfile` 统一能力与 token estimate，ReAct run 支持 turn/token/cost/output 预算、retry/backoff、fallback provider、circuit breaker 和本地高置信 workflow routing。
+- [x] `.opennova/memory/` 支持 provenance、scope、expiry、归一化段落去重与 `/memory list|add|delete`，旧的普通 Markdown 文件保持兼容。
+- [x] 巨型模块已先拆出 execution engine、model policy、artifact/file-state service 和 slash-command dispatcher；完整 TUI widget/controller 重组保留为后续非兼容性 UI 专项。
+
+P1 不包含 14.5 中的 automation 可恢复 runner 和真实 LSP client，也不代替 14.6 全仓 format/mypy/coverage 门禁治理。
+
+P1 验证结果：UTF-8 中文路径环境下全量 `552 passed`，`ruff check src tests` 通过；本次新增的 execution/model-policy/file-state/artifact/tool-search/ignore/memory/command-dispatch 模块 targeted mypy 为 0 error。全仓 format 和 mypy 仍按 14.6 的历史债务状态单独治理。
+
 ### 14.4 Tool Engine and Context Efficiency
 
 - 抽出 `ToolExecutionEngine`，统一执行 pipeline 和结果预算。

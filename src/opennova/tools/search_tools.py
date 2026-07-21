@@ -2,26 +2,14 @@
 
 from __future__ import annotations
 
-import fnmatch
 import re
 from pathlib import Path
 from typing import Any
 
+from opennova.runtime.events import current_tool_context
 from opennova.security.sandbox import Sandbox, SandboxConfig
 from opennova.tools.base import BaseTool, ToolResult
-
-DEFAULT_EXCLUDED_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "node_modules",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-}
+from opennova.tools.ignore import GitIgnoreService
 
 
 def _build_sandbox(config: dict[str, Any] | None = None) -> Sandbox:
@@ -37,24 +25,18 @@ def _build_sandbox(config: dict[str, Any] | None = None) -> Sandbox:
     )
 
 
-def _load_gitignore_patterns(root: Path, respect_gitignore: bool) -> list[str]:
-    if not respect_gitignore:
-        return []
-    gitignore = root / ".gitignore"
-    if not gitignore.exists():
-        return []
-    patterns: list[str] = []
-    for raw_line in gitignore.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith("!"):
-            continue
-        patterns.append(line.rstrip("/"))
-    return patterns
+def _raise_if_cancelled() -> None:
+    context = current_tool_context()
+    if context and context.abort_signal:
+        context.abort_signal.raise_if_cancelled()
 
 
-def _is_ignored(path: Path, root: Path, patterns: list[str]) -> bool:
-    rel = path.relative_to(root).as_posix()
-    return any(fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
+def _is_binary(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return b"\x00" in handle.read(4096)
+    except OSError:
+        return True
 
 
 class GlobFilesTool(BaseTool):
@@ -81,18 +63,21 @@ class GlobFilesTool(BaseTool):
         if not allowed:
             return ToolResult(success=False, output="", error=reason)
         if not root.exists() or not root.is_dir():
-            return ToolResult(success=False, output="", error=f"Directory does not exist: {directory}")
+            return ToolResult(
+                success=False, output="", error=f"Directory does not exist: {directory}"
+            )
 
-        ignore_patterns = _load_gitignore_patterns(root, respect_gitignore)
+        ignore = GitIgnoreService(root, enabled=respect_gitignore)
         matches: list[str] = []
         for path in root.rglob(pattern):
+            _raise_if_cancelled()
             if len(matches) >= max_results:
                 break
-            if any(part in DEFAULT_EXCLUDED_DIRS for part in path.parts):
+            if not include_hidden and any(
+                part.startswith(".") for part in path.relative_to(root).parts
+            ):
                 continue
-            if not include_hidden and any(part.startswith(".") for part in path.relative_to(root).parts):
-                continue
-            if _is_ignored(path, root, ignore_patterns):
+            if ignore.is_ignored(path, is_dir=path.is_dir()):
                 continue
             allowed, _ = self.sandbox.is_path_allowed(path)
             if allowed and path.is_file():
@@ -114,7 +99,9 @@ class GrepCodeTool(BaseTool):
 
     name = "grep_code"
     search_hint = "Search code contents without running shell commands"
-    description = "Search text content across files. Returns file, line number, and matching line snippets."
+    description = (
+        "Search text content across files. Returns file, line number, and matching line snippets."
+    )
 
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(config)
@@ -131,13 +118,16 @@ class GrepCodeTool(BaseTool):
         include_hidden: bool = False,
         respect_gitignore: bool = True,
         context_lines: int = 0,
+        max_file_size: int = 2 * 1024 * 1024,
     ) -> ToolResult:
         root = Path(directory).resolve()
         allowed, reason = self.sandbox.is_path_allowed(root)
         if not allowed:
             return ToolResult(success=False, output="", error=reason)
         if not root.exists() or not root.is_dir():
-            return ToolResult(success=False, output="", error=f"Directory does not exist: {directory}")
+            return ToolResult(
+                success=False, output="", error=f"Directory does not exist: {directory}"
+            )
 
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
@@ -146,22 +136,28 @@ class GrepCodeTool(BaseTool):
             return ToolResult(success=False, output="", error=f"Invalid regex pattern: {e}")
         needle = pattern if case_sensitive else pattern.lower()
         context_lines = max(0, context_lines)
-        ignore_patterns = _load_gitignore_patterns(root, respect_gitignore)
+        ignore = GitIgnoreService(root, enabled=respect_gitignore)
 
         matches: list[str] = []
         match_count = 0
         for path in root.rglob(file_glob):
+            _raise_if_cancelled()
             if match_count >= max_results:
                 break
-            if not path.is_file() or any(part in DEFAULT_EXCLUDED_DIRS for part in path.parts):
+            if not path.is_file():
                 continue
             rel_parts = path.relative_to(root).parts
             if not include_hidden and any(part.startswith(".") for part in rel_parts):
                 continue
-            if _is_ignored(path, root, ignore_patterns):
+            if ignore.is_ignored(path, is_dir=False):
                 continue
             allowed, _ = self.sandbox.is_path_allowed(path)
             if not allowed:
+                continue
+            try:
+                if path.stat().st_size > max(1, max_file_size) or _is_binary(path):
+                    continue
+            except OSError:
                 continue
             try:
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()

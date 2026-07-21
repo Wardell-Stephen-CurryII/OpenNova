@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opennova.runtime.events import current_tool_context
 from opennova.security.sandbox import Sandbox, SandboxConfig
 from opennova.tools.base import BaseTool, ToolResult
-
-IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules"}
+from opennova.tools.ignore import GitIgnoreService
 
 
 def detect_python_analysis_backend() -> dict[str, Any]:
@@ -286,6 +286,7 @@ class PythonASTIndexer:
 
     def __init__(self, sandbox: Sandbox):
         self.sandbox = sandbox
+        self.ignore = GitIgnoreService(sandbox.working_dir)
         self.imports: list[dict[str, Any]] = []
 
     def python_files(self, path: str) -> tuple[bool, str | list[Path]]:
@@ -298,7 +299,10 @@ class PythonASTIndexer:
         files = [target] if target.is_file() else sorted(target.rglob("*.py"))
         filtered = []
         for file_path in files:
-            if file_path.suffix != ".py" or any(part in IGNORED_DIRS for part in file_path.parts):
+            context = current_tool_context()
+            if context and context.abort_signal:
+                context.abort_signal.raise_if_cancelled()
+            if file_path.suffix != ".py" or self.ignore.is_ignored(file_path, is_dir=False):
                 continue
             allowed, _ = self.sandbox.is_path_allowed(file_path)
             if allowed:
@@ -518,7 +522,10 @@ class PythonDiagnosticsTool(_PythonCodeTool):
         if not target.exists():
             return ToolResult(success=False, output="", error=f"Path does not exist: {path}")
 
-        files = [target] if target.is_file() else sorted(target.rglob("*.py"))
+        ok, files_or_error = self.indexer.python_files(path)
+        if not ok:
+            return ToolResult(success=False, output="", error=str(files_or_error))
+        files = files_or_error
         diagnostics: list[dict[str, Any]] = []
 
         for file_path in files:

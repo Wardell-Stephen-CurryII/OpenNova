@@ -151,8 +151,14 @@ Overwriting or editing existing files creates checkpoint metadata.
 /checkpoint diff <id>
 /checkpoint restore --preview <id>
 /checkpoint restore <id>
+/checkpoint rewind <id>
+/checkpoint rewind --apply <id>
 /export
 ```
+
+`rewind` previews by default and restores only with explicit `--apply`. Use
+`/memory list|add|delete` to manage layered memory; expired records are skipped and equivalent
+paragraphs are deduplicated during injection.
 
 Markdown exports include tool results and checkpoint/diff details and are written to `.opennova/exports/` by default.
 

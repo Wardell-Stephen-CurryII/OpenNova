@@ -903,7 +903,7 @@ def test_list_tools_inspection_has_no_runtime_or_extension_side_effects(
     result = CliRunner().invoke(main, ["list-tools"])
 
     assert result.exit_code == 0
-    assert "Total: 39 tools" in result.output
+    assert "Total: 40 tools" in result.output
     assert not marker.exists()
     assert not (tmp_path / "home" / ".opennova" / "sessions").exists()
 

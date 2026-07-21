@@ -18,6 +18,15 @@ class ModelProfile:
     supports_reasoning: bool = False
     supports_structured_output: bool = False
 
+    @property
+    def supports_thinking(self) -> bool:
+        """Provider-neutral alias used by runtime feature selection."""
+        return self.supports_reasoning
+
+    def estimate_tokens(self, text: str) -> int:
+        """Return a conservative tokenizer-free estimate for routing and budgets."""
+        return max(1, (len(text.encode("utf-8")) + 3) // 4)
+
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 

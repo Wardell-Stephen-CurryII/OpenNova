@@ -6,6 +6,7 @@ Launches the Textual TUI and exposes setup and one-shot task commands.
 
 import asyncio
 import sys
+from pathlib import Path
 
 import click
 
@@ -186,6 +187,34 @@ def list_tools(ctx: click.Context) -> None:
 
 @main.command()
 @click.pass_context
+def doctor(ctx: click.Context) -> None:
+    """Inspect local runtime readiness without creating a provider or session."""
+    from opennova.runtime.bootstrap import inspect_runtime
+
+    config = load_config(ctx.obj.get("config_path"))
+    snapshot = inspect_runtime()
+    project = Path.cwd()
+    hooks = list((project / ".opennova" / "hooks").glob("*.py"))
+    plugins = list((project / ".opennova" / "plugins").glob("*/plugin.yaml"))
+    mcp_servers = config.get_mcp_servers()
+    process_sandbox = config.get("security.process_sandbox", {})
+    click.echo("OpenNova doctor (side-effect-free)\n")
+    click.echo(f"Version: {__version__}")
+    click.echo(f"Bootstrap profile: {snapshot.profile.value}")
+    click.echo(f"Python encoding: {sys.getfilesystemencoding()}")
+    click.echo(f"Built-in tools: {len(snapshot.tool_names)}")
+    click.echo(f"Project hooks declared: {len(hooks)} (not imported)")
+    click.echo(f"Project plugins declared: {len(plugins)} (not loaded)")
+    click.echo(f"MCP servers configured: {len(mcp_servers)} (not connected)")
+    click.echo(
+        "Process sandbox: "
+        f"enabled={bool(process_sandbox.get('enabled', True))} "
+        f"backend={process_sandbox.get('backend', 'auto')}"
+    )
+
+
+@main.command()
+@click.pass_context
 def config_cmd(ctx: click.Context) -> None:
     """
     Show current configuration.
@@ -242,7 +271,9 @@ async def _run_single_task(
         highlight=True,
     )
 
-    agent = AgentRuntime(config)
+    from opennova.runtime.bootstrap import RuntimeBootstrapProfile
+
+    agent = AgentRuntime(config, bootstrap_profile=RuntimeBootstrapProfile.HEADLESS)
 
     if plan_mode:
         console.print(f"[yellow]Planning: {task}[/yellow]\n")

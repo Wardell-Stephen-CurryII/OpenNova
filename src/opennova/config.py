@@ -38,8 +38,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "agent": {
         "max_iterations": 20,
+        "token_budget": 0,
+        "cost_budget_usd": 0.0,
+        "max_output_tokens": 0,
+        "input_cost_per_million": 0.0,
+        "output_cost_per_million": 0.0,
+        "provider_retry_attempts": 1,
+        "provider_failure_threshold": 3,
+        "provider_cooldown_seconds": 30.0,
+        "fallback_providers": [],
         "auto_confirm": False,
         "show_thinking": True,
+        "execution": {
+            "parallel_tool_limit": 4,
+            "per_turn_tool_result_chars": 160000,
+        },
+        "deferred_tools": {"enabled": True},
+        "memory": {"max_chars": 5000},
         "compression": {
             "enabled": True,
             "threshold": 0.55,

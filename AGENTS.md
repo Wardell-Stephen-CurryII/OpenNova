@@ -6,7 +6,7 @@ This file describes the current OpenNova repository for coding agents and contri
 
 OpenNova 0.4.2 is a Python 3.11+ terminal AI coding agent. Textual is the only interactive interface; the legacy interactive CLI and standalone `opennova tui` command have been removed. The Click entry point remains for launching the TUI, setup/inspection commands, and one-shot non-interactive tasks.
 
-Core capabilities include multi-provider LLM access, a ReAct runtime, 39 built-in tools, Plan/Act workflows, persistent sessions, transcript replay, context compression, layered memory, Skills, trusted plugins, hooks, MCP, worktrees, local automation, checkpoints, and security policies.
+Core capabilities include multi-provider LLM access, a ReAct runtime, 40 built-in tools, Plan/Act workflows, persistent sessions, transcript replay, context compression, layered memory, Skills, trusted plugins, hooks, MCP, worktrees, local automation, checkpoints, and security policies.
 
 ## Setup and commands
 
@@ -50,7 +50,7 @@ For focused work, run the smallest relevant pytest file first. The UTF-8 environ
 - `src/opennova/cli/`: Textual workbench, dialogs, message blocks, tool cards, slash commands, and Windows driver support
 - `src/opennova/runtime/`: Agent orchestration, ReAct loop, canonical events, state, and persistence bridge
 - `src/opennova/providers/`: OpenAI, Anthropic, and DeepSeek providers plus factory
-- `src/opennova/tools/`: tool base/registry and 39 built-in tools
+- `src/opennova/tools/`: tool base/registry and 40 built-in tools
 - `src/opennova/session/`: JSONL v2 snapshots, runtime events, legacy loading, and resume metadata
 - `src/opennova/memory/`: context compression, working/project memory, retrieval, and layered memory
 - `src/opennova/planning/`: plan data and planner

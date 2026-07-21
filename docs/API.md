@@ -189,7 +189,7 @@ tool.interrupt_behavior()
 tool.is_open_world(**args)
 ```
 
-`ToolRegistry` 提供 `register()`、`get()`、`list_tools()`、`list_names()`、`has_tool()` 和 `unregister()`。当前 `AgentRuntime` 默认注册 39 个内置工具，插件和 MCP 工具会在此基础上动态增加。
+`ToolRegistry` 提供 `register()`、`get()`、`list_tools()`、`list_names()`、`has_tool()` 和 `unregister()`。当前 `AgentRuntime` 默认注册 40 个内置工具，其中 `tool_search` 用于按需暴露延迟工具；插件和 MCP 工具会在此基础上动态增加。
 
 ## 运行时工具事件
 
@@ -210,6 +210,7 @@ manager.save_runtime_snapshot(messages, transcript_events=events)
 sessions = manager.list_sessions()
 loaded = manager.load_session_with_summary(session_id)
 manager.resume_session(session_id)
+fork_id = manager.fork_session(session_id)
 ```
 
 会话格式是 JSONL v2 快照加运行时事件。loader 兼容旧格式，并对旧的重复消息做尽力去重。列表按 `modified` 倒序排列，会话标题默认来自第一条用户消息的 20 字符片段。

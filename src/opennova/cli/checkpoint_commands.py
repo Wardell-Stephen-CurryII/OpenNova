@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
 from pathlib import Path
 
 from opennova.checkpoints import CheckpointManager
@@ -19,19 +18,24 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
     try:
         if command == "list":
             checkpoints = manager.list_checkpoints()
-            output = "\n".join(
-                f"{checkpoint.id[:8]} {checkpoint.label} files={len(checkpoint.files)}"
-                for checkpoint in checkpoints
-            ) or "No checkpoints found."
+            output = (
+                "\n".join(
+                    f"{checkpoint.id[:8]} {checkpoint.label} files={len(checkpoint.files)}"
+                    for checkpoint in checkpoints
+                )
+                or "No checkpoints found."
+            )
             return ToolResult(success=True, output=output, metadata={"checkpoints": checkpoints})
 
-        if command in {"diff", "restore"}:
+        if command in {"diff", "restore", "rewind"}:
             if command == "diff" and len(tokens) == 4 and tokens[1] == "--from-transcript":
                 transcript_path = tokens[2]
                 checkpoint_id = tokens[3]
                 for item in extract_checkpoint_index(transcript_path):
                     if item["checkpoint_id"].startswith(checkpoint_id):
-                        return ToolResult(success=True, output=item["diff"], metadata={"checkpoint": item})
+                        return ToolResult(
+                            success=True, output=item["diff"], metadata={"checkpoint": item}
+                        )
                 return ToolResult(
                     success=False,
                     output="",
@@ -58,23 +62,40 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
                     error=f"Checkpoint not found in session transcript: {session_id} {checkpoint_id}",
                 )
             preview = command == "restore" and len(tokens) == 3 and tokens[1] == "--preview"
-            if len(tokens) != 2 and not preview:
+            force = command == "restore" and len(tokens) == 3 and tokens[1] == "--force"
+            rewind_apply = command == "rewind" and len(tokens) == 3 and tokens[1] == "--apply"
+            rewind_force = command == "rewind" and len(tokens) == 3 and tokens[1] == "--force"
+            if (
+                len(tokens) != 2
+                and not preview
+                and not force
+                and not rewind_apply
+                and not rewind_force
+            ):
                 raise ValueError(
                     "Usage: /checkpoint [list|diff <id>|diff --session <session> <id>|"
-                    "diff --from-transcript <path> <id>|restore [--preview] <id>]"
+                    "diff --from-transcript <path> <id>|restore [--preview|--force] <id>|"
+                    "rewind [--apply|--force] <id>]"
                 )
 
-            checkpoint_id = tokens[2] if preview else tokens[1]
+            checkpoint_id = (
+                tokens[2] if preview or force or rewind_apply or rewind_force else tokens[1]
+            )
             if command == "diff":
                 return ToolResult(success=True, output=_diff_checkpoint(manager, checkpoint_id))
-            if preview:
+            if preview or (command == "rewind" and not rewind_apply and not rewind_force):
                 return ToolResult(
                     success=True,
                     output=_diff_checkpoint(manager, checkpoint_id),
-                    metadata={"preview": True, "checkpoint_id": checkpoint_id},
+                    metadata={
+                        "preview": True,
+                        "rewind": command == "rewind",
+                        "checkpoint_id": checkpoint_id,
+                    },
                 )
-            manager.restore(checkpoint_id)
-            return ToolResult(success=True, output=f"Restored checkpoint: {checkpoint_id}")
+            manager.restore(checkpoint_id, force=force or rewind_force)
+            verb = "Rewound" if command == "rewind" else "Restored"
+            return ToolResult(success=True, output=f"{verb} checkpoint: {checkpoint_id}")
     except Exception as exc:
         return ToolResult(success=False, output="", error=str(exc))
 
@@ -83,28 +104,11 @@ def handle_checkpoint_command(project_path: str | Path, args: str) -> ToolResult
         output="",
         error=(
             "Usage: /checkpoint [list|diff <id>|diff --session <session> <id>|"
-            "diff --from-transcript <path> <id>|restore [--preview] <id>]"
+            "diff --from-transcript <path> <id>|restore [--preview|--force] <id>|"
+            "rewind [--apply|--force] <id>]"
         ),
     )
 
 
 def _diff_checkpoint(manager: CheckpointManager, checkpoint_id: str) -> str:
-    checkpoint = next(
-        item for item in manager.list_checkpoints() if item.id.startswith(checkpoint_id)
-    )
-    checkpoint_dir = manager.root / checkpoint.id
-    diff_parts: list[str] = []
-    for relative in checkpoint.files:
-        before_path = checkpoint_dir / relative
-        after_path = manager.project_path / relative
-        before = before_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-        after = after_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-        diff_parts.extend(
-            difflib.unified_diff(
-                before,
-                after,
-                fromfile=f"checkpoint/{relative}",
-                tofile=str(relative),
-            )
-        )
-    return "".join(diff_parts) or "No differences."
+    return manager.diff(checkpoint_id)

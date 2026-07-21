@@ -26,7 +26,7 @@ class ToolUseContext:
     arguments: dict[str, Any]
     session_id: str | None = None
     permission_context: dict[str, Any] = field(default_factory=dict)
-    read_file_cache: dict[str, str] = field(default_factory=dict)
+    read_file_cache: Any = field(default_factory=dict)
     abort_signal: CancellationToken | None = None
     risk_level: str = "safe"
     diff: str | None = None
