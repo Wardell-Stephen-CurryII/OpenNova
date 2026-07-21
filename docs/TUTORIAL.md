@@ -163,8 +163,12 @@ mcp:
 /checkpoint diff <id>
 /checkpoint restore --preview <id>
 /checkpoint restore <id>
+/checkpoint rewind <id>
+/checkpoint rewind --apply <id>
 /export
 ```
+
+`rewind` 默认只预览，显式使用 `--apply` 才会恢复。分层记忆可以通过 `/memory list|add|delete` 管理，会自动忽略过期记忆并对重复段落去重。
 
 导出的 Markdown transcript 包含工具结果及 checkpoint/diff 信息，默认写入项目 `.opennova/exports/`。
 

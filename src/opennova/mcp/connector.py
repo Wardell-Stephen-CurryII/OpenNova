@@ -8,11 +8,13 @@ Provides:
 """
 
 import asyncio
+import inspect
 import json
 import os
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,6 +32,15 @@ from opennova.mcp.types import (
     TransportType,
 )
 from opennova.tools.base import BaseTool, ToolRegistry, ToolResult
+
+SUPPORTED_PROTOCOL_VERSION = "2024-11-05"
+
+
+def _client_version() -> str:
+    try:
+        return version("opennova")
+    except PackageNotFoundError:
+        return "0.4.2"
 
 
 class Transport(ABC):
@@ -291,6 +302,9 @@ class MCPConnector:
         self._listener_task: asyncio.Task[None] | None = None
         self._initialized = asyncio.Event()
         self.last_error: str | None = None
+        self.on_tools_changed: Callable[[], Any] | None = None
+        self.roots_provider: Callable[[], list[dict[str, Any]]] | None = None
+        self.elicitation_handler: Callable[[dict[str, Any]], Any] | None = None
 
     async def connect(self) -> None:
         """Connect to the MCP server."""
@@ -373,6 +387,16 @@ class MCPConnector:
 
                 if message.method == "notifications/initialized":
                     self._initialized.set()
+                    continue
+                if message.method in {
+                    "notifications/tools/list_changed",
+                    "notifications/resources/list_changed",
+                    "notifications/prompts/list_changed",
+                }:
+                    await self._handle_list_changed(message.method)
+                    continue
+                if message.id is not None and message.method:
+                    await self._handle_server_request(message)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -441,12 +465,15 @@ class MCPConnector:
         result = await self._send_request(
             "initialize",
             {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": SUPPORTED_PROTOCOL_VERSION,
                 "clientInfo": {
                     "name": "OpenNova",
-                    "version": "0.2.0",
+                    "version": _client_version(),
                 },
-                "capabilities": {},
+                "capabilities": {
+                    "roots": {"listChanged": True},
+                    "elicitation": {},
+                },
             },
         )
         transport = self.transport
@@ -458,10 +485,8 @@ class MCPConnector:
 
     async def _discover_tools(self) -> None:
         """Discover available tools from the server."""
-        result = await self._send_request("tools/list")
-
-        tools_data = result.get("tools", [])
-
+        tools_data = await self._list_paginated("tools/list", "tools")
+        self.tools.clear()
         for tool_data in tools_data:
             tool = MCPTool(
                 name=tool_data.get("name", ""),
@@ -470,6 +495,77 @@ class MCPConnector:
                 server_name=self.config.name,
             )
             self.tools[tool.get_full_name()] = tool
+
+    async def _list_paginated(
+        self,
+        method: str,
+        key: str,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Collect every cursor page for an MCP list method."""
+        items: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        while True:
+            request_params = dict(params or {})
+            if cursor:
+                request_params["cursor"] = cursor
+            result = await self._send_request(
+                method,
+                request_params or None,
+                timeout=self.config.timeout,
+            )
+            page = result.get(key, []) if isinstance(result, dict) else []
+            items.extend(item for item in page if isinstance(item, dict))
+            next_cursor = result.get("nextCursor") if isinstance(result, dict) else None
+            if not next_cursor or str(next_cursor) in seen:
+                break
+            cursor = str(next_cursor)
+            seen.add(cursor)
+        return items
+
+    async def _handle_list_changed(self, method: str) -> None:
+        if method == "notifications/tools/list_changed":
+            await self._discover_tools()
+            if self.on_tools_changed:
+                result = self.on_tools_changed()
+                if inspect.isawaitable(result):
+                    await result
+
+    async def _handle_server_request(self, message: MCPMessage) -> None:
+        transport = self.transport
+        if transport is None:
+            return
+        try:
+            if message.method == "roots/list":
+                roots = self.roots_provider() if self.roots_provider else []
+                result: Any = {"roots": roots}
+            elif message.method == "elicitation/create":
+                if self.elicitation_handler is None:
+                    result = {"action": "decline"}
+                else:
+                    result = self.elicitation_handler(message.params or {})
+                    if inspect.isawaitable(result):
+                        result = await result
+            else:
+                await transport.send(
+                    MCPMessage(
+                        id=message.id,
+                        error={
+                            "code": -32601,
+                            "message": f"Method not supported: {message.method}",
+                        },
+                    )
+                )
+                return
+            await transport.send(MCPMessage(id=message.id, result=result))
+        except Exception as exc:
+            await transport.send(
+                MCPMessage(
+                    id=message.id,
+                    error={"code": -32603, "message": str(exc)},
+                )
+            )
 
     async def call_tool(
         self,
@@ -521,9 +617,9 @@ class MCPConnector:
         if self.state != MCPConnectionState.CONNECTED:
             raise RuntimeError("Not connected to MCP server")
 
-        result = await self._send_request("resources/list", timeout=self.config.timeout)
+        resources_data = await self._list_paginated("resources/list", "resources")
         resources = []
-        for resource_data in result.get("resources", []):
+        for resource_data in resources_data:
             resources.append(
                 MCPResource(
                     uri=resource_data.get("uri", ""),
@@ -539,6 +635,27 @@ class MCPConnector:
                 )
             )
         return resources
+
+    async def list_resource_templates(self) -> list[dict[str, Any]]:
+        """List every resource template advertised by the server."""
+        return await self._list_paginated("resources/templates/list", "resourceTemplates")
+
+    async def list_prompts(self) -> list[dict[str, Any]]:
+        """List every prompt advertised by the server."""
+        return await self._list_paginated("prompts/list", "prompts")
+
+    async def get_prompt(
+        self,
+        name: str,
+        arguments: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Render a named server prompt."""
+        result = await self._send_request(
+            "prompts/get",
+            {"name": name, "arguments": arguments or {}},
+            timeout=self.config.timeout,
+        )
+        return result if isinstance(result, dict) else {}
 
     async def read_resource(self, uri: str) -> MCPResourceContent:
         """Read a resource by URI from the MCP server."""
@@ -656,12 +773,51 @@ class MCPManager:
     - Execute tools on appropriate servers
     """
 
-    def __init__(self, tool_registry: ToolRegistry):
+    def __init__(
+        self,
+        tool_registry: ToolRegistry,
+        *,
+        roots: list[dict[str, Any]] | None = None,
+        elicitation_handler: Callable[[dict[str, Any]], Any] | None = None,
+    ):
         """Initialize MCP manager."""
         self.tool_registry = tool_registry
         self.connectors: dict[str, MCPConnector] = {}
         self._registered_tools_by_server: dict[str, list[str]] = {}
         self.connection_errors: dict[str, str] = {}
+        self.roots = list(roots or [])
+        self.elicitation_handler = elicitation_handler
+
+    def set_roots(self, roots: list[dict[str, Any]]) -> None:
+        """Replace the workspace roots exposed to connected MCP servers."""
+        self.roots = list(roots)
+
+    def set_elicitation_handler(
+        self,
+        handler: Callable[[dict[str, Any]], Any] | None,
+    ) -> None:
+        """Set the user-interaction handler for MCP elicitation requests."""
+        self.elicitation_handler = handler
+
+    def _connector_roots(self) -> list[dict[str, Any]]:
+        return list(self.roots)
+
+    async def _sync_server_tools(self, server_name: str) -> None:
+        """Atomically refresh registry wrappers for one connected server."""
+        connector = self.connectors.get(server_name)
+        if connector is None:
+            return
+
+        previous_names = self._registered_tools_by_server.get(server_name, [])
+        for tool_name in previous_names:
+            self.tool_registry.unregister(tool_name)
+
+        registered_tools: list[str] = []
+        for mcp_tool in connector.get_tools():
+            wrapper = MCPToolWrapper(mcp_tool, connector)
+            self.tool_registry.register(wrapper)
+            registered_tools.append(wrapper.name)
+        self._registered_tools_by_server[server_name] = registered_tools
 
     async def add_server(self, config: MCPServerConfig) -> bool:
         """
@@ -681,18 +837,19 @@ class MCPManager:
             return False
 
         connector = MCPConnector(config)
+        connector.roots_provider = self._connector_roots
+        connector.elicitation_handler = lambda params: (
+            self.elicitation_handler(params)
+            if self.elicitation_handler is not None
+            else {"action": "decline"}
+        )
+        connector.on_tools_changed = lambda: self._sync_server_tools(config.name)
 
         try:
             await connector.connect()
             self.connectors[config.name] = connector
             self.connection_errors.pop(config.name, None)
-
-            registered_tools = []
-            for mcp_tool in connector.get_tools():
-                wrapper = MCPToolWrapper(mcp_tool, connector)
-                self.tool_registry.register(wrapper)
-                registered_tools.append(wrapper.name)
-            self._registered_tools_by_server[config.name] = registered_tools
+            await self._sync_server_tools(config.name)
 
             return True
 
@@ -753,6 +910,49 @@ class MCPManager:
         for connector in connectors:
             resources.extend(await connector.list_resources())
         return resources
+
+    async def list_resource_templates(
+        self,
+        server_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List resource templates with their server provenance."""
+        templates: list[dict[str, Any]] = []
+        connectors = self._selected_connectors(server_name)
+        for connector in connectors:
+            for template in await connector.list_resource_templates():
+                templates.append({**template, "server_name": connector.config.name})
+        return templates
+
+    async def list_prompts(self, server_name: str | None = None) -> list[dict[str, Any]]:
+        """List prompts with their server provenance."""
+        prompts: list[dict[str, Any]] = []
+        connectors = self._selected_connectors(server_name)
+        for connector in connectors:
+            for prompt in await connector.list_prompts():
+                prompts.append({**prompt, "server_name": connector.config.name})
+        return prompts
+
+    async def get_prompt(
+        self,
+        name: str,
+        arguments: dict[str, str] | None = None,
+        server_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Render a prompt on a selected or first connected server."""
+        connectors = self._selected_connectors(server_name)
+        if not connectors:
+            raise RuntimeError(
+                f"MCP server not connected: {server_name}"
+                if server_name
+                else "No MCP servers connected"
+            )
+        return await connectors[0].get_prompt(name, arguments)
+
+    def _selected_connectors(self, server_name: str | None) -> list[MCPConnector]:
+        if server_name is None:
+            return list(self.connectors.values())
+        connector = self.connectors.get(server_name)
+        return [connector] if connector is not None else []
 
     async def read_resource(
         self,

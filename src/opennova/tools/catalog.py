@@ -11,6 +11,7 @@ BUILTIN_TOOL_NAMES: tuple[str, ...] = (
     "execute_command",
     "glob_files",
     "grep_code",
+    "tool_search",
     "python_diagnostics",
     "python_symbols",
     "python_definition",

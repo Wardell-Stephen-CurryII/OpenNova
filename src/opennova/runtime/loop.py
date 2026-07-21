@@ -21,22 +21,26 @@ from typing import Any
 
 from opennova.hooks import HookManager
 from opennova.memory.context import ContextCapacityError, ContextManager, MessageAddResult
-from opennova.memory.working import ActionStatus, WorkingMemory
+from opennova.memory.working import WorkingMemory
 from opennova.providers.base import (
     BaseLLMProvider,
     FinishReason,
     LLMResponse,
     Message,
     ToolCall,
+    normalize_provider_error,
 )
+from opennova.providers.models import get_model_profile
+from opennova.runtime.artifacts import ArtifactStore, ToolResultBudget
 from opennova.runtime.cancellation import CancellationToken
 from opennova.runtime.events import (
     ToolEvent,
     ToolEventType,
     ToolUseContext,
-    reset_current_tool_context,
-    set_current_tool_context,
 )
+from opennova.runtime.execution import ToolExecutionEngine
+from opennova.runtime.file_state import FileVersionCache
+from opennova.runtime.model_policy import ProviderCircuitBreaker, RunBudget
 from opennova.runtime.state import AgentState
 from opennova.runtime.workflow import WorkflowDecision, WorkflowRouter, WorkflowRoutingResult
 from opennova.security.guardrails import Guardrails, GuardResult, RiskLevel
@@ -62,6 +66,23 @@ PLAN_MODE_IMPLEMENTATION_TOOLS = {
 BATCH_BARRIER_TOOLS = {
     "skill",
     "ask_user_question",
+    "enter_plan_mode",
+    "exit_plan_mode",
+}
+CORE_TOOL_NAMES = {
+    "read_file",
+    "write_file",
+    "create_file",
+    "edit_file",
+    "multi_edit_file",
+    "delete_file",
+    "list_directory",
+    "execute_command",
+    "glob_files",
+    "grep_code",
+    "tool_search",
+    "ask_user_question",
+    "skill",
     "enter_plan_mode",
     "exit_plan_mode",
 }
@@ -127,6 +148,20 @@ class ReActLoop:
         hook_manager: HookManager | None = None,
         audit_logger: Any | None = None,
         cancellation_token: CancellationToken | None = None,
+        file_cache: FileVersionCache | None = None,
+        artifact_store: ArtifactStore | None = None,
+        parallel_tool_limit: int = 4,
+        per_turn_tool_result_chars: int = 160_000,
+        session_id: str | None = None,
+        deferred_tools_enabled: bool = True,
+        token_budget: int = 0,
+        cost_budget_usd: float = 0.0,
+        max_output_tokens: int = 0,
+        input_cost_per_million: float = 0.0,
+        output_cost_per_million: float = 0.0,
+        fallback_providers: list[BaseLLMProvider] | None = None,
+        provider_retry_attempts: int = 1,
+        provider_circuit_breaker: ProviderCircuitBreaker | None = None,
     ):
         """
         Initialize ReAct loop.
@@ -156,6 +191,56 @@ class ReActLoop:
         self.hook_manager = hook_manager
         self.audit_logger = audit_logger
         self.cancellation_token = cancellation_token or CancellationToken()
+        self.file_cache = file_cache or FileVersionCache()
+        self.artifact_store = artifact_store or ArtifactStore(
+            working_dir or os.getcwd(), session_id or "session"
+        )
+        self.execution_engine = ToolExecutionEngine(
+            registry=self.tool_registry,
+            cancellation_token=self.cancellation_token,
+            result_budget=ToolResultBudget(
+                self.artifact_store,
+                per_turn_chars=per_turn_tool_result_chars,
+            ),
+            guard_checker=lambda action: self._check_tool_guard(action),
+            confirmation_handler=lambda action, guard, context: self._confirm_warn_action(
+                action, guard, context
+            ),
+            interaction_handler=lambda result: self._resolve_interaction(result),
+            checkpoint_before=lambda action, context: self._create_checkpoint_for_action(
+                action, context
+            ),
+            checkpoint_after=lambda action, result, metadata, context: (
+                self._finalize_checkpoint_for_action(action, result, metadata, context)
+            ),
+            audit_handler=lambda *args, **kwargs: self._audit_tool_action(*args, **kwargs),
+            result_redactor=lambda result: self._redact_tool_result_for_observation(result),
+            event_handler=lambda event: self._emit_tool_event(event),
+            argument_redactor=lambda arguments: self._redacted_arguments(arguments),
+            hook_manager=self.hook_manager,
+            working_memory=self.working_memory,
+            file_observer=self._record_file_observation,
+            session_id=session_id,
+            run_id_provider=lambda: getattr(self, "active_run_id", ""),
+            parallel_limit=parallel_tool_limit,
+            file_cache=self.file_cache,
+        )
+        self.deferred_tools_enabled = deferred_tools_enabled
+        self.fallback_providers = list(fallback_providers or [])
+        self.provider_retry_attempts = max(1, provider_retry_attempts)
+        self.provider_circuit_breaker = provider_circuit_breaker or ProviderCircuitBreaker()
+        provider_name = str(getattr(llm, "provider_name", ""))
+        model_name = str(getattr(llm, "model", "unknown"))
+        self.run_budget = RunBudget(
+            get_model_profile(provider_name, model_name),
+            max_turns=max_iterations,
+            token_budget=token_budget,
+            cost_budget_usd=cost_budget_usd,
+            max_output_tokens=max_output_tokens,
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million,
+        )
+        self._discovered_tool_names: set[str] = set()
         self.on_thought: Callable | None = None
         self.on_action: Callable | None = None
         self.on_result: Callable | None = None
@@ -164,6 +249,8 @@ class ReActLoop:
         self._current_tool_context: ToolUseContext | None = None
         self._errors: list[str] = []
         self._tool_event_sequence = 0
+        self.execution_engine.reset_run()
+        self.run_budget.reset()
         self._skill_listing_sent: bool = False
         self._skill_routed: bool = False
         self._project_init_routed: bool = False
@@ -188,6 +275,7 @@ class ReActLoop:
         self.context_manager.clear()
         for message in messages:
             self.context_manager.add_message(message)
+        self._restore_discovered_tools(messages)
 
     def add_message(self, message: Message) -> None:
         """Add a message to the context and fail loudly on capacity rejection."""
@@ -276,6 +364,7 @@ class ReActLoop:
                 not self.state.is_complete
                 and self.state.run_id == self.active_run_id
                 and self.state.iteration < self.max_iterations
+                and self.run_budget.exhausted_reason() is None
                 and not self.state.has_too_many_errors()
             ):
                 self._emit_iteration_start()
@@ -322,69 +411,71 @@ class ReActLoop:
                         self._report_progress(activity="Completed task", mark_complete=True)
                         break
 
-                    completed_actions: list[ParsedAction] = []
-                    completed_results: list[ToolResult] = []
                     barrier_index = self._first_batch_barrier_index(actions)
-                    usage_reported = False
+                    completed_results: list[ToolResult | None] = [None] * len(actions)
+                    scheduled_actions: list[ParsedAction] = []
+                    scheduled_indices: list[int] = []
+
                     for action_index, action in enumerate(actions):
                         if barrier_index is not None and action_index != barrier_index:
-                            completed_actions.append(action)
-                            completed_results.append(
-                                self._deferred_batch_result(action, actions[barrier_index])
+                            completed_results[action_index] = self._deferred_batch_result(
+                                action, actions[barrier_index]
                             )
                             continue
 
                         if not action.tool_name or action.tool_name not in self.tool_registry:
-                            observation = Message(
-                                role="user",
-                                content="Please use an available tool or skill to complete the task. "
-                                "Available tools: " + ", ".join(self._available_tool_names()),
-                            )
-                            self.add_message(observation)
-                            continue
-
-                        tool_context = self._start_tool_context(action)
-                        try:
-                            self._emit_tool_event(
-                                ToolEvent(
-                                    type="tool_start",
-                                    tool_id=tool_context.tool_id,
-                                    tool_name=action.tool_name,
-                                    arguments=dict(tool_context.arguments),
-                                    started_at=tool_context.started_at,
-                                    risk_level=tool_context.risk_level,
-                                )
-                            )
-                            if self.on_action:
-                                with suppress(Exception):
-                                    self.on_action(action.tool_name, tool_context.arguments)
-
-                            self._report_progress(
-                                activity=f"Running tool: {action.tool_name}",
-                                last_tool_name=action.tool_name,
-                            )
-                            result = await self._act(action)
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as exc:
-                            result = ToolResult(
+                            completed_results[action_index] = ToolResult(
                                 success=False,
                                 output="",
-                                error=f"Tool execution callback failed: {exc}",
+                                error=(
+                                    f"Unknown tool: {action.tool_name or '(empty)'}. "
+                                    "Available tools: " + ", ".join(self._available_tool_names())
+                                ),
+                                metadata={"unknown_tool": True},
                             )
-                        result = self._redact_tool_result_for_observation(result)
-                        self._finish_tool_context(result)
-                        if self.state.run_id != self.active_run_id:
-                            break
+                            continue
 
+                        scheduled_actions.append(action)
+                        scheduled_indices.append(action_index)
+                        if self.on_action:
+                            with suppress(Exception):
+                                self.on_action(
+                                    action.tool_name,
+                                    self._redacted_arguments(action.arguments),
+                                )
+                        self._report_progress(
+                            activity=f"Running tool: {action.tool_name}",
+                            last_tool_name=action.tool_name,
+                        )
+
+                    if scheduled_actions:
+                        outcomes = await self.execution_engine.execute_many(scheduled_actions)
+                        for action_index, outcome in zip(
+                            scheduled_indices, outcomes, strict=True
+                        ):
+                            completed_results[action_index] = outcome.result
+
+                    finalized_results = [
+                        result
+                        if result is not None
+                        else ToolResult(
+                            success=False,
+                            output="",
+                            error="Tool execution produced no result",
+                        )
+                        for result in completed_results
+                    ]
+                    usage_reported = False
+                    for action, result in zip(actions, finalized_results, strict=True):
                         if self.on_result:
                             with suppress(Exception):
                                 self.on_result(result)
-
                         self._report_progress(
                             activity=f"Completed tool: {action.tool_name}",
                             last_tool_name=action.tool_name,
-                            tool_use_increment=1,
+                            tool_use_increment=(
+                                0 if result.metadata.get("batch_deferred") else 1
+                            ),
                             token_count=(
                                 response.usage.total_tokens
                                 if response.usage and not usage_reported
@@ -392,13 +483,11 @@ class ReActLoop:
                             ),
                         )
                         usage_reported = True
-                        completed_actions.append(action)
-                        completed_results.append(result)
 
-                    if completed_actions:
+                    if actions:
                         await self._observe_many(
-                            completed_actions,
-                            completed_results,
+                            actions,
+                            finalized_results,
                             response.reasoning_content,
                         )
 
@@ -427,6 +516,10 @@ class ReActLoop:
 
         if self.state.iteration >= self.max_iterations:
             return f"Task incomplete: reached maximum iterations ({self.max_iterations})"
+
+        budget_reason = self.run_budget.exhausted_reason()
+        if budget_reason:
+            return f"Task incomplete: {budget_reason}"
 
         if self.state.has_too_many_errors():
             error_summary = "\n\n".join(self._errors)
@@ -627,6 +720,45 @@ class ReActLoop:
         """
         self._upsert_runtime_system_prompt()
         tools = self._available_tools()
+        providers = [self.llm, *self.fallback_providers]
+        last_error: Exception | None = None
+        for provider_index, provider in enumerate(providers):
+            if self.provider_circuit_breaker.is_open(provider):
+                continue
+            for attempt in range(self.provider_retry_attempts):
+                try:
+                    response = await self._think_with_provider(provider, tools)
+                    self.provider_circuit_breaker.record_success(provider)
+                    if provider_index:
+                        self.llm = provider
+                        self.fallback_providers = providers[provider_index + 1 :]
+                        self.context_manager.model = provider.model
+                    self.run_budget.record(response.usage)
+                    return response
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    provider_error = normalize_provider_error(
+                        exc,
+                        provider=str(getattr(provider, "provider_name", "unknown")),
+                    )
+                    last_error = provider_error
+                    self.provider_circuit_breaker.record_failure(provider)
+                    if not provider_error.retryable or attempt + 1 >= self.provider_retry_attempts:
+                        break
+                    await asyncio.sleep(min(0.25 * (2**attempt), 2.0))
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No LLM provider is available")
+
+    async def _think_with_provider(
+        self,
+        provider: BaseLLMProvider,
+        tools: list[Any],
+    ) -> LLMResponse:
+        """Execute one model request without retry or fallback policy."""
+        profile = get_model_profile(str(getattr(provider, "provider_name", "")), provider.model)
+        max_tokens = min(self.run_budget.output_limit(), profile.max_output_tokens)
 
         if self.stream and self.on_stream:
             full_content = ""
@@ -634,10 +766,11 @@ class ReActLoop:
             usage = None
             reasoning_content: str | None = None
 
-            async for chunk in self.llm.stream_chat(
+            async for chunk in provider.stream_chat(
                 self.context_manager.get_messages_for_llm(),
                 tools=tools,
                 temperature=0.7,
+                max_tokens=max_tokens,
             ):
                 self.on_stream(chunk)
 
@@ -653,19 +786,21 @@ class ReActLoop:
                     else:
                         reasoning_content += chunk.reasoning_content
 
-            return LLMResponse(
+            response = LLMResponse(
                 content=full_content,
                 tool_calls=tool_calls if tool_calls else None,
                 usage=usage,
                 finish_reason=FinishReason.TOOL_CALL if tool_calls else FinishReason.STOP,
-                model=self.llm.model,
+                model=provider.model,
                 reasoning_content=reasoning_content,
             )
+            return response
         else:
-            response = await self.llm.chat(
+            response = await provider.chat(
                 self.context_manager.get_messages_for_llm(),
                 tools=tools,
                 temperature=0.7,
+                max_tokens=max_tokens,
             )
             return response
 
@@ -677,15 +812,31 @@ class ReActLoop:
             schemas = [
                 schema for schema in schemas if schema.name not in PLAN_MODE_IMPLEMENTATION_TOOLS
             ]
+        if self.deferred_tools_enabled:
+            exposed = CORE_TOOL_NAMES | self._discovered_tool_names
+            if self._active_skill_allowed_tools:
+                exposed |= self._active_skill_allowed_tools
+            schemas = [schema for schema in schemas if schema.name in exposed]
         if not self._active_skill_allowed_tools:
             return schemas
         return [schema for schema in schemas if schema.name in self._active_skill_allowed_tools]
+
+    def _restore_discovered_tools(self, messages: list[Message]) -> None:
+        """Replay deferred-tool exposure from persisted tool-search observations."""
+        self._discovered_tool_names.clear()
+        for message in messages:
+            if message.name != "tool_search":
+                continue
+            self._discovered_tool_names.update(
+                re.findall(r"^- ([A-Za-z0-9_-]+):", message.content, flags=re.MULTILINE)
+            )
 
     async def _resolve_workflow(self, task: str) -> WorkflowRoutingResult:
         """Resolve and retain the model-selected workflow for this turn."""
         result = await WorkflowRouter(self.llm).route(
             self.context_manager.get_messages_for_llm(),
             task,
+            prefer_local=True,
         )
         self._workflow_resolved = result.resolved
         self._workflow_decision = result.decision
@@ -880,166 +1031,8 @@ class ReActLoop:
             self.skill_registry.activate_for_paths(observed_paths, cwd)
 
     async def _act(self, action: ParsedAction) -> ToolResult:
-        """
-        Act step: Execute a tool.
-
-        Args:
-            action: Action to execute
-
-        Returns:
-            Tool execution result
-        """
-        tool = self.tool_registry.get(action.tool_name)
-        self.cancellation_token.raise_if_cancelled()
-        action.arguments = self._normalize_tool_arguments(tool, action.arguments)
-        started_at = perf_counter()
-        guard_result: GuardResult | None = None
-        checkpoint_metadata: dict[str, Any] = {}
-        action_record = None
-        context_token = set_current_tool_context(self._current_tool_context)
-        if self.working_memory:
-            action_record = self.working_memory.record_action(action.tool_name, action.arguments)
-
-        try:
-            if self.hook_manager:
-                hook_event = {
-                    "tool_name": action.tool_name,
-                    "arguments": dict(action.arguments),
-                    "metadata": {},
-                }
-                hook_result = self.hook_manager.run_pre_tool_use(hook_event)
-                if isinstance(hook_result, ToolResult):
-                    return hook_result
-                action.arguments = dict(hook_result.get("arguments", action.arguments))
-                action.arguments = self._normalize_tool_arguments(tool, action.arguments)
-
-            guard_result = self._check_tool_guard(action)
-            if not guard_result.allowed:
-                if self.working_memory and action_record:
-                    self.working_memory.update_action(
-                        action_record.id,
-                        ActionStatus.FAILED,
-                        error=guard_result.reason,
-                    )
-                blocked_result = ToolResult(
-                    success=False,
-                    output="",
-                    error=guard_result.reason,
-                    metadata={
-                        "guard_blocked": True,
-                        "risk_level": guard_result.risk_level.value,
-                        "requires_confirmation": guard_result.requires_confirmation,
-                        "suggestions": guard_result.suggestions,
-                        **guard_result.metadata,
-                    },
-                )
-                self._audit_tool_action(
-                    action,
-                    guard_result,
-                    blocked_result,
-                    confirmation_outcome="blocked",
-                    checkpoint_metadata=checkpoint_metadata,
-                    started_at=started_at,
-                )
-                return blocked_result
-
-            if guard_result.requires_confirmation:
-                confirm_result = await self._confirm_warn_action(action, guard_result)
-                if not confirm_result.success:
-                    if self.working_memory and action_record:
-                        self.working_memory.update_action(
-                            action_record.id,
-                            ActionStatus.FAILED,
-                            error=confirm_result.error or "User declined action",
-                        )
-                    self._audit_tool_action(
-                        action,
-                        guard_result,
-                        confirm_result,
-                        confirmation_outcome="declined",
-                        checkpoint_metadata=checkpoint_metadata,
-                        started_at=started_at,
-                    )
-                    return confirm_result
-                confirmation_outcome = "confirmed"
-            else:
-                confirmation_outcome = None
-
-            checkpoint_metadata = self._create_checkpoint_for_action(action)
-            if hasattr(tool, "async_execute"):
-                result = await tool.async_execute(**action.arguments)
-            else:
-                result = tool.execute(**action.arguments)
-            if not isinstance(result, ToolResult):
-                raise TypeError(
-                    f"Tool '{action.tool_name}' returned {type(result).__name__}, expected ToolResult"
-                )
-            if checkpoint_metadata:
-                result.metadata.update(checkpoint_metadata)
-
-            if result.success and result.metadata.get("interaction_required"):
-                result = await self._resolve_interaction(result)
-            if self.hook_manager:
-                hook_result = self.hook_manager.run_post_tool_use(
-                    {
-                        "tool_name": action.tool_name,
-                        "arguments": dict(action.arguments),
-                        "result": result,
-                        "metadata": {},
-                    }
-                )
-                if isinstance(hook_result, ToolResult):
-                    result = hook_result
-                elif isinstance(hook_result, dict) and isinstance(
-                    hook_result.get("result"), ToolResult
-                ):
-                    result = hook_result["result"]
-            if not isinstance(result, ToolResult):
-                raise TypeError(
-                    f"Post-tool hook for '{action.tool_name}' returned an invalid result"
-                )
-            result = self._redact_tool_result_for_observation(result)
-            if self.working_memory and action_record:
-                status = ActionStatus.SUCCESS if result.success else ActionStatus.FAILED
-                self.working_memory.update_action(
-                    action_record.id,
-                    status,
-                    result=result.output,
-                    error=result.error,
-                )
-                self._record_file_observation(action, result)
-            self._audit_tool_action(
-                action,
-                guard_result,
-                result,
-                confirmation_outcome=confirmation_outcome,
-                checkpoint_metadata=checkpoint_metadata,
-                started_at=started_at,
-            )
-            return result
-        except Exception as e:
-            if self.working_memory and action_record:
-                self.working_memory.update_action(
-                    action_record.id,
-                    ActionStatus.FAILED,
-                    error=str(e),
-                )
-            error_result = ToolResult(
-                success=False,
-                output="",
-                error=f"Tool execution failed: {e}",
-            )
-            self._audit_tool_action(
-                action,
-                guard_result,
-                error_result,
-                confirmation_outcome="error",
-                checkpoint_metadata=checkpoint_metadata,
-                started_at=started_at,
-            )
-            return error_result
-        finally:
-            reset_current_tool_context(context_token)
+        """Execute one action through the canonical engine."""
+        return (await self.execution_engine.execute_one(action)).result
 
     def _audit_tool_action(
         self,
@@ -1067,9 +1060,19 @@ class ReActLoop:
             duration_ms=round((perf_counter() - started_at) * 1000, 3),
         )
 
-    def _create_checkpoint_for_action(self, action: ParsedAction) -> dict[str, Any]:
+    def _create_checkpoint_for_action(
+        self,
+        action: ParsedAction,
+        context: ToolUseContext | None = None,
+    ) -> dict[str, Any]:
         """Create a best-effort checkpoint before destructive file mutations."""
-        if action.tool_name not in {"write_file", "edit_file", "multi_edit_file", "delete_file"}:
+        if action.tool_name not in {
+            "write_file",
+            "create_file",
+            "edit_file",
+            "multi_edit_file",
+            "delete_file",
+        }:
             return {}
 
         file_path = action.arguments.get("file_path")
@@ -1083,15 +1086,41 @@ class ReActLoop:
 
             project_path = Path(self.working_dir or ".").resolve()
             target = Path(file_path).expanduser().resolve()
-            if not target.exists():
-                return {"checkpoint_warning": f"No existing file to checkpoint: {file_path}"}
             checkpoint_id = CheckpointManager(project_path).create(
                 f"Before {action.tool_name}",
                 [target],
+                run_id=getattr(self, "active_run_id", None),
+                user_message=getattr(self.state, "task", None),
+                tool_id=context.tool_id if context else None,
             )
-            return {"checkpoint_id": checkpoint_id}
+            return {
+                "checkpoint_id": checkpoint_id,
+                "checkpoint_tool_id": context.tool_id if context else None,
+            }
         except Exception as exc:
             return {"checkpoint_warning": str(exc)}
+
+    def _finalize_checkpoint_for_action(
+        self,
+        action: ParsedAction,
+        result: ToolResult,
+        checkpoint_metadata: dict[str, Any],
+        context: ToolUseContext,
+    ) -> None:
+        """Finalize turn metadata after the tool has mutated the file."""
+        del action, context
+        checkpoint_id = checkpoint_metadata.get("checkpoint_id")
+        if not checkpoint_id:
+            return
+        try:
+            from opennova.checkpoints import CheckpointManager
+
+            checkpoint = CheckpointManager(self.working_dir or ".").finalize(checkpoint_id)
+            result.metadata["checkpoint_operations"] = {
+                entry.path: entry.operation for entry in checkpoint.entries
+            }
+        except Exception as exc:
+            result.metadata["checkpoint_warning"] = str(exc)
 
     def _normalize_tool_arguments(
         self,
@@ -1193,9 +1222,13 @@ class ReActLoop:
         )
 
     async def _confirm_warn_action(
-        self, action: ParsedAction, guard_result: GuardResult
+        self,
+        action: ParsedAction,
+        guard_result: GuardResult,
+        context: ToolUseContext | None = None,
     ) -> ToolResult:
         """Request user confirmation for WARN-level operations."""
+        del context
         prompt_result = ToolResult(
             success=True,
             output=(
@@ -1249,21 +1282,6 @@ class ReActLoop:
                 },
             },
         )
-        if self._current_tool_context:
-            self._emit_tool_event(
-                ToolEvent(
-                    type="permission_request",
-                    tool_id=self._current_tool_context.tool_id,
-                    tool_name=action.tool_name,
-                    arguments=dict(action.arguments),
-                    started_at=self._current_tool_context.started_at,
-                    risk_level=guard_result.risk_level.value,
-                    metadata={
-                        "reason": guard_result.reason,
-                        "suggestions": guard_result.suggestions,
-                    },
-                )
-            )
         resolved = await self._resolve_interaction(prompt_result)
         if not resolved.success:
             return ToolResult(
@@ -1459,6 +1477,13 @@ class ReActLoop:
     def _post_observation(self, action: ParsedAction, result: ToolResult) -> None:
         """Apply result-specific state changes after a tool observation."""
 
+        if action.tool_name == "tool_search" and result.success:
+            discovered = result.metadata.get("discovered_tools", [])
+            self._discovered_tool_names.update(
+                str(name) for name in discovered if str(name) in self.tool_registry
+            )
+            self._upsert_runtime_system_prompt()
+
         # When user skips a question, give the LLM explicit permission to decide.
         if result.metadata.get("skipped"):
             question = result.metadata.get("skipped_question", "")
@@ -1565,6 +1590,14 @@ class ReActLoop:
 
 You have access to the following tools:
 {chr(10).join(tools_description)}
+"""
+
+        if self.deferred_tools_enabled:
+            prompt += """
+Only core and previously discovered tool schemas are shown. If you need Git, diagnostics,
+background tasks, MCP, worktrees, web access, or another hidden capability, call tool_search with
+a concise capability query. Its matches become available on the next model turn and are persisted
+in the transcript.
 """
 
         # Include skill listing directly in the system prompt for reliable discovery.

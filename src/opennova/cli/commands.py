@@ -33,10 +33,14 @@ class SlashCommandRegistry:
             SlashCommand("/act", "_cmd_act", "Execute directly", "/act <task>", sync=False),
             SlashCommand("/tools", "_cmd_tools", "List tools"),
             SlashCommand("/skills", "_cmd_skills", "List skills"),
-            SlashCommand("/skill", "_cmd_skill", "Invoke a skill", "/skill <name> [args]", sync=False),
+            SlashCommand(
+                "/skill", "_cmd_skill", "Invoke a skill", "/skill <name> [args]", sync=False
+            ),
             SlashCommand("/reload-skills", "_cmd_reload_skills", "Reload skills"),
             SlashCommand("/model", "_cmd_model", "Show model information"),
-            SlashCommand("/init", "_cmd_init", "Initialize OPENNOVA.md", "/init [--force]", sync=False),
+            SlashCommand(
+                "/init", "_cmd_init", "Initialize OPENNOVA.md", "/init [--force]", sync=False
+            ),
             SlashCommand("/config", "_cmd_config", "Show configuration"),
             SlashCommand("/clear", "_cmd_clear", "Clear conversation"),
             SlashCommand("/exit", "_cmd_exit", "Exit"),
@@ -44,6 +48,7 @@ class SlashCommandRegistry:
             SlashCommand("/history", "_cmd_history", "Show history", "/history [n]"),
             SlashCommand("/resume", "_cmd_resume", "Resume a session", "/resume [id]", sync=False),
             SlashCommand("/sessions", "_cmd_sessions", "List sessions"),
+            SlashCommand("/fork", "_cmd_fork", "Fork a session timeline", "/fork [session-id]"),
             SlashCommand(
                 "/permissions",
                 "_cmd_permissions",
@@ -57,6 +62,7 @@ class SlashCommandRegistry:
             SlashCommand("/status", "_cmd_status", "Show runtime status"),
             SlashCommand("/todos", "_cmd_todos", "Show task/todo summary"),
             SlashCommand("/checkpoint", "_cmd_checkpoint", "Show checkpoint guidance"),
+            SlashCommand("/memory", "_cmd_memory", "Manage layered project memory"),
             SlashCommand("/export", "_cmd_export", "Export current transcript"),
         ]:
             registry.register(command)

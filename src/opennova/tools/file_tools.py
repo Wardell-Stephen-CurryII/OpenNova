@@ -10,11 +10,14 @@ Implements tools for file system operations:
 """
 
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from opennova.checkpoints import CheckpointManager
 from opennova.diff.engine import DiffEngine
+from opennova.runtime.events import current_tool_context
+from opennova.runtime.file_state import FileVersionCache
 from opennova.security.sandbox import Sandbox, SandboxConfig
 from opennova.security.secrets import SecretScanner
 from opennova.tools.base import BaseTool, ToolResult
@@ -108,6 +111,43 @@ def _create_write_checkpoint(
 def _build_secret_scanner(tool_config: dict[str, Any] | None = None) -> SecretScanner:
     config = tool_config or {}
     return SecretScanner.from_config(config.get("secrets_policy", {}))
+
+
+def _active_file_cache() -> FileVersionCache | None:
+    context = current_tool_context()
+    cache = context.read_file_cache if context else None
+    return cache if isinstance(cache, FileVersionCache) else None
+
+
+def _validate_observed_version(path: Path) -> ToolResult | None:
+    """Reject stale writes when a previously read file changed externally."""
+    cache = _active_file_cache()
+    if cache is None:
+        return None
+    matches, expected, current = cache.validate(path)
+    if matches:
+        return None
+    return ToolResult(
+        success=False,
+        output="",
+        error=(
+            "File changed after it was read by this session; read it again before editing: "
+            f"{path}"
+        ),
+        metadata={
+            "stale_file": True,
+            "file_path": str(path),
+            "expected_version": asdict(expected) if expected else None,
+            "current_version": asdict(current),
+            "retry_hint": "Call read_file again, then retry with the new content.",
+        },
+    )
+
+
+def _record_file_version(path: Path) -> None:
+    cache = _active_file_cache()
+    if cache is not None:
+        cache.record(path)
 
 
 def _redact_tool_text(
@@ -209,6 +249,7 @@ class ReadFileTool(BaseTool):
                 header = f"File: {file_path} ({total_lines} lines)\n\n"
 
             full_output = header + _truncate_output(output)
+            _record_file_version(Path(resolved_path))
 
             return ToolResult(
                 success=True,
@@ -271,6 +312,9 @@ class WriteFileTool(BaseTool):
         path = Path(file_path).resolve()
 
         try:
+            stale_result = _validate_observed_version(path)
+            if stale_result is not None:
+                return stale_result
             old_content = ""
             file_existed = path.exists()
             checkpoint_id: str | None = None
@@ -288,6 +332,7 @@ class WriteFileTool(BaseTool):
             write_ok, write_result = self.sandbox.safe_write(path, content.encode("utf-8"))
             if not write_ok:
                 return ToolResult(success=False, output="", error=str(write_result))
+            _record_file_version(path)
 
             diff_engine = DiffEngine()
             diff_text = diff_engine.generate_diff(old_content, content, str(path))
@@ -373,6 +418,7 @@ class CreateFileTool(BaseTool):
             write_ok, write_result = self.sandbox.safe_write(path, content.encode("utf-8"))
             if not write_ok:
                 return ToolResult(success=False, output="", error=str(write_result))
+            _record_file_version(path)
 
             metadata: dict[str, Any] = {
                 "file_path": str(path),
@@ -442,6 +488,10 @@ class EditFileTool(BaseTool):
         if _is_binary_file(str(path)):
             return ToolResult(success=False, output="", error=f"Cannot edit binary file: {file_path}")
 
+        stale_result = _validate_observed_version(path)
+        if stale_result is not None:
+            return stale_result
+
         read_ok, read_result = self.sandbox.safe_read(path)
         if not read_ok:
             return ToolResult(success=False, output="", error=str(read_result))
@@ -462,6 +512,7 @@ class EditFileTool(BaseTool):
         write_ok, write_result = self.sandbox.safe_write(path, new_content.encode("utf-8"))
         if not write_ok:
             return ToolResult(success=False, output="", error=str(write_result))
+        _record_file_version(path)
 
         diff_text = DiffEngine().generate_diff(old_content, new_content, str(path))
         metadata: dict[str, Any] = {
@@ -507,6 +558,10 @@ class MultiEditFileTool(BaseTool):
         if _is_binary_file(str(path)):
             return ToolResult(success=False, output="", error=f"Cannot edit binary file: {file_path}")
 
+        stale_result = _validate_observed_version(path)
+        if stale_result is not None:
+            return stale_result
+
         read_ok, read_result = self.sandbox.safe_read(path)
         if not read_ok:
             return ToolResult(success=False, output="", error=str(read_result))
@@ -537,6 +592,7 @@ class MultiEditFileTool(BaseTool):
         write_ok, write_result = self.sandbox.safe_write(path, new_content.encode("utf-8"))
         if not write_ok:
             return ToolResult(success=False, output="", error=str(write_result))
+        _record_file_version(path)
 
         diff_text = DiffEngine().generate_diff(old_content, new_content, str(path))
         metadata: dict[str, Any] = {
@@ -607,9 +663,14 @@ class DeleteFileTool(BaseTool):
                     error=f"Not a file: {file_path}",
                 )
 
+            stale_result = _validate_observed_version(path)
+            if stale_result is not None:
+                return stale_result
+
             ok, delete_result = self.sandbox.safe_delete(path)
             if not ok:
                 return ToolResult(success=False, output="", error=str(delete_result))
+            _record_file_version(path)
 
             return ToolResult(
                 success=True,

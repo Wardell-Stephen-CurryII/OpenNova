@@ -138,6 +138,7 @@ class SessionManager:
         self._last_event_id: str | None = None
         self._last_snapshot_args: dict[str, Any] | None = None
         self._created_at: str | None = None
+        self._forked_from: str | None = None
         self._header_written = False
         config = {**DEFAULT_PERSISTENCE_CONFIG, **(persistence_config or {})}
         self._debounce_seconds = max(0, int(config["debounce_ms"])) / 1000
@@ -157,6 +158,7 @@ class SessionManager:
         self._title = None
         self._reset_runtime_journal_tracking()
         self._created_at = datetime.now(UTC).isoformat()
+        self._forked_from = None
         self._header_written = False
         return self._session_id
 
@@ -177,6 +179,69 @@ class SessionManager:
         self._reset_runtime_journal_tracking()
         self._restore_header_metadata()
         return self._session_id
+
+    def fork_session(self, session_id: str) -> str:
+        """Copy a persisted session into a new independently writable timeline."""
+        source_id = self._validate_session_id(session_id)
+        source = self._resolve_session_file(source_id)
+        if not source.exists():
+            raise FileNotFoundError(f"Session not found: {source_id}")
+        fork_id = str(uuid.uuid4())
+        destination = self._session_path(fork_id)
+        entries = self._read_entries_unlocked(source)
+
+        def rewrite(value: Any) -> Any:
+            if isinstance(value, list):
+                return [rewrite(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            updated = {key: rewrite(item) for key, item in value.items()}
+            if updated.get("session_id") == source_id:
+                updated["session_id"] = fork_id
+            return updated
+
+        rewritten = [rewrite(entry) for entry in entries]
+        for entry in rewritten:
+            if entry.get("type") == "session_header":
+                entry["session_id"] = fork_id
+                entry["created_at"] = datetime.now(UTC).isoformat()
+                entry["forked_from"] = source_id
+                break
+        else:
+            rewritten.insert(
+                0,
+                {
+                    "type": "session_header",
+                    "schema_version": SESSION_SCHEMA_VERSION,
+                    "session_id": fork_id,
+                    "project_root": str(self._project_root),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "forked_from": source_id,
+                },
+            )
+
+        temporary_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self._sessions_dir,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary_path = stream.name
+                for entry in rewritten:
+                    stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, destination)
+            temporary_path = None
+            return fork_id
+        finally:
+            if temporary_path:
+                with suppress(FileNotFoundError):
+                    Path(temporary_path).unlink()
 
     @property
     def session_id(self) -> str | None:
@@ -489,18 +554,22 @@ class SessionManager:
     def _session_header(self) -> dict[str, Any]:
         if self._created_at is None:
             self._created_at = datetime.now(UTC).isoformat()
-        return {
+        header = {
             "type": "session_header",
             "schema_version": SESSION_SCHEMA_VERSION,
             "session_id": self._session_id,
             "project_root": str(self._project_root),
             "created_at": self._created_at,
         }
+        if self._forked_from:
+            header["forked_from"] = self._forked_from
+        return header
 
     def _restore_header_metadata(self) -> None:
         """Reuse the original v2 creation time when appending or compacting."""
         self._header_written = False
         self._created_at = None
+        self._forked_from = None
         if self._file is None or not self._file.exists():
             return
         for entry in self._read_entries_unlocked(self._file):
@@ -509,6 +578,8 @@ class SessionManager:
             self._header_written = True
             created_at = entry.get("created_at")
             self._created_at = str(created_at) if created_at else None
+            forked_from = entry.get("forked_from")
+            self._forked_from = str(forked_from) if forked_from else None
             return
         self._created_at = datetime.fromtimestamp(self._file.stat().st_ctime, UTC).isoformat()
 
@@ -977,4 +1048,5 @@ class SessionManager:
         self._title = None
         self._reset_runtime_journal_tracking()
         self._created_at = None
+        self._forked_from = None
         self._header_written = False

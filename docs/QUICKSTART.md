@@ -91,6 +91,7 @@ uv run opennova run "读取 README.md"
 | `uv run opennova init` | 创建全局配置 |
 | `uv run opennova list-tools` | 查看当前工具 |
 | `uv run opennova config` | 查看合并后的配置 |
+| `uv run opennova doctor` | 无副作用检查运行环境 |
 | `uv run opennova --version` | 查看版本 |
 
 ## 常用 TUI 命令
@@ -100,12 +101,14 @@ uv run opennova run "读取 README.md"
 | `/act <task>` | 直接执行 |
 | `/plan <task>` | 生成计划并确认执行 |
 | `/resume [id]` | 选择或恢复会话 |
+| `/fork [id]` | 分叉当前或指定会话 |
 | `/permissions ...` | 查看或修改审批规则 |
 | `/plugins ...` | 管理项目插件 |
 | `/hooks [trust|untrust]` | 查看或管理项目 hooks 信任 |
 | `/automations ...` | 管理本地自动化 |
 | `/diagnostics [path]` | 运行 Python 诊断 |
 | `/checkpoint ...` | 查看或恢复文件检查点 |
+| `/memory ...` | 管理分层项目记忆 |
 | `/export [dir]` | 导出 Markdown 对话记录 |
 | `/help` | 查看完整命令列表 |
 | `/exit` | 退出 |

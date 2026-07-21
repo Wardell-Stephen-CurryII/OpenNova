@@ -87,6 +87,18 @@ class OpenNovaClient:
         self._sessions[session_id] = runtime
         return session_id
 
+    def fork_session(self, session_id: str) -> str:
+        """Fork an active SDK session into a separate persisted timeline."""
+        source = self.get_runtime(session_id)
+        flush = getattr(source, "flush_session", None)
+        if callable(flush):
+            flush()
+        fork_id = source.session_manager.fork_session(session_id)
+        runtime = self.runtime_factory(self.config)
+        runtime.resume_session(fork_id)
+        self._sessions[fork_id] = runtime
+        return fork_id
+
     async def submit_message(
         self,
         session_id: str,

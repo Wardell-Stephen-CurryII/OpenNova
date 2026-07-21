@@ -24,7 +24,30 @@ providers:
 # Agent behavior configuration
 agent:
   # Maximum iterations in ReAct loop
-  max_iterations: 200
+  max_iterations: 20
+
+  # Optional run budgets; 0 disables the corresponding budget
+  token_budget: 0
+  cost_budget_usd: 0.0
+  max_output_tokens: 0
+  input_cost_per_million: 0.0
+  output_cost_per_million: 0.0
+
+  # Retry transient provider failures, then try configured provider names in order
+  provider_retry_attempts: 1
+  provider_failure_threshold: 3
+  provider_cooldown_seconds: 30.0
+  fallback_providers: []
+
+  execution:
+    parallel_tool_limit: 4
+    per_turn_tool_result_chars: 160000
+
+  deferred_tools:
+    enabled: true
+
+  memory:
+    max_chars: 5000
   
   # Auto-confirm dangerous operations (not recommended)
   auto_confirm: false

@@ -1317,17 +1317,14 @@ class OpenNovaTUI(App):
         task.add_done_callback(self._ui_tasks.discard)
 
     async def _handle_command(self, text: str) -> None:
-        parts = text.split(maxsplit=1)
-        cmd = parts[0].lower().replace("_", "-")
-        args = parts[1] if len(parts) > 1 else ""
+        from opennova.cli.command_dispatch import SlashCommandDispatcher
 
-        command = self.command_registry.get(cmd)
-        if command and command.handler and hasattr(self, command.handler):
-            handler = getattr(self, command.handler)
-            await handler(args)
-        else:
-            log = self.query_one("#messages")
-            log.write(f"[red]Unknown command: {cmd}[/red]")
+        log = self.query_one("#messages")
+        await SlashCommandDispatcher(self.command_registry).dispatch(
+            self,
+            text,
+            on_unknown=lambda command: log.write(f"[red]Unknown command: {command}[/red]"),
+        )
 
     # ── slash commands ───────────────────────────────────────────
 
@@ -1362,13 +1359,16 @@ class OpenNovaTUI(App):
 - `/todos` - Show current task summary
 - `/checkpoint` - Show checkpoint/rollback status
 - `/checkpoint list|diff|restore [--preview] <id>` - Manage checkpoint snapshots
+- `/checkpoint rewind [--apply|--force] <id>` - Preview or apply a conflict-safe rewind
 - `/checkpoint diff --session <session> <id>` - Inspect checkpoint diff from exported session transcript
 - `/checkpoint diff --from-transcript <path> <id>` - Inspect checkpoint diff from transcript
+- `/memory [list|add <name> <content>|delete <name>]` - Manage layered project memory
 - `/export [dir]` - Export current transcript to Markdown
 - `/history [n]` - Show recent conversation history
 - `/clear` - Clear conversation (starts a new session)
 - `/resume [id]` - Resume a past session (empty = pick from list)
 - `/sessions` - List all saved sessions
+- `/fork [session-id]` - Fork the current or selected session timeline
 - `/help` - Show this help
 - `/exit` - Exit
 
@@ -1592,6 +1592,19 @@ class OpenNovaTUI(App):
             return
 
         await self._resume_via_picker(exclude_current=True)
+
+    async def _cmd_fork(self, args: str) -> None:
+        log = self.query_one("#messages")
+        source_id = args.strip() or str(self.agent.session_manager.session_id or "")
+        sessions = self.agent.get_sessions()
+        matches = [session for session in sessions if session.session_id.startswith(source_id)]
+        if len(matches) != 1:
+            log.write(f"[red]Session '{source_id}' was not found or is ambiguous.[/red]")
+            return
+        self.agent.flush_session()
+        fork_id = self.agent.session_manager.fork_session(matches[0].session_id)
+        await self._resume_session_by_id(fork_id)
+        log.write(f"[green]Forked session: {fork_id}[/green]")
 
     async def _cmd_permissions(self, args: str) -> None:
         from opennova.security.permissions import PermissionDecision, PermissionStore
@@ -1836,6 +1849,16 @@ class OpenNovaTUI(App):
             log.write(result.output)
         else:
             log.write(f"[red]{result.error or 'Checkpoint command failed'}[/red]")
+
+    async def _cmd_memory(self, args: str) -> None:
+        from opennova.cli.memory_commands import handle_memory_command
+
+        log = self.query_one("#messages")
+        result = handle_memory_command(Path.cwd(), args)
+        if result.success:
+            log.write(result.output)
+        else:
+            log.write(f"[red]{result.error or 'Memory command failed'}[/red]")
 
     async def _cmd_export(self, args: str) -> None:
         from opennova.transcript import TranscriptExporter

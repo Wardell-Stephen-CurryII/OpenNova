@@ -76,12 +76,57 @@ You must call `select_execution_mode` exactly once."""
     def __init__(self, llm: BaseLLMProvider):
         self.llm = llm
 
+    @staticmethod
+    def route_local(task: str) -> WorkflowRoutingResult:
+        """Resolve only explicit, high-confidence workflow instructions locally."""
+        normalized = " ".join(task.strip().lower().split())
+        plan_markers = (
+            "只列计划",
+            "只写计划",
+            "先列计划",
+            "先做计划",
+            "等我确认后",
+            "确认后再",
+            "plan only",
+            "do not implement",
+            "wait for my approval",
+        )
+        act_markers = (
+            "直接实现",
+            "直接修改",
+            "直接执行",
+            "不用计划",
+            "无需计划",
+            "开始开发",
+            "implement directly",
+            "skip the plan",
+        )
+        if any(marker in normalized for marker in plan_markers):
+            return WorkflowRoutingResult(
+                WorkflowDecision.PLAN,
+                "Explicit request to prepare a plan before implementation.",
+                1.0,
+            )
+        if any(marker in normalized for marker in act_markers):
+            return WorkflowRoutingResult(
+                WorkflowDecision.ACT,
+                "Explicit request to execute without a planning approval step.",
+                1.0,
+            )
+        return WorkflowRoutingResult(None, error="No high-confidence local workflow match.")
+
     async def route(
         self,
         messages: Sequence[Message],
         task: str,
+        *,
+        prefer_local: bool = False,
     ) -> WorkflowRoutingResult:
         """Resolve a workflow without mutating the conversation transcript."""
+        if prefer_local:
+            local = self.route_local(task)
+            if local.resolved:
+                return local
         routing_messages = [
             Message(
                 role="system",

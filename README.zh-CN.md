@@ -14,7 +14,7 @@ OpenNova 将 Agent 运行时和全屏终端工作台组合在一起：
 - 流式 Textual TUI，包含 Chat、Context、Tasks 和 Activity 面板
 - 会话持久化、选择器恢复和完整对话记录重放
 - Plan/Act、TodoWrite、子 Agent 和 Git Worktree 工作流
-- 39 个内置工具，以及 Skills、可信项目插件、Hooks 和 MCP 扩展
+- 40 个内置工具，以及 Skills、可信项目插件、Hooks 和 MCP 扩展
 - 上下文压缩和分层项目记忆
 - 三档权限、参数规则、敏感信息脱敏、审计日志和沙箱
 - 可用于脚本和服务的无界面 Python SDK
@@ -148,12 +148,14 @@ TUI 内主要命令如下：
 | `/tools`、`/skills`、`/skill <name> [args]` | 查看工具或调用 Skill |
 | `/init [--force]` | 生成或重建 `OPENNOVA.md` |
 | `/resume [id]`、`/sessions` | 选择或查看持久化会话 |
+| `/fork [id]` | 将持久化会话分叉为独立时间线 |
 | `/permissions ...` | 查看或修改权限模式和规则 |
 | `/plugins ...`、`/hooks` | 管理可信项目扩展 |
 | `/automations ...` | 管理本地计划任务与 daemon |
 | `/diagnostics [path]` | 运行 Python 诊断 |
 | `/todos`、`/status` | 查看运行状态 |
 | `/checkpoint ...` | 查看、预览、比较或恢复检查点 |
+| `/memory ...` | 查看、添加或删除分层项目记忆 |
 | `/export [dir]` | 导出当前 Markdown 对话记录 |
 | `/history [n]`、`/clear`、`/help`、`/exit` | 管理当前 TUI 会话 |
 
@@ -161,7 +163,7 @@ TUI 内主要命令如下：
 
 ## 内置能力
 
-OpenNova 当前注册 39 个内置工具，分为：
+OpenNova 当前注册 40 个内置工具。核心 schema 常驻，`tool_search` 按需发现 Git、诊断、后台任务、MCP 和 Worktree 等延迟工具：
 
 - 文件：读取、写入、创建、编辑、批量编辑、删除和目录浏览
 - 搜索与诊断：Glob、Grep、Python 语法、符号、定义和引用
@@ -174,6 +176,8 @@ OpenNova 当前注册 39 个内置工具，分为：
 ## 会话与记忆
 
 会话保存在 `~/.opennova/sessions/`。`--resume` 和 `/resume` 会打开按时间倒序排列的选择器，会话标题来自第一条用户消息。恢复时会同时恢复后台上下文和消息区记录，并继续写入原会话，不会创建重复会话。
+
+`/fork [id]` 可创建独立的会话时间线副本。`.opennova/memory/` 分层记忆支持来源、作用域、过期时间、归一化去重和 `/memory` 管理，现有普通 Markdown 记忆仍然兼容。
 
 上下文默认在使用率达到 55% 时压缩。旧的完整消息对会被总结，最近消息、工具调用边界和压缩标记仍可恢复。
 

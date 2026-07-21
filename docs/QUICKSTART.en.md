@@ -91,6 +91,7 @@ Drag over text directly in the message log, then press `Ctrl+Shift+C`. `Cmd+C` a
 | `uv run opennova init` | Create global configuration |
 | `uv run opennova list-tools` | List registered tools |
 | `uv run opennova config` | Show merged configuration |
+| `uv run opennova doctor` | Inspect runtime readiness without side effects |
 | `uv run opennova --version` | Show the version |
 
 ## Common TUI commands
@@ -100,12 +101,14 @@ Drag over text directly in the message log, then press `Ctrl+Shift+C`. `Cmd+C` a
 | `/act <task>` | Execute directly |
 | `/plan <task>` | Generate a plan and request approval |
 | `/resume [id]` | Pick or restore a session |
+| `/fork [id]` | Fork the current or selected session |
 | `/permissions ...` | Inspect or update approval rules |
 | `/plugins ...` | Manage project plugins |
 | `/hooks [trust|untrust]` | Inspect or manage project hook trust |
 | `/automations ...` | Manage local automations |
 | `/diagnostics [path]` | Run Python diagnostics |
 | `/checkpoint ...` | Inspect or restore file checkpoints |
+| `/memory ...` | Manage layered project memory |
 | `/export [dir]` | Export a Markdown transcript |
 | `/help` | Show the complete command list |
 | `/exit` | Exit |

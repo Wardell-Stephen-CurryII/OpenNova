@@ -202,8 +202,8 @@ tool.is_open_world(**args)
 ```
 
 `ToolRegistry` provides `register()`, `get()`, `list_tools()`, `list_names()`, `has_tool()`, and
-`unregister()`. `AgentRuntime` currently registers 39 built-in tools by default; plugins and MCP
-tools are added dynamically.
+`unregister()`. `AgentRuntime` currently registers 40 built-in tools by default. `tool_search`
+exposes deferred schemas on demand; plugins and MCP tools are added dynamically.
 
 ## Runtime tool events
 
@@ -226,6 +226,7 @@ manager.save_runtime_snapshot(messages, transcript_events=events)
 sessions = manager.list_sessions()
 loaded = manager.load_session_with_summary(session_id)
 manager.resume_session(session_id)
+fork_id = manager.fork_session(session_id)
 ```
 
 The session format consists of a JSONL v2 snapshot followed by runtime events. The loader supports
