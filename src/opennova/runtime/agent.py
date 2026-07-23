@@ -1078,7 +1078,7 @@ class AgentRuntime:
             "",
             f"- Task: {self.state.current_task or plan.task}",
             f"- Generated at: {datetime.now().isoformat(timespec='seconds')}",
-            f"- Saved path: {plan_path}",
+            f"- Saved path: {plan_path.as_posix()}",
             "",
             "## Summary",
             "",
